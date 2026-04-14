@@ -330,6 +330,8 @@ final class Ajax {
             'include_media'   => (bool) ($_POST['include_media'] ?? true),
             'include_plugins' => (bool) ($_POST['include_plugins'] ?? true),
             'include_themes'  => (bool) ($_POST['include_themes'] ?? true),
+            'storage_local'   => (bool) ($_POST['storage_local'] ?? true),
+            'storage_gdrive'  => (bool) ($_POST['storage_gdrive'] ?? false),
             'notify_email'    => sanitize_email(wp_unslash($_POST['notify_email'] ?? '')),
         ];
 
@@ -382,6 +384,8 @@ final class Ajax {
         @set_time_limit(0);
 
         $job_id = sanitize_text_field(wp_unslash($_POST['job_id'] ?? ''));
+        $file   = sanitize_file_name(wp_unslash($_POST['file'] ?? ''));
+        $path   = SITESSAVER_STORAGE_DIR . '/' . $file;
 
         if (empty($file) || !file_exists($path)) {
             wp_send_json_error(['message' => __('Backup not found.', 'sitessaver')]);

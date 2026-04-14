@@ -58,30 +58,20 @@ $is_connected = !empty($token['refresh_token']);
                 </div>
 
             <?php else : ?>
-                <form id="sitessaver-settings-form">
-                    <table class="ss-form-table">
-                        <tr>
-                            <th><?php esc_html_e('Destination Folder ID', 'sitessaver'); ?></th>
-                            <td>
-                                <input type="text" name="gdrive_folder_id" value="<?php echo esc_attr($settings['gdrive_folder_id'] ?? ''); ?>" class="ss-input-text" placeholder="Folder ID from URL" />
-                                <p class="description">
-                                    <?php esc_html_e('Optional: Enter a Folder ID (the last part of the Google Drive URL) to store backups in a specific folder. Leave empty for root.', 'sitessaver'); ?>
-                                </p>
-                            </td>
-                        </tr>
-                    </table>
+                <div style="background: rgba(15, 157, 88, 0.05); border: 1px solid rgba(15, 157, 88, 0.2); padding: 24px; border-radius: var(--ss-radius-card); text-align: center;">
+                    <i class="ri-checkbox-circle-fill" style="font-size: 32px; color: #0F9D58; display: block; margin-bottom: 12px;"></i>
+                    <h3 style="margin: 0 0 8px 0; color: var(--ss-text-main);"><?php esc_html_e('Google Drive Connected Successfully', 'sitessaver'); ?></h3>
+                    <p style="margin: 0; color: var(--ss-text-muted);">
+                        <?php esc_html_e('Your site is linked. A backup folder has been automatically created in your Google Drive root.', 'sitessaver'); ?>
+                    </p>
+                </div>
 
-                    <div style="margin-top: 32px; display: flex; justify-content: space-between; align-items: center; padding-top: 24px; border-top: 1px solid var(--ss-border-light);">
-                        <button type="submit" class="btn btn-primary">
-                            <i class="ri-save-line"></i>
-                            <?php esc_html_e('Save Cloud Settings', 'sitessaver'); ?>
-                        </button>
-                        <button type="button" id="sitessaver-gdrive-disconnect" class="btn btn-outline" style="color: var(--ss-danger); border-color: var(--ss-danger);">
-                            <i class="ri-logout-circle-line"></i>
-                            <?php esc_html_e('Disconnect Google Drive', 'sitessaver'); ?>
-                        </button>
-                    </div>
-                </form>
+                <div style="margin-top: 32px; display: flex; justify-content: center; padding-top: 24px; border-top: 1px solid var(--ss-border-light);">
+                    <button type="button" id="sitessaver-gdrive-disconnect" class="btn btn-outline" style="color: var(--ss-danger); border-color: var(--ss-danger);">
+                        <i class="ri-logout-circle-line"></i>
+                        <?php esc_html_e('Disconnect Google Drive Account', 'sitessaver'); ?>
+                    </button>
+                </div>
             <?php endif; ?>
         </div>
     </div>
