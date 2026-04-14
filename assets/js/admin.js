@@ -316,6 +316,8 @@
             include_media: $form.find('[name=include_media]').is(':checked') ? 1 : 0,
             include_plugins: $form.find('[name=include_plugins]').is(':checked') ? 1 : 0,
             include_themes: $form.find('[name=include_themes]').is(':checked') ? 1 : 0,
+            storage_local: $form.find('[name=storage_local]').is(':checked') ? 1 : 0,
+            storage_gdrive: $form.find('[name=storage_gdrive]').is(':checked') ? 1 : 0,
             notify_email: $form.find('[name=notify_email]').val()
         };
 
@@ -379,6 +381,9 @@
                     updateProgress($wrap, res.progress, 'Uploading to Drive: ' + res.progress + '%');
                     if (res.status === 'completed' || res.status === 'failed') {
                         clearInterval(pollInterval);
+                        setTimeout(function() {
+                            hideProgress($wrap);
+                        }, 1000);
                     }
                 }
             });
