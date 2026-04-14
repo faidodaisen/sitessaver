@@ -38,6 +38,7 @@ final class Admin {
         add_submenu_page('sitessaver', __('Import', 'sitessaver'), __('Import', 'sitessaver'), 'manage_options', 'sitessaver-import', [$this, 'render_import_page']);
         add_submenu_page('sitessaver', __('Schedule', 'sitessaver'), __('Schedule', 'sitessaver'), 'manage_options', 'sitessaver-schedule', [$this, 'render_schedule_page']);
         add_submenu_page('sitessaver', __('Settings', 'sitessaver'), __('Settings', 'sitessaver'), 'manage_options', 'sitessaver-settings', [$this, 'render_settings_page']);
+        add_submenu_page('sitessaver', __('Help & Manual', 'sitessaver'), __('Help', 'sitessaver'), 'manage_options', 'sitessaver-help', [$this, 'render_help_page']);
     }
 
     public function enqueue_assets(string $hook): void {
@@ -102,5 +103,9 @@ final class Admin {
 
     public function render_settings_page(): void {
         include SITESSAVER_PATH . 'templates/settings.php';
+    }
+
+    public function render_help_page(): void {
+        include SITESSAVER_PATH . 'templates/help.php';
     }
 }
