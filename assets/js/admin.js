@@ -123,6 +123,31 @@
 
     // ---------- IMPORT (upload) ----------
 
+    var $dropZone = $('#sitessaver-drop-zone');
+    if ($dropZone.length) {
+        $dropZone.on('dragover', function(e) {
+            e.preventDefault();
+            $(this).css({ 'border-color': 'var(--ss-primary)', 'background': 'rgba(var(--ss-primary-rgb), 0.05)' });
+        });
+
+        $dropZone.on('dragleave drop', function(e) {
+            e.preventDefault();
+            $(this).css({ 'border-color': 'var(--ss-border)', 'background': 'transparent' });
+        });
+
+        $dropZone.on('drop', function(e) {
+            var files = e.originalEvent.dataTransfer.files;
+            if (files.length > 0) {
+                handleImportFile(files[0]);
+            }
+        });
+
+        $dropZone.on('click', function(e) {
+            if ($(e.target).closest('button').length) return;
+            $('#sitessaver-import-file').click();
+        });
+    }
+
     $('#sitessaver-import-file').on('change', function () {
         if (this.files.length > 0) {
             handleImportFile(this.files[0]);
