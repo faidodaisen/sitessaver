@@ -11,8 +11,8 @@ $stats   = [
     
     <div class="sitessaver-progress" style="display:none;">
         <div class="sitessaver-progress-info">
-            <span class="sitessaver-progress-label"></span>
-            <span class="sitessaver-progress-pct">0%</span>
+            <span class="step-label"></span>
+            <span class="step-pct">0%</span>
         </div>
         <div class="sitessaver-progress-bar">
             <div class="sitessaver-progress-fill"></div>
