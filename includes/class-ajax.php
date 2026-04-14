@@ -34,6 +34,7 @@ final class Ajax {
             'sitessaver_get_gdrive_upload_status' => 'handle_get_gdrive_upload_status',
             'sitessaver_gdrive_list'    => 'handle_gdrive_list',
             'sitessaver_gdrive_download'=> 'handle_gdrive_download',
+            'sitessaver_gdrive_restore' => 'handle_gdrive_restore',
             'sitessaver_gdrive_delete'  => 'handle_gdrive_delete',
             'sitessaver_upload_chunk'   => 'handle_upload_chunk',
             'sitessaver_cleanup_chunks' => 'handle_cleanup_chunks',
@@ -441,6 +442,40 @@ final class Ajax {
             wp_send_json_success($result);
         } else {
             wp_send_json_error($result);
+        }
+    }
+
+    /**
+     * Download a Drive backup AND immediately restore it. The downloaded
+     * ZIP is persisted to the local storage dir so it shows up in the
+     * Backups list too — same behaviour as manual download + restore,
+     * just one click.
+     */
+    public function handle_gdrive_restore(): void {
+        sitessaver_verify_ajax();
+
+        @set_time_limit(0);
+        wp_raise_memory_limit('admin');
+
+        $file_id = sanitize_text_field(wp_unslash($_POST['file_id'] ?? ''));
+
+        if (empty($file_id)) {
+            wp_send_json_error(['message' => __('No file specified.', 'sitessaver')]);
+        }
+
+        // Step 1: download from Drive to local storage.
+        $dl = GDrive::download($file_id);
+        if (empty($dl['success']) || empty($dl['file'])) {
+            wp_send_json_error(['message' => $dl['message'] ?? __('Failed to download from Google Drive.', 'sitessaver')]);
+        }
+
+        // Step 2: restore from the downloaded file.
+        $restore = Import::from_backup($dl['file']);
+
+        if ($restore['success']) {
+            wp_send_json_success($restore);
+        } else {
+            wp_send_json_error($restore);
         }
     }
 
