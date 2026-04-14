@@ -7,7 +7,19 @@ $stats   = [
 ];
 ?>
 
-<div class="sitessaver-wrap">
+<div class="sitessaver-wrap" id="sitessaver-backups-page">
+    
+    <div class="sitessaver-progress" style="display:none;">
+        <div class="sitessaver-progress-info">
+            <span class="sitessaver-progress-label"></span>
+            <span class="sitessaver-progress-pct">0%</span>
+        </div>
+        <div class="sitessaver-progress-bar">
+            <div class="sitessaver-progress-fill"></div>
+        </div>
+    </div>
+
+    <div class="sitessaver-result" style="display:none;"></div>
     
     <header class="ss-header">
         <h1 class="ss-title">
@@ -138,9 +150,14 @@ $stats   = [
                     <i class="ri-drive-fill" style="color: #0F9D58;"></i>
                     <?php esc_html_e('Google Drive Backups', 'sitessaver'); ?>
                 </h2>
-                <button id="sitessaver-gdrive-refresh" class="btn btn-outline" style="padding: 4px 10px; font-size: 12px;">
-                    <i class="ri-refresh-line"></i> <?php esc_html_e('Refresh', 'sitessaver'); ?>
-                </button>
+                <div class="ss-section-actions" style="display: flex; gap: 8px;">
+                    <a href="<?php echo esc_url(\SitesSaver\GDrive::get_folder_url()); ?>" target="_blank" class="btn btn-outline" style="padding: 4px 10px; font-size: 12px; color: #0F9D58; border-color: #0F9D58;">
+                        <i class="ri-external-link-line"></i> <?php esc_html_e('Open Drive', 'sitessaver'); ?>
+                    </a>
+                    <button id="sitessaver-gdrive-refresh" class="btn btn-outline" style="padding: 4px 10px; font-size: 12px;">
+                        <i class="ri-refresh-line"></i> <?php esc_html_e('Refresh', 'sitessaver'); ?>
+                    </button>
+                </div>
             </div>
             <div id="sitessaver-gdrive-files">
                 <p style="padding: 24px; text-align: center; color: var(--ss-text-muted);">

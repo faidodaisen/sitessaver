@@ -31,6 +31,7 @@ final class Ajax {
             'sitessaver_save_settings'  => 'handle_save_settings',
             'sitessaver_gdrive_disconnect' => 'handle_gdrive_disconnect',
             'sitessaver_gdrive_upload'  => 'handle_gdrive_upload',
+            'sitessaver_get_gdrive_upload_status' => 'handle_get_gdrive_upload_status',
             'sitessaver_gdrive_list'    => 'handle_gdrive_list',
             'sitessaver_gdrive_download'=> 'handle_gdrive_download',
             'sitessaver_gdrive_delete'  => 'handle_gdrive_delete',
@@ -380,19 +381,37 @@ final class Ajax {
 
         @set_time_limit(0);
 
-        $file = sanitize_file_name(wp_unslash($_POST['file'] ?? ''));
-        $path = SITESSAVER_STORAGE_DIR . '/' . $file;
+        $job_id = sanitize_text_field(wp_unslash($_POST['job_id'] ?? ''));
 
         if (empty($file) || !file_exists($path)) {
             wp_send_json_error(['message' => __('Backup not found.', 'sitessaver')]);
         }
 
-        $result = GDrive::upload($path, $file);
+        $result = GDrive::upload($path, $file, $job_id);
 
         if ($result['success']) {
             wp_send_json_success($result);
         } else {
             wp_send_json_error($result);
+        }
+    }
+
+    /**
+     * Get Google Drive upload progress status.
+     */
+    public function handle_get_gdrive_upload_status(): void {
+        sitessaver_verify_ajax();
+
+        $job_id = sanitize_text_field(wp_unslash($_POST['job_id'] ?? ''));
+        if (empty($job_id)) {
+            wp_send_json_error(['message' => __('Missing Job ID.', 'sitessaver')]);
+        }
+
+        $status = get_transient('sitessaver_gdrive_job_' . $job_id);
+        if (!$status) {
+            wp_send_json_success(['progress' => 0, 'status' => 'waiting']);
+        } else {
+            wp_send_json_success($status);
         }
     }
 
