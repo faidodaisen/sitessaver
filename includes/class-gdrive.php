@@ -134,63 +134,100 @@ final class GDrive {
             return ['success' => false, 'message' => __('Google Drive not connected.', 'sitessaver')];
         }
 
+        $file_size = @filesize($file_path);
+        if (!$file_size) {
+            return ['success' => false, 'message' => __('Cannot determine file size.', 'sitessaver')];
+        }
+
         $settings  = self::settings();
         $folder_id = $settings['gdrive_folder_id'] ?? '';
 
         $metadata = ['name' => $filename];
-
         if (!empty($folder_id)) {
             $metadata['parents'] = [$folder_id];
         }
 
-        $boundary  = wp_generate_password(24, false);
-        
-        // Attempt to read file. Large files may hit memory limits here.
-        $file_data = @file_get_contents($file_path);
-
-        if ($file_data === false) {
-            return [
-                'success' => false, 
-                'message' => __('Cannot read backup file. It may be too large for server memory limits.', 'sitessaver')
-            ];
-        }
-
-
-        $body  = "--{$boundary}\r\n";
-        $body .= "Content-Type: application/json; charset=UTF-8\r\n\r\n";
-        $body .= wp_json_encode($metadata) . "\r\n";
-        $body .= "--{$boundary}\r\n";
-        $body .= "Content-Type: application/zip\r\n\r\n";
-        $body .= $file_data . "\r\n";
-        $body .= "--{$boundary}--";
-
-        $response = wp_remote_post(self::UPLOAD_URL . '/files?uploadType=multipart', [
+        // 1. Initiate Resumable Upload Session
+        $response = wp_remote_post(self::UPLOAD_URL . '/files?uploadType=resumable', [
             'headers' => [
                 'Authorization' => 'Bearer ' . $token,
-                'Content-Type'  => 'multipart/related; boundary=' . $boundary,
+                'Content-Type'  => 'application/json; charset=UTF-8',
+                'X-Upload-Content-Type' => 'application/zip',
+                'X-Upload-Content-Length' => $file_size,
             ],
-            'body'    => $body,
-            'timeout' => 300,
+            'body' => wp_json_encode($metadata),
+            'timeout' => 30,
         ]);
 
         if (is_wp_error($response)) {
             return ['success' => false, 'message' => $response->get_error_message()];
         }
 
-        $result = json_decode(wp_remote_retrieve_body($response), true);
-
-        if (!empty($result['id'])) {
-            return [
-                'success' => true,
-                'file_id' => $result['id'],
-                'message' => __('Uploaded to Google Drive.', 'sitessaver'),
-            ];
+        $status_code = wp_remote_retrieve_response_code($response);
+        if ($status_code !== 200) {
+            return ['success' => false, 'message' => __('Failed to initiate upload session.', 'sitessaver')];
         }
 
-        return [
-            'success' => false,
-            'message' => $result['error']['message'] ?? __('Upload failed.', 'sitessaver'),
-        ];
+        $session_url = wp_remote_retrieve_header($response, 'location');
+        if (empty($session_url)) {
+            return ['success' => false, 'message' => __('No upload session URL received.', 'sitessaver')];
+        }
+
+        // 2. Upload in Chunks
+        $handle = fopen($file_path, 'rb');
+        if (!$handle) {
+            return ['success' => false, 'message' => __('Cannot open backup file for reading.', 'sitessaver')];
+        }
+
+        $chunk_size = 5 * 1024 * 1024; // 5 MB (must be multiple of 256 KB)
+        $offset = 0;
+
+        while (!feof($handle)) {
+            $data = fread($handle, $chunk_size);
+            if ($data === false) {
+                fclose($handle);
+                return ['success' => false, 'message' => __('Error reading backup file.', 'sitessaver')];
+            }
+
+            $current_size = strlen($data);
+            if ($current_size === 0) break;
+
+            $range_start = $offset;
+            $range_end = $offset + $current_size - 1;
+            
+            $upload_response = wp_remote_request($session_url, [
+                'method'  => 'PUT',
+                'headers' => [
+                    'Content-Length' => $current_size,
+                    'Content-Range'  => "bytes {$range_start}-{$range_end}/{$file_size}",
+                ],
+                'body'    => $data,
+                'timeout' => 300,
+            ]);
+
+            if (is_wp_error($upload_response)) {
+                fclose($handle);
+                return ['success' => false, 'message' => $upload_response->get_error_message()];
+            }
+
+            $up_status = wp_remote_retrieve_response_code($upload_response);
+            
+            // 308 Resume Incomplete is expected for intermediate chunks
+            // 200/201 is expected for the final chunk
+            if ($up_status !== 308 && $up_status !== 200 && $up_status !== 201) {
+                fclose($handle);
+                $error_body = json_decode(wp_remote_retrieve_body($upload_response), true);
+                return [
+                    'success' => false, 
+                    'message' => $error_body['error']['message'] ?? __('Upload chunk failed.', 'sitessaver')
+                ];
+            }
+
+            $offset += $current_size;
+        }
+
+        fclose($handle);
+        return ['success' => true, 'message' => __('Backup uploaded to Google Drive.', 'sitessaver')];
     }
 
     /**
