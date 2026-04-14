@@ -408,6 +408,7 @@
                 html += '<td class="cell-meta">' + f.size + '</td>';
                 html += '<td class="cell-meta">' + f.created + '</td>';
                 html += '<td><div class="action-btns" style="justify-content:flex-end;">';
+                html += '<button type="button" class="btn-icon sitessaver-gdrive-restore-btn" data-id="' + f.id + '" data-name="' + f.name + '" title="Restore from Drive"><i class="ri-history-line"></i></button>';
                 html += '<button type="button" class="btn-icon sitessaver-gdrive-dl-btn" data-id="' + f.id + '" title="Download"><i class="ri-download-cloud-2-line"></i></button>';
                 html += '<button type="button" class="btn-icon danger sitessaver-gdrive-delete-btn" data-id="' + f.id + '" title="Delete from Drive"><i class="ri-delete-bin-line"></i></button>';
                 html += '</div></td>';
@@ -430,6 +431,33 @@
             alert(res.message || 'Downloaded!');
             location.reload();
         }, function (err) {
+            alert(err.message || SS.strings.error);
+            $btn.prop('disabled', false);
+        });
+    });
+
+    $(document).on('click', '.sitessaver-gdrive-restore-btn', function () {
+        var $btn = $(this);
+        var id   = $btn.data('id');
+        var name = $btn.data('name') || 'this backup';
+
+        if (!confirm('Restore ' + name + ' from Google Drive? Your current site will be overwritten.')) return;
+
+        $btn.prop('disabled', true);
+
+        // Show indeterminate progress — operation may take a while
+        // (download + extract + DB import + file restore).
+        var $progress = $('.sitessaver-progress').first();
+        $progress.show().find('.step-label').text('Restoring from Google Drive...');
+        $progress.find('.sitessaver-progress-fill').addClass('indeterminate');
+        $progress.find('.step-pct').text('');
+
+        ajax('sitessaver_gdrive_restore', { file_id: id }, function (res) {
+            $progress.hide().find('.sitessaver-progress-fill').removeClass('indeterminate');
+            alert(res.message || 'Restored!');
+            location.reload();
+        }, function (err) {
+            $progress.hide().find('.sitessaver-progress-fill').removeClass('indeterminate');
             alert(err.message || SS.strings.error);
             $btn.prop('disabled', false);
         });

@@ -351,20 +351,52 @@
 
 .sitessaver-progress-fill {
     height: 100%;
-    background: linear-gradient(90deg, var(--ss-primary), #4da3ff);
     width: 0%;
     transition: width 0.3s ease;
     border-radius: 5px;
+
+    /* Two stacked layers:
+       1. Zebra stripes (top) — diagonal translucent white, scrolls to show motion
+       2. Brand gradient (bottom) — solid colour base                          */
+    background-image:
+        linear-gradient(
+            45deg,
+            rgba(255, 255, 255, 0.18) 25%,
+            transparent 25%,
+            transparent 50%,
+            rgba(255, 255, 255, 0.18) 50%,
+            rgba(255, 255, 255, 0.18) 75%,
+            transparent 75%,
+            transparent
+        ),
+        linear-gradient(90deg, var(--ss-primary), #4da3ff);
+    background-size: 28px 28px, 100% 100%;
+    animation: ss-stripes 1s linear infinite;
+}
+
+@keyframes ss-stripes {
+    0%   { background-position: 0 0, 0 0; }
+    100% { background-position: 28px 0, 0 0; }
 }
 
 .sitessaver-progress-fill.indeterminate {
     width: 30% !important;
-    animation: ss-indeterminate 1.5s infinite linear;
+    animation:
+        ss-indeterminate 1.5s infinite linear,
+        ss-stripes 1s linear infinite;
 }
 
 @keyframes ss-indeterminate {
-    0% { transform: translateX(-100%); }
-    100% { transform: translateX(330%); }
+    0%   { margin-left: -30%; }
+    100% { margin-left: 100%; }
+}
+
+/* Respect user's reduced-motion preference. */
+@media (prefers-reduced-motion: reduce) {
+    .sitessaver-progress-fill,
+    .sitessaver-progress-fill.indeterminate {
+        animation: none;
+    }
 }
 
 .step-label { color: var(--ss-text-main); }

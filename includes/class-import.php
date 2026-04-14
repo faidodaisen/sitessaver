@@ -43,13 +43,72 @@ final class Import {
             return ['success' => false, 'message' => __('Only ZIP files are accepted.', 'sitessaver')];
         }
 
-        // Move uploaded file to storage.
-        $dest = SITESSAVER_STORAGE_DIR . '/' . sanitize_file_name($file['name']);
-        if (!move_uploaded_file($file['tmp_name'], $dest)) {
+        // Verify ZIP magic bytes before touching disk — blocks .zip-renamed
+        // executables / random binaries that passed the extension check.
+        if (!self::is_zip_file($file['tmp_name'])) {
+            return ['success' => false, 'message' => __('The uploaded file is not a valid ZIP archive.', 'sitessaver')];
+        }
+
+        // Stage into temp (NOT storage) so a failed import doesn't litter the
+        // backups directory or overwrite an existing backup of the same name.
+        if (!is_dir(SITESSAVER_TEMP_DIR)) {
+            wp_mkdir_p(SITESSAVER_TEMP_DIR);
+        }
+        $staged = SITESSAVER_TEMP_DIR . '/incoming-' . wp_generate_password(8, false, false) . '.zip';
+        if (!move_uploaded_file($file['tmp_name'], $staged)) {
             return ['success' => false, 'message' => __('Failed to save uploaded file.', 'sitessaver')];
         }
 
-        return self::run($dest);
+        try {
+            $result = self::run($staged);
+
+            // On success, archive a copy into storage with a unique filename
+            // so the imported backup shows up in the Backups list. Do this
+            // BEFORE cleanup so the staged file still exists.
+            if (!empty($result['success'])) {
+                $final_name = self::unique_backup_filename(sanitize_file_name($file['name']));
+                $final_path = SITESSAVER_STORAGE_DIR . '/' . $final_name;
+                @copy($staged, $final_path);
+            }
+        } finally {
+            if (file_exists($staged)) {
+                @unlink($staged);
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Return a storage-dir filename that doesn't clash with an existing backup.
+     */
+    private static function unique_backup_filename(string $filename): string {
+        if ($filename === '' || strtolower(pathinfo($filename, PATHINFO_EXTENSION)) !== 'zip') {
+            $filename = 'imported-' . wp_generate_password(6, false, false) . '.zip';
+        }
+
+        $dest = SITESSAVER_STORAGE_DIR . '/' . $filename;
+        if (!file_exists($dest)) {
+            return $filename;
+        }
+
+        $base = pathinfo($filename, PATHINFO_FILENAME);
+        return $base . '-' . wp_generate_password(4, false, false) . '.zip';
+    }
+
+    /**
+     * Check the first 4 bytes for the ZIP local-file-header (PK\x03\x04) or
+     * empty-archive (PK\x05\x06) magic.
+     */
+    private static function is_zip_file(string $path): bool {
+        $handle = @fopen($path, 'rb');
+        if ($handle === false) {
+            return false;
+        }
+        $header = fread($handle, 4);
+        fclose($handle);
+
+        return $header === "PK\x03\x04" || $header === "PK\x05\x06";
     }
 
     /**
@@ -72,6 +131,9 @@ final class Import {
             $manifest = self::read_manifest($temp_dir);
             if ($manifest === null) {
                 throw new \RuntimeException(__('Invalid backup: manifest.json not found.', 'sitessaver'));
+            }
+            if (!self::is_sitessaver_manifest($manifest)) {
+                throw new \RuntimeException(__('This ZIP is not a SitesSaver backup. Please upload a file created by the SitesSaver Export tool.', 'sitessaver'));
             }
 
             // 3. Restore database.
@@ -132,6 +194,16 @@ final class Import {
         $data = json_decode($contents, true);
 
         return is_array($data) ? $data : null;
+    }
+
+    /**
+     * Verify a decoded manifest was produced by SitesSaver Export.
+     * Guards against random ZIPs whose root happens to contain a manifest.json.
+     */
+    private static function is_sitessaver_manifest(array $manifest): bool {
+        return ($manifest['plugin'] ?? '') === 'SitesSaver'
+            && !empty($manifest['version'])
+            && !empty($manifest['site_url']);
     }
 
     /**
