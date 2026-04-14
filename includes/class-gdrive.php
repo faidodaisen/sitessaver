@@ -125,13 +125,17 @@ final class GDrive {
     /**
      * Upload a file to Google Drive (direct to Google API).
      */
-    public static function upload(string $file_path, string $filename): array {
+    public static function upload(string $file_path, string $filename, string $job_id = ''): array {
         @set_time_limit(0);
         wp_raise_memory_limit('admin');
 
         $token = self::get_token();
         if ($token === null) {
             return ['success' => false, 'message' => __('Google Drive not connected.', 'sitessaver')];
+        }
+
+        if (!empty($job_id)) {
+            set_transient('sitessaver_gdrive_job_' . $job_id, ['progress' => 0, 'status' => 'starting'], HOUR_IN_SECONDS);
         }
 
         $file_size = @filesize($file_path);
@@ -216,6 +220,7 @@ final class GDrive {
             // 200/201 is expected for the final chunk
             if ($up_status !== 308 && $up_status !== 200 && $up_status !== 201) {
                 fclose($handle);
+                if (!empty($job_id)) delete_transient('sitessaver_gdrive_job_' . $job_id);
                 $error_body = json_decode(wp_remote_retrieve_body($upload_response), true);
                 return [
                     'success' => false, 
@@ -224,10 +229,32 @@ final class GDrive {
             }
 
             $offset += $current_size;
+
+            if (!empty($job_id)) {
+                $pct = round(($offset / $file_size) * 100);
+                set_transient('sitessaver_gdrive_job_' . $job_id, ['progress' => $pct, 'status' => 'uploading'], HOUR_IN_SECONDS);
+            }
         }
 
         fclose($handle);
+        if (!empty($job_id)) {
+            set_transient('sitessaver_gdrive_job_' . $job_id, ['progress' => 100, 'status' => 'completed'], HOUR_IN_SECONDS);
+        }
         return ['success' => true, 'message' => __('Backup uploaded to Google Drive.', 'sitessaver')];
+    }
+
+    /**
+     * Get URL to the Google Drive folder.
+     */
+    public static function get_folder_url(): string {
+        $settings  = self::settings();
+        $folder_id = $settings['gdrive_folder_id'] ?? '';
+        
+        if (empty($folder_id)) {
+            return 'https://drive.google.com/drive/my-drive';
+        }
+        
+        return "https://drive.google.com/drive/folders/{$folder_id}";
     }
 
     /**

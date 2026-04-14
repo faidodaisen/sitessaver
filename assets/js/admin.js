@@ -326,15 +326,38 @@
     $(document).on('click', '.sitessaver-gdrive-upload-btn', function () {
         var file = $(this).data('file');
         var $btn = $(this);
-        $btn.prop('disabled', true).addClass('loading');
+        var jobId = generateUploadId();
+        var $wrap = $('#sitessaver-backups-page'); // Main container for progress UI
+        
+        if (!$wrap.length) $wrap = $('.sitessaver-wrap');
 
-        ajax('sitessaver_gdrive_upload', { file: file }, function (res) {
+        $btn.prop('disabled', true).addClass('loading');
+        
+        updateProgress($wrap, 0, 'Preparing upload...');
+
+        // Start the upload process (async on server)
+        ajax('sitessaver_gdrive_upload', { file: file, job_id: jobId }, function (res) {
+            // This will only return when the WHOLE upload is finished
+            hideProgress($wrap);
             alert(res.message || 'Uploaded!');
             $btn.prop('disabled', false).removeClass('loading');
         }, function (err) {
+            hideProgress($wrap);
             alert(err.message || SS.strings.error);
             $btn.prop('disabled', false).removeClass('loading');
         });
+
+        // Start polling for progress
+        var pollInterval = setInterval(function() {
+            ajax('sitessaver_get_gdrive_upload_status', { job_id: jobId }, function(res) {
+                if (res.progress !== undefined) {
+                    updateProgress($wrap, res.progress, 'Uploading to Drive: ' + res.progress + '%');
+                    if (res.status === 'completed' || res.status === 'failed') {
+                        clearInterval(pollInterval);
+                    }
+                }
+            });
+        }, 2000);
     });
 
     $(document).on('click', '#sitessaver-gdrive-refresh', function () {
