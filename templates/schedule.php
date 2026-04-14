@@ -1,4 +1,4 @@
-<?php defined('ABSPATH') || exit; 
+<?php defined('ABSPATH') || exit;
 $schedule = get_option('sitessaver_schedule', [
     'enabled'   => false,
     'frequency' => 'daily',
@@ -11,6 +11,27 @@ $schedule = get_option('sitessaver_schedule', [
     'storage_gdrive'  => false,
     'notify_email'    => get_option('admin_email'),
 ]);
+
+// WP-Cron health check.
+$next_run     = wp_next_scheduled('sitessaver_scheduled_backup');
+$log          = get_option('sitessaver_schedule_log', []);
+$last_log     = is_array($log) && !empty($log) ? end($log) : null;
+$disable_cron = defined('DISABLE_WP_CRON') && DISABLE_WP_CRON;
+
+$interval_secs = [
+    'hourly'     => HOUR_IN_SECONDS,
+    'twicedaily' => 12 * HOUR_IN_SECONDS,
+    'daily'      => DAY_IN_SECONDS,
+    'weekly'     => WEEK_IN_SECONDS,
+][$schedule['frequency']] ?? DAY_IN_SECONDS;
+
+$is_stale = false;
+if (!empty($schedule['enabled']) && $last_log) {
+    $last_ts = strtotime((string) ($last_log['time'] ?? ''));
+    if ($last_ts && (time() - $last_ts) > (2 * $interval_secs)) {
+        $is_stale = true;
+    }
+}
 ?>
 <div class="sitessaver-wrap">
     <header class="ss-header">
@@ -26,12 +47,34 @@ $schedule = get_option('sitessaver_schedule', [
         </div>
     </header>
 
+    <?php if ($is_stale) : ?>
+        <div style="margin: 20px 24px; padding: 12px 16px; border-radius: 6px; background: #fef7e0; color: #9a6400; border: 1px solid #fde293;">
+            <strong><?php esc_html_e('Scheduled backup missed.', 'sitessaver'); ?></strong>
+            <?php esc_html_e('The last run is older than two scheduled intervals. WP-Cron only fires when someone visits the site — if traffic is low, add a real server cron hitting wp-cron.php to keep the schedule reliable.', 'sitessaver'); ?>
+        </div>
+    <?php elseif (!empty($schedule['enabled']) && $disable_cron) : ?>
+        <div style="margin: 20px 24px; padding: 12px 16px; border-radius: 6px; background: #e8f0fe; color: #1967d2; border: 1px solid #c9d7ef;">
+            <?php esc_html_e('WP-Cron is disabled (DISABLE_WP_CRON). Make sure a real system cron is hitting wp-cron.php, otherwise scheduled backups will not run.', 'sitessaver'); ?>
+        </div>
+    <?php endif; ?>
+
     <div class="ss-section">
         <div class="ss-section-header">
             <h2 class="ss-section-title">
                 <i class="ri-time-line"></i>
                 <?php esc_html_e('Automatic Backups', 'sitessaver'); ?>
             </h2>
+            <?php if ($next_run && !empty($schedule['enabled'])) : ?>
+                <span class="badge badge-blue" style="font-weight: normal;">
+                    <?php
+                    printf(
+                        /* translators: %s: human-readable time until next scheduled run */
+                        esc_html__('Next run in %s', 'sitessaver'),
+                        esc_html(human_time_diff(time(), $next_run))
+                    );
+                    ?>
+                </span>
+            <?php endif; ?>
         </div>
         
         <div class="ss-section-content">

@@ -50,17 +50,32 @@ final class Export {
             'last_update' => time(),
         ];
 
-        update_option("sitessaver_export_{$uid}", $status);
-        update_option('sitessaver_active_export_id', $uid);
+        self::save_status($uid, $status);
+        set_transient('sitessaver_active_export_id', $uid, HOUR_IN_SECONDS);
 
         return $status;
+    }
+
+    /**
+     * Persist export status using transients (auto-expire, no option-table bloat).
+     */
+    private static function save_status(string $uid, array $status): void {
+        set_transient("sitessaver_export_{$uid}", $status, HOUR_IN_SECONDS);
+    }
+
+    /**
+     * Fetch export status from transient store.
+     */
+    public static function get_status(string $uid): array {
+        $status = get_transient("sitessaver_export_{$uid}");
+        return is_array($status) ? $status : [];
     }
 
     /**
      * Run a specific step of the export process.
      */
     public static function run_step(string $uid, int $index): array {
-        $status = get_option("sitessaver_export_{$uid}", []);
+        $status = self::get_status($uid);
         $steps  = self::get_steps();
 
         if (empty($status) || $status['status'] !== 'running') {
@@ -149,23 +164,23 @@ final class Export {
                     
                     $status['status'] = 'completed';
                     $status['result'] = $result;
-                    update_option("sitessaver_export_{$uid}", $status);
-                    delete_option('sitessaver_active_export_id');
-                    
+                    self::save_status($uid, $status);
+                    delete_transient('sitessaver_active_export_id');
+
                     return $result;
             }
 
             $status['step_index'] = $index + 1;
             $status['last_update'] = time();
-            update_option("sitessaver_export_{$uid}", $status);
+            self::save_status($uid, $status);
 
             return ['success' => true, 'step' => $step['id']];
 
         } catch (\Throwable $e) {
             $status['status']  = 'error';
             $status['message'] = $e->getMessage();
-            update_option("sitessaver_export_{$uid}", $status);
-            delete_option('sitessaver_active_export_id');
+            self::save_status($uid, $status);
+            delete_transient('sitessaver_active_export_id');
             self::remove_directory($temp_dir);
 
             return ['success' => false, 'message' => $e->getMessage()];
@@ -180,14 +195,14 @@ final class Export {
         $steps  = self::get_steps();
         $uid    = $status['uid'];
 
-        foreach ($steps as $i => $step) {
+        foreach (array_keys($steps) as $i) {
             $res = self::run_step($uid, $i);
             if (!$res['success']) {
                 return $res;
             }
         }
 
-        $status = get_option("sitessaver_export_{$uid}", []);
+        $status = self::get_status($uid);
         return $status['status'] === 'completed' ? $status['result'] : ['success' => false, 'message' => $status['message'] ?? 'Unknown error'];
     }
 
