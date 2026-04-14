@@ -1,7 +1,7 @@
-# Dev files & raw assets
+# Dev files & local overrides
 .raw/
-.claude/
-.gitnexus/
+.local-metadata/
+.idx/
 
 # OS files
 .DS_Store
