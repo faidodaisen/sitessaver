@@ -84,7 +84,65 @@ final class GDrive {
             return ['success' => false, 'message' => __('Failed to obtain access token.', 'sitessaver')];
         }
 
+        self::ensure_folder_exists($refreshed['access_token']);
+
         return ['success' => true, 'message' => __('Google Drive connected.', 'sitessaver')];
+    }
+
+    /**
+     * Ensure a SitesSaver folder exists in Google Drive.
+     * Auto-creates if missing.
+     */
+    public static function ensure_folder_exists(string $token = null): string {
+        $token = $token ?? self::get_token();
+        if (!$token) return '';
+
+        $settings = self::settings();
+        if (!empty($settings['gdrive_folder_id'])) {
+            return $settings['gdrive_folder_id'];
+        }
+
+        $folder_name = 'SitesSaver Backups (' . get_bloginfo('name') . ')';
+        
+        // Check if folder exists first.
+        $check = wp_remote_get(self::API_URL . '/files?' . http_build_query([
+            'q' => "name='{$folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false",
+            'fields' => 'files(id)',
+        ]), ['headers' => ['Authorization' => 'Bearer ' . $token]]);
+
+        if (!is_wp_error($check)) {
+            $body = json_decode(wp_remote_retrieve_body($check), true);
+            if (!empty($body['files'][0]['id'])) {
+                $folder_id = $body['files'][0]['id'];
+                $settings['gdrive_folder_id'] = $folder_id;
+                update_option('sitessaver_settings', $settings);
+                return $folder_id;
+            }
+        }
+
+        // Create it.
+        $create = wp_remote_post(self::API_URL . '/files', [
+            'headers' => [
+                'Authorization' => 'Bearer ' . $token,
+                'Content-Type'  => 'application/json',
+            ],
+            'body' => wp_json_encode([
+                'name'     => $folder_name,
+                'mimeType' => 'application/vnd.google-apps.folder',
+            ]),
+        ]);
+
+        if (!is_wp_error($create)) {
+            $body = json_decode(wp_remote_retrieve_body($create), true);
+            if (!empty($body['id'])) {
+                $folder_id = $body['id'];
+                $settings['gdrive_folder_id'] = $folder_id;
+                update_option('sitessaver_settings', $settings);
+                return $folder_id;
+            }
+        }
+
+        return '';
     }
 
     /**
@@ -143,10 +201,9 @@ final class GDrive {
             return ['success' => false, 'message' => __('Cannot determine file size.', 'sitessaver')];
         }
 
-        $settings  = self::settings();
-        $folder_id = $settings['gdrive_folder_id'] ?? '';
-
         $metadata = ['name' => $filename];
+        $folder_id = self::ensure_folder_exists($token);
+        
         if (!empty($folder_id)) {
             $metadata['parents'] = [$folder_id];
         }

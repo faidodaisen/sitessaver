@@ -45,7 +45,7 @@ final class Schedule {
             return;
         }
 
-        // Run export with saved settings.
+        // 1. Run Export.
         $result = Export::run([
             'include_db'      => $settings['include_db'] ?? true,
             'include_media'   => $settings['include_media'] ?? true,
@@ -53,21 +53,43 @@ final class Schedule {
             'include_themes'  => $settings['include_themes'] ?? true,
         ]);
 
-        // Apply retention policy — delete old backups.
-        $retention = (int) ($settings['retention'] ?? 5);
-        if ($retention > 0) {
-            self::apply_retention($retention);
+        if (!$result['success']) {
+            $this->finalize_backup($result, $settings);
+            return;
         }
 
-        // Auto-upload to Google Drive if connected.
-        if ($result['success'] && !empty($result['file'])) {
-            $token_data = get_option('sitessaver_gdrive_token', []);
+        $file_uploaded = false;
 
-            if (!empty($token_data['refresh_token'])) {
-                GDrive::upload($result['path'], $result['file']);
+        // 2. Handle Google Drive Storage.
+        if (!empty($settings['storage_gdrive'])) {
+            $up_res = GDrive::upload($result['path'], $result['file']);
+            if ($up_res['success']) {
+                $file_uploaded = true;
+            } else {
+                $result['message'] .= ' (GDrive Upload Failed: ' . $up_res['message'] . ')';
             }
         }
 
+        // 3. Handle Local Storage.
+        if (empty($settings['storage_local']) && $file_uploaded) {
+            // User only wants GDrive and it succeeded — delete local file.
+            @unlink($result['path']);
+            $result['message'] .= ' ' . __('(Local copy removed as per settings)', 'sitessaver');
+        } else {
+            // Apply retention policy for local backups.
+            $retention = (int) ($settings['retention'] ?? 5);
+            if ($retention > 0) {
+                self::apply_retention($retention);
+            }
+        }
+
+        $this->finalize_backup($result, $settings);
+    }
+
+    /**
+     * Finalize backup: notify and log.
+     */
+    private function finalize_backup(array $result, array $settings): void {
         // Send notification email.
         $email = $settings['notify_email'] ?? '';
         if (!empty($email) && is_email($email)) {

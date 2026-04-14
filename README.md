@@ -47,7 +47,8 @@ To enable automatic cloud backups:
 1. Go to **SitesSaver > Settings**
 2. Click **Connect Google Drive**
 3. Authorize with your Google account
-4. Scheduled backups will now upload to Drive automatically
+4. SitesSaver will automatically create its own backup folder in your Drive.
+5. In **SitesSaver > Schedule**, you can choose to store backups locally, on Google Drive, or both.
 
 ## FAQ
 

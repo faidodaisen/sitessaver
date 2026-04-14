@@ -7,6 +7,8 @@ $schedule = get_option('sitessaver_schedule', [
     'include_media'   => true,
     'include_plugins' => true,
     'include_themes'  => true,
+    'storage_local'   => true,
+    'storage_gdrive'  => false,
     'notify_email'    => get_option('admin_email'),
 ]);
 ?>
@@ -65,6 +67,21 @@ $schedule = get_option('sitessaver_schedule', [
                                 <label><input type="checkbox" name="include_media" value="1" <?php checked($schedule['include_media']); ?> /> <?php esc_html_e('Media Uploads', 'sitessaver'); ?></label>
                                 <label><input type="checkbox" name="include_plugins" value="1" <?php checked($schedule['include_plugins']); ?> /> <?php esc_html_e('Plugins', 'sitessaver'); ?></label>
                                 <label><input type="checkbox" name="include_themes" value="1" <?php checked($schedule['include_themes']); ?> /> <?php esc_html_e('Themes', 'sitessaver'); ?></label>
+                            </div>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><?php esc_html_e('Storage Destination', 'sitessaver'); ?></th>
+                        <td>
+                            <div class="ss-checkbox-group">
+                                <label><input type="checkbox" name="storage_local" value="1" <?php checked($schedule['storage_local'] ?? true); ?> /> <?php esc_html_e('Local Server', 'sitessaver'); ?></label>
+                                <label>
+                                    <input type="checkbox" name="storage_gdrive" value="1" <?php checked($schedule['storage_gdrive'] ?? false); ?> <?php disabled(!\SitesSaver\GDrive::is_connected()); ?> /> 
+                                    <?php esc_html_e('Google Drive', 'sitessaver'); ?>
+                                    <?php if (!\SitesSaver\GDrive::is_connected()) : ?>
+                                        <span class="description" style="color: var(--ss-danger); font-size: 11px;">(<?php esc_html_e('Connect in Settings first', 'sitessaver'); ?>)</span>
+                                    <?php endif; ?>
+                                </label>
                             </div>
                         </td>
                     </tr>
