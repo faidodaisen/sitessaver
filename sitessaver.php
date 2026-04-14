@@ -3,7 +3,7 @@
  * Plugin Name: SitesSaver
  * Plugin URI:  https://github.com/sitessaver
  * Description: Full site backup & migration — export, import, schedule, Google Drive. No restrictions.
- * Version:     1.0.7
+ * Version:     1.0.8
  * Author:      SitesSaver
  * Author URI:  https://github.com/sitessaver
  * License:     GPL-2.0-or-later
@@ -17,7 +17,7 @@ declare(strict_types=1);
 defined('ABSPATH') || exit;
 
 // Plugin constants.
-define('SITESSAVER_VERSION', '1.0.7');
+define('SITESSAVER_VERSION', '1.0.8');
 define('SITESSAVER_FILE', __FILE__);
 define('SITESSAVER_PATH', plugin_dir_path(__FILE__));
 define('SITESSAVER_URL', plugin_dir_url(__FILE__));

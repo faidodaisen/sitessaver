@@ -206,6 +206,22 @@ final class GDrive {
         
         if (!empty($folder_id)) {
             $metadata['parents'] = [$folder_id];
+            
+            // Delete existing file with the same name in this folder to avoid duplicates.
+            $existing = wp_remote_get(self::API_URL . '/files?' . http_build_query([
+                'q' => "name='{$filename}' and '{$folder_id}' in parents and trashed=false",
+                'fields' => 'files(id)',
+            ]), ['headers' => ['Authorization' => 'Bearer ' . $token]]);
+
+            if (!is_wp_error($existing)) {
+                $body = json_decode(wp_remote_retrieve_body($existing), true);
+                foreach ($body['files'] ?? [] as $old_file) {
+                    wp_remote_request(self::API_URL . "/files/{$old_file['id']}", [
+                        'method'  => 'DELETE',
+                        'headers' => ['Authorization' => 'Bearer ' . $token],
+                    ]);
+                }
+            }
         }
 
         // 1. Initiate Resumable Upload Session
