@@ -107,7 +107,7 @@ final class Schedule {
 
         // Keep last 50 log entries.
         $log = array_slice($log, -50);
-        update_option('sitessaver_schedule_log', $log);
+        update_option('sitessaver_schedule_log', $log, false);
     }
 
     /**
@@ -122,15 +122,23 @@ final class Schedule {
 
         $to_delete = array_slice($backups, $keep);
 
+        // Hoist label option outside loop; single read, single write.
+        $labels          = get_option('sitessaver_backup_labels', []);
+        $labels_changed  = false;
+
         foreach ($to_delete as $backup) {
             if (file_exists($backup['path'])) {
                 @unlink($backup['path']);
             }
 
-            // Remove label.
-            $labels = get_option('sitessaver_backup_labels', []);
-            unset($labels[$backup['file']]);
-            update_option('sitessaver_backup_labels', $labels);
+            if (isset($labels[$backup['file']])) {
+                unset($labels[$backup['file']]);
+                $labels_changed = true;
+            }
+        }
+
+        if ($labels_changed) {
+            update_option('sitessaver_backup_labels', $labels, false);
         }
     }
 

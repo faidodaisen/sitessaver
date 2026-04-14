@@ -59,6 +59,7 @@ final class Import {
         $temp_dir = SITESSAVER_TEMP_DIR . '/import-' . wp_generate_password(8, false);
 
         try {
+            // Opportunistic stale-only sweep (won't touch active export temps).
             sitessaver_cleanup_temp();
             wp_mkdir_p($temp_dir);
 
@@ -93,8 +94,8 @@ final class Import {
             // 5. Post-import tasks.
             self::post_import($manifest);
 
-            // 6. Cleanup.
-            sitessaver_cleanup_temp();
+            // 6. Cleanup — scoped to THIS import only.
+            sitessaver_cleanup_temp($temp_dir);
 
             do_action('sitessaver_import_complete', basename($zip_path));
 
@@ -104,7 +105,7 @@ final class Import {
             ];
 
         } catch (\Throwable $e) {
-            sitessaver_cleanup_temp();
+            sitessaver_cleanup_temp($temp_dir);
 
             return [
                 'success' => false,
@@ -208,9 +209,14 @@ final class Import {
             update_option('active_plugins', $manifest['active_plugins']);
         }
 
-        // Re-activate current theme.
+        // Re-activate the theme if it is present on the target install.
+        // Switching to a missing slug corrupts `stylesheet`/`template` options
+        // and leaves the site unbootable — validate before switching.
         if (!empty($manifest['active_theme'])) {
-            switch_theme($manifest['active_theme']);
+            $theme = wp_get_theme($manifest['active_theme']);
+            if ($theme->exists()) {
+                switch_theme($manifest['active_theme']);
+            }
         }
 
         // Clear any transients.

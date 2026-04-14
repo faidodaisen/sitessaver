@@ -97,8 +97,8 @@ final class Ajax {
     public function handle_get_export_status(): void {
         sitessaver_verify_ajax();
 
-        $uid    = sanitize_text_field($_POST['uid'] ?? get_option('sitessaver_active_export_id'));
-        $status = get_option("sitessaver_export_{$uid}", []);
+        $uid    = sanitize_text_field((string) ($_POST['uid'] ?? get_transient('sitessaver_active_export_id') ?? ''));
+        $status = $uid !== '' ? Export::get_status($uid) : [];
         $steps  = Export::get_steps();
 
         if (empty($status)) {
@@ -164,9 +164,9 @@ final class Ajax {
         sitessaver_verify_ajax();
 
         $file = sanitize_file_name(wp_unslash($_POST['file'] ?? ''));
-        $path = SITESSAVER_STORAGE_DIR . '/' . $file;
+        $path = sitessaver_resolve_backup_path($file);
 
-        if (empty($file) || !file_exists($path)) {
+        if ($path === null) {
             wp_send_json_error(['message' => __('Backup not found.', 'sitessaver')]);
         }
 
@@ -175,7 +175,7 @@ final class Ajax {
         // Remove label if exists.
         $labels = get_option('sitessaver_backup_labels', []);
         unset($labels[$file]);
-        update_option('sitessaver_backup_labels', $labels);
+        update_option('sitessaver_backup_labels', $labels, false);
 
         wp_send_json_success(['message' => __('Backup deleted.', 'sitessaver')]);
     }
@@ -194,19 +194,11 @@ final class Ajax {
 
         check_admin_referer('sitessaver_download', 'nonce');
 
-        $file = sanitize_file_name(wp_unslash($_GET['file'] ?? ''));
-        $path = SITESSAVER_STORAGE_DIR . '/' . $file;
+        $file      = sanitize_file_name(wp_unslash($_GET['file'] ?? ''));
+        $real_path = sitessaver_resolve_backup_path($file);
 
-        if (empty($file) || !file_exists($path)) {
-            wp_die(__('Backup not found.', 'sitessaver'));
-        }
-
-        // Validate the resolved path stays inside the storage directory.
-        $real_path = realpath($path);
-        $real_dir  = realpath(SITESSAVER_STORAGE_DIR);
-
-        if ($real_path === false || $real_dir === false || strpos($real_path, $real_dir) !== 0) {
-            wp_die(__('Invalid file path.', 'sitessaver'));
+        if ($real_path === null) {
+            wp_die(esc_html__('Backup not found.', 'sitessaver'));
         }
 
         $file_size = filesize($real_path);
@@ -311,7 +303,7 @@ final class Ajax {
 
         $labels = get_option('sitessaver_backup_labels', []);
         $labels[$file] = $label;
-        update_option('sitessaver_backup_labels', $labels);
+        update_option('sitessaver_backup_labels', $labels, false);
 
         wp_send_json_success(['message' => __('Label saved.', 'sitessaver')]);
     }
@@ -335,7 +327,7 @@ final class Ajax {
             'notify_email'    => sanitize_email(wp_unslash($_POST['notify_email'] ?? '')),
         ];
 
-        update_option('sitessaver_schedule', $schedule);
+        update_option('sitessaver_schedule', $schedule, false);
 
         // Update WP Cron.
         wp_clear_scheduled_hook('sitessaver_scheduled_backup');
@@ -359,7 +351,7 @@ final class Ajax {
         $settings = get_option('sitessaver_settings', []);
         $settings['gdrive_folder_id'] = sanitize_text_field(wp_unslash($_POST['gdrive_folder_id'] ?? ''));
 
-        update_option('sitessaver_settings', $settings);
+        update_option('sitessaver_settings', $settings, false);
 
         wp_send_json_success(['message' => __('Settings saved.', 'sitessaver')]);
     }
@@ -385,9 +377,9 @@ final class Ajax {
 
         $job_id = sanitize_text_field(wp_unslash($_POST['job_id'] ?? ''));
         $file   = sanitize_file_name(wp_unslash($_POST['file'] ?? ''));
-        $path   = SITESSAVER_STORAGE_DIR . '/' . $file;
+        $path   = sitessaver_resolve_backup_path($file);
 
-        if (empty($file) || !file_exists($path)) {
+        if ($path === null) {
             wp_send_json_error(['message' => __('Backup not found.', 'sitessaver')]);
         }
 
@@ -559,6 +551,7 @@ final class Ajax {
 
         $out = fopen($dest, 'wb');
         if (!$out) {
+            $this->remove_chunk_dir($chunk_dir);
             return null;
         }
 
@@ -568,6 +561,7 @@ final class Ajax {
             if (!file_exists($chunk_path)) {
                 fclose($out);
                 @unlink($dest);
+                $this->remove_chunk_dir($chunk_dir);
                 return null;
             }
 
@@ -575,6 +569,7 @@ final class Ajax {
             if (!$in) {
                 fclose($out);
                 @unlink($dest);
+                $this->remove_chunk_dir($chunk_dir);
                 return null;
             }
 

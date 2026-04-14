@@ -20,13 +20,31 @@ final class Plugin {
     private function __construct() {}
 
     public function init(): void {
-        // Admin pages & assets.
-        Admin::instance()->init();
+        // Load translations on init (before any __() call resolves).
+        add_action('init', [$this, 'load_textdomain']);
 
-        // AJAX handlers.
+        // Admin pages & assets — only needed in admin requests.
+        if (is_admin()) {
+            Admin::instance()->init();
+        }
+
+        // AJAX handlers — admin-ajax.php runs under is_admin() so safe to wire
+        // alongside the admin boot, but keeping it unconditional guards against
+        // REST/CLI contexts that may reuse the ajax endpoints.
         Ajax::instance()->init();
 
-        // Scheduled backups.
+        // Scheduled backups (cron may fire outside admin).
         Schedule::instance()->init();
+    }
+
+    /**
+     * Load plugin translations from /languages/ (e.g. sitessaver-ms_MY.mo).
+     */
+    public function load_textdomain(): void {
+        load_plugin_textdomain(
+            'sitessaver',
+            false,
+            dirname(plugin_basename(SITESSAVER_FILE)) . '/languages'
+        );
     }
 }
