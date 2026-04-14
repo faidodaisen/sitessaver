@@ -1,19 +1,18 @@
-# Dev files & local overrides
-.raw/
-.local-metadata/
-.idx/
 
+# Dev files & local overrides
+# IDE
+# Node
 # OS files
+*.swo
+*.swp
+*.zip
 .DS_Store
+.gitnexus
+.idea/
+.idx/
+.local-metadata/
+.raw/
+.vscode/
 Thumbs.db
 desktop.ini
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# Node
 node_modules/
-.gitnexus

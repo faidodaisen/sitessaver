@@ -476,55 +476,100 @@
 
 
 
-    // ---------- AUTO RESUME ----------
+    // ---------- ACTIVE-EXPORT DETECTION (opt-in resume, never auto-run) ----------
+
+    function runExportLoop($form, uid, steps, startStep) {
+        var currentStep = startStep;
+        var $btn = $('#sitessaver-export-btn');
+        $btn.prop('disabled', true);
+
+        function runNextStep() {
+            if (currentStep >= steps.length) {
+                ajax('sitessaver_get_export_status', { uid: uid }, function (finalRes) {
+                    hideProgress($form);
+                    var result = (finalRes.status && finalRes.status.result) || {};
+                    if (result.file) {
+                        var dlUrl = SS.ajaxUrl + '?action=sitessaver_download_backup&file=' + encodeURIComponent(result.file) + '&nonce=' + SS.downloadNonce;
+                        var msg = SS.strings.done + ' — ' + result.file + ' (' + result.size + ') <br><br>';
+                        msg += '<a href="' + dlUrl + '" class="ss-download-link" target="_blank"><i class="ri-download-2-line"></i> Click here to download your backup</a>';
+                        showResult($form, msg, false);
+                    } else {
+                        showResult($form, SS.strings.done, false);
+                    }
+                    $('.ss-resume-banner').remove();
+                    $btn.prop('disabled', false);
+                });
+                return;
+            }
+
+            var step = steps[currentStep];
+            updateProgress($form, step.pct, step.label);
+
+            ajax('sitessaver_export_step', { uid: uid, step_index: currentStep }, function (stepRes) {
+                if (stepRes.success) {
+                    currentStep++;
+                    runNextStep();
+                } else {
+                    hideProgress($form);
+                    showResult($form, stepRes.message || SS.strings.error, true);
+                    $btn.prop('disabled', false);
+                }
+            }, function (err) {
+                hideProgress($form);
+                showResult($form, err.message || SS.strings.error, true);
+                $btn.prop('disabled', false);
+            });
+        }
+
+        runNextStep();
+    }
 
     function checkActiveExport() {
         var $form = $('#sitessaver-export-form');
         if (!$form.length) return;
 
         ajax('sitessaver_get_export_status', {}, function (res) {
-            if (res.status && res.status.status === 'running') {
-                var steps = res.steps;
-                var uid = res.status.uid;
-                var currentStep = res.status.step_index;
-                var $btn = $('#sitessaver-export-btn');
+            if (!res || !res.status || res.status.status !== 'running') return;
 
-                $btn.prop('disabled', true);
-                
-                function runNextStep() {
-                    if (currentStep >= steps.length) {
-                        ajax('sitessaver_get_export_status', { uid: uid }, function(finalRes) {
-                            hideProgress($form);
-                            var result = finalRes.status.result;
-                            var dlUrl = SS.ajaxUrl + '?action=sitessaver_download_backup&file=' + encodeURIComponent(result.file) + '&nonce=' + SS.downloadNonce;
-                            var msg = SS.strings.done + ' — ' + result.file + ' (' + result.size + ') <br><br>';
-                            msg += '<a href="' + dlUrl + '" class="ss-download-link" target="_blank"><i class="ri-download-2-line"></i> Click here to download your backup</a>';
-                            showResult($form, msg, false);
-                            $btn.prop('disabled', false);
-                        });
-                        return;
-                    }
+            var steps       = res.steps;
+            var uid         = res.status.uid;
+            var currentStep = res.status.step_index;
+            var stepLabel   = (steps[currentStep] && steps[currentStep].label) || 'in progress';
+            var pct         = (steps[currentStep] && steps[currentStep].pct) || 0;
 
-                    var step = steps[currentStep];
-                    updateProgress($form, step.pct, step.label);
+            // Show a banner above the form. User picks Resume or Discard —
+            // we never auto-run the export. Previously an orphaned scheduled
+            // export would silently resume on page load.
+            var banner =
+                '<div class="ss-resume-banner ss-result-card" style="background:#fef7e0;border:1px solid #fde293;color:#9a6400;align-items:flex-start;">' +
+                    '<i class="ri-time-line" style="font-size:24px;"></i>' +
+                    '<div style="flex:1;">' +
+                        '<strong style="display:block;margin-bottom:4px;">An export is already in progress</strong>' +
+                        '<span>Step: ' + stepLabel + ' (' + pct + '%). Resume or discard it before starting a new export.</span>' +
+                        '<div style="margin-top:12px;display:flex;gap:8px;">' +
+                            '<button type="button" class="btn btn-primary ss-resume-btn">Resume</button>' +
+                            '<button type="button" class="btn btn-outline ss-discard-btn" style="color:var(--ss-danger);border-color:var(--ss-danger);">Discard</button>' +
+                        '</div>' +
+                    '</div>' +
+                '</div>';
 
-                    ajax('sitessaver_export_step', { uid: uid, step_index: currentStep }, function (stepRes) {
-                        if (stepRes.success) {
-                            currentStep++;
-                            runNextStep();
-                        } else {
-                            hideProgress($form);
-                            showResult($form, stepRes.message || SS.strings.error, true);
-                            $btn.prop('disabled', false);
-                        }
-                    }, function (err) {
-                        hideProgress($form);
-                        showResult($form, err.message || SS.strings.error, true);
-                        $btn.prop('disabled', false);
-                    });
-                }
-                runNextStep();
-            }
+            $form.prepend(banner);
+            $('#sitessaver-export-btn').prop('disabled', true);
+
+            $form.on('click', '.ss-resume-btn', function () {
+                $('.ss-resume-banner').remove();
+                runExportLoop($form, uid, steps, currentStep);
+            });
+
+            $form.on('click', '.ss-discard-btn', function () {
+                if (!confirm('Discard this export? The partial backup will be deleted.')) return;
+                ajax('sitessaver_cancel_export', { uid: uid }, function () {
+                    $('.ss-resume-banner').remove();
+                    $('#sitessaver-export-btn').prop('disabled', false);
+                }, function (err) {
+                    alert(err.message || SS.strings.error);
+                });
+            });
         });
     }
 

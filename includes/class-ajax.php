@@ -22,6 +22,7 @@ final class Ajax {
             'sitessaver_export'         => 'handle_export',
             'sitessaver_export_step'    => 'handle_export_step',
             'sitessaver_get_export_status' => 'handle_get_export_status',
+            'sitessaver_cancel_export'     => 'handle_cancel_export',
             'sitessaver_import'         => 'handle_import',
             'sitessaver_import_upload'  => 'handle_import_upload',
             'sitessaver_delete_backup'  => 'handle_delete',
@@ -110,6 +111,32 @@ final class Ajax {
             'status' => $status,
             'steps'  => $steps,
         ]);
+    }
+
+    /**
+     * Cancel a running export — clears the transient state and removes the
+     * temp working directory. Used when the browser picks up an orphaned
+     * export on page load and the user chooses "Discard" instead of resuming.
+     */
+    public function handle_cancel_export(): void {
+        sitessaver_verify_ajax();
+
+        $uid = sanitize_text_field(wp_unslash($_POST['uid'] ?? ''));
+        if ($uid === '') {
+            $uid = (string) (get_transient('sitessaver_active_export_id') ?: '');
+        }
+
+        if ($uid !== '') {
+            $status = Export::get_status($uid);
+            if (!empty($status['temp_dir'])) {
+                sitessaver_cleanup_temp($status['temp_dir']);
+            }
+            delete_transient("sitessaver_export_{$uid}");
+        }
+
+        delete_transient('sitessaver_active_export_id');
+
+        wp_send_json_success(['message' => __('Export cancelled.', 'sitessaver')]);
     }
 
     /**
@@ -337,7 +364,17 @@ final class Ajax {
             $valid = ['hourly', 'twicedaily', 'daily', 'weekly'];
             $freq  = in_array($schedule['frequency'], $valid, true) ? $schedule['frequency'] : 'daily';
 
-            wp_schedule_event(time(), $freq, 'sitessaver_scheduled_backup');
+            // Delay the first run by one full interval so saving the schedule
+            // does NOT immediately trigger a backup on the next page view.
+            $intervals = [
+                'hourly'     => HOUR_IN_SECONDS,
+                'twicedaily' => 12 * HOUR_IN_SECONDS,
+                'daily'      => DAY_IN_SECONDS,
+                'weekly'     => WEEK_IN_SECONDS,
+            ];
+            $first_run = time() + ($intervals[$freq] ?? DAY_IN_SECONDS);
+
+            wp_schedule_event($first_run, $freq, 'sitessaver_scheduled_backup');
         }
 
         wp_send_json_success(['message' => __('Schedule saved.', 'sitessaver')]);
