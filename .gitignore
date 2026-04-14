@@ -1,0 +1,18 @@
+# Dev files & raw assets
+.raw/
+.claude/
+.gitnexus/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Node
+node_modules/
