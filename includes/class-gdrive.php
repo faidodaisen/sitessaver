@@ -23,6 +23,15 @@ final class GDrive {
     private const UPLOAD_URL = 'https://www.googleapis.com/upload/drive/v3';
 
     /**
+     * Escape a value for use inside a Google Drive v3 query `q=` parameter.
+     * Per the spec: backslashes first, then single quotes. Prevents q-injection
+     * via attacker-controlled folder IDs or filenames (CWE-74).
+     */
+    private static function drive_escape(string $value): string {
+        return str_replace(['\\', "'"], ['\\\\', "\\'"], $value);
+    }
+
+    /**
      * Get settings.
      */
     private static function settings(): array {
@@ -53,16 +62,39 @@ final class GDrive {
         return $refreshed['access_token'];
     }
 
+    /** Transient key storing the pending OAuth state token. */
+    private const STATE_TRANSIENT = 'sitessaver_gdrive_oauth_state';
+
+    /** OAuth state token lifetime (seconds). */
+    private const STATE_TTL = 600; // 10 minutes.
+
     /**
      * Get the OAuth authorization URL (points to proxy).
      * Proxy handles Google OAuth and redirects back with refresh_token.
+     *
+     * Generates a single-use `state` token bound to the current user and stored
+     * in a short-lived transient, forwarded to the proxy. The proxy must echo
+     * it back on the callback so we can verify the round-trip came from our
+     * own authorization request (CSRF protection, CWE-352).
      */
     public static function get_auth_url(): string {
         $callback_url = admin_url('admin.php?page=sitessaver-settings');
 
+        $state = wp_generate_password(32, false, false);
+        set_transient(self::state_key(), $state, self::STATE_TTL);
+
         return self::PROXY_URL . '/v1/gdrive/authorize?' . http_build_query([
             'callback_url' => $callback_url,
+            'state'        => $state,
         ]);
+    }
+
+    /**
+     * Per-user transient key. Scoping to user id prevents a second admin's
+     * pending connect from being hijacked by the first.
+     */
+    private static function state_key(): string {
+        return self::STATE_TRANSIENT . '_' . get_current_user_id();
     }
 
     /**
@@ -72,9 +104,19 @@ final class GDrive {
     public static function handle_callback(): array {
         $refresh_token = sanitize_text_field(wp_unslash($_GET['sitessaver_gdrive_token'] ?? ''));
         $status        = sanitize_text_field(wp_unslash($_GET['sitessaver_gdrive_status'] ?? ''));
+        $received_state = sanitize_text_field(wp_unslash($_GET['state'] ?? ''));
 
         if ($refresh_token === '' || $status !== 'connected') {
             return ['success' => false, 'message' => __('Google Drive connection failed.', 'sitessaver')];
+        }
+
+        // CSRF guard: verify the state token returned by the proxy matches the
+        // single-use value we issued on get_auth_url().
+        $expected_state = get_transient(self::state_key());
+        delete_transient(self::state_key()); // single-use.
+
+        if ($expected_state === false || $received_state === '' || !hash_equals((string) $expected_state, $received_state)) {
+            return ['success' => false, 'message' => __('Google Drive connection rejected: invalid or expired security token. Please try connecting again.', 'sitessaver')];
         }
 
         // Get initial access token via proxy.
@@ -102,11 +144,12 @@ final class GDrive {
             return $settings['gdrive_folder_id'];
         }
 
-        $folder_name = 'SitesSaver Backups (' . get_bloginfo('name') . ')';
-        
+        $folder_name  = 'SitesSaver Backups (' . get_bloginfo('name') . ')';
+        $folder_name_q = self::drive_escape($folder_name);
+
         // Check if folder exists first.
         $check = wp_remote_get(self::API_URL . '/files?' . http_build_query([
-            'q' => "name='{$folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false",
+            'q' => "name='{$folder_name_q}' and mimeType='application/vnd.google-apps.folder' and trashed=false",
             'fields' => 'files(id)',
         ]), ['headers' => ['Authorization' => 'Bearer ' . $token]]);
 
@@ -115,7 +158,7 @@ final class GDrive {
             if (!empty($body['files'][0]['id'])) {
                 $folder_id = $body['files'][0]['id'];
                 $settings['gdrive_folder_id'] = $folder_id;
-                update_option('sitessaver_settings', $settings);
+                update_option('sitessaver_settings', $settings, false);
                 return $folder_id;
             }
         }
@@ -137,7 +180,7 @@ final class GDrive {
             if (!empty($body['id'])) {
                 $folder_id = $body['id'];
                 $settings['gdrive_folder_id'] = $folder_id;
-                update_option('sitessaver_settings', $settings);
+                update_option('sitessaver_settings', $settings, false);
                 return $folder_id;
             }
         }
@@ -172,7 +215,7 @@ final class GDrive {
                 'access_token'  => $body['access_token'],
                 'expires_at'    => time() + (int) ($body['expires_in'] ?? 3600) - 60, // 60s safety margin
             ];
-            update_option('sitessaver_gdrive_token', $token_data);
+            update_option('sitessaver_gdrive_token', $token_data, false);
 
             return $token_data;
         }
@@ -208,8 +251,10 @@ final class GDrive {
             $metadata['parents'] = [$folder_id];
             
             // Delete existing file with the same name in this folder to avoid duplicates.
+            $filename_q  = self::drive_escape($filename);
+            $folder_id_q = self::drive_escape($folder_id);
             $existing = wp_remote_get(self::API_URL . '/files?' . http_build_query([
-                'q' => "name='{$filename}' and '{$folder_id}' in parents and trashed=false",
+                'q' => "name='{$filename_q}' and '{$folder_id_q}' in parents and trashed=false",
                 'fields' => 'files(id)',
             ]), ['headers' => ['Authorization' => 'Bearer ' . $token]]);
 
@@ -250,70 +295,255 @@ final class GDrive {
             return ['success' => false, 'message' => __('No upload session URL received.', 'sitessaver')];
         }
 
-        // 2. Upload in Chunks
+        // 2. Upload in chunks with per-chunk retry + session resume.
         $handle = fopen($file_path, 'rb');
         if (!$handle) {
             return ['success' => false, 'message' => __('Cannot open backup file for reading.', 'sitessaver')];
         }
 
-        $chunk_size = 5 * 1024 * 1024; // 5 MB (must be multiple of 256 KB)
-        $offset = 0;
+        $chunk_size = 5 * 1024 * 1024; // 5 MB (must be a multiple of 256 KB per spec).
+        $offset     = 0;
+        $completed  = false;
 
-        while (!feof($handle)) {
-            $data = fread($handle, $chunk_size);
-            if ($data === false) {
-                fclose($handle);
-                return ['success' => false, 'message' => __('Error reading backup file.', 'sitessaver')];
+        try {
+            while ($offset < $file_size) {
+                if (fseek($handle, $offset) !== 0) {
+                    return ['success' => false, 'message' => __('Error seeking backup file.', 'sitessaver')];
+                }
+
+                $data = fread($handle, $chunk_size);
+                if ($data === false) {
+                    return ['success' => false, 'message' => __('Error reading backup file.', 'sitessaver')];
+                }
+
+                $current_size = strlen($data);
+                if ($current_size === 0) {
+                    break;
+                }
+
+                $range_start = $offset;
+                $range_end   = $offset + $current_size - 1;
+
+                $result = self::put_chunk_with_retry($session_url, $data, $range_start, $range_end, $file_size);
+
+                if ($result['status'] === 'complete') {
+                    $offset    = $file_size;
+                    $completed = true;
+                    break;
+                }
+
+                if ($result['status'] === 'incomplete') {
+                    // 308 — per spec, Google may have committed fewer bytes than we
+                    // sent (rare, but the Range header is authoritative). Advance to
+                    // whatever Google confirmed.
+                    $offset = $result['next_offset'] > $offset
+                        ? $result['next_offset']
+                        : $offset + $current_size;
+
+                    if (!empty($job_id)) {
+                        $pct = (int) round(($offset / $file_size) * 100);
+                        set_transient(
+                            'sitessaver_gdrive_job_' . $job_id,
+                            ['progress' => $pct, 'status' => 'uploading'],
+                            HOUR_IN_SECONDS
+                        );
+                    }
+                    continue;
+                }
+
+                // status === 'failed'
+                return ['success' => false, 'message' => $result['message']];
             }
 
-            $current_size = strlen($data);
-            if ($current_size === 0) break;
+            if (!$completed && $offset < $file_size) {
+                return ['success' => false, 'message' => __('Upload ended before all bytes were sent.', 'sitessaver')];
+            }
 
-            $range_start = $offset;
-            $range_end = $offset + $current_size - 1;
-            
-            $upload_response = wp_remote_request($session_url, [
+            if (!empty($job_id)) {
+                set_transient(
+                    'sitessaver_gdrive_job_' . $job_id,
+                    ['progress' => 100, 'status' => 'completed'],
+                    HOUR_IN_SECONDS
+                );
+            }
+
+            return ['success' => true, 'message' => __('Backup uploaded to Google Drive.', 'sitessaver')];
+
+        } finally {
+            fclose($handle);
+            if (!empty($job_id) && !$completed && $offset < $file_size) {
+                delete_transient('sitessaver_gdrive_job_' . $job_id);
+            }
+        }
+    }
+
+    /**
+     * PUT a single chunk with exponential-backoff retry on transient failures.
+     * On failure, queries the resumable session for the last confirmed byte so
+     * the caller can resume from the right offset instead of restarting the
+     * entire upload.
+     *
+     * @return array{status: 'complete'|'incomplete'|'failed', next_offset: int, message: string}
+     */
+    private static function put_chunk_with_retry(
+        string $session_url,
+        string $data,
+        int $range_start,
+        int $range_end,
+        int $file_size
+    ): array {
+        // Status codes that warrant a retry (transient server or throttling errors).
+        $transient_codes = [408, 429, 500, 502, 503, 504];
+        $max_attempts    = 4; // 1 initial + 3 retries.
+        $attempt         = 0;
+
+        while ($attempt < $max_attempts) {
+            $attempt++;
+
+            $response = wp_remote_request($session_url, [
                 'method'  => 'PUT',
                 'headers' => [
-                    'Content-Length' => $current_size,
+                    'Content-Length' => (string) strlen($data),
                     'Content-Range'  => "bytes {$range_start}-{$range_end}/{$file_size}",
                 ],
                 'body'    => $data,
                 'timeout' => 300,
             ]);
 
-            if (is_wp_error($upload_response)) {
-                fclose($handle);
-                return ['success' => false, 'message' => $upload_response->get_error_message()];
+            if (is_wp_error($response)) {
+                // Network layer error — treat as transient unless we've exhausted retries.
+                if ($attempt >= $max_attempts) {
+                    return [
+                        'status'      => 'failed',
+                        'next_offset' => 0,
+                        'message'     => $response->get_error_message(),
+                    ];
+                }
+                self::backoff_sleep($attempt);
+                // Re-query session before retrying in case server got some bytes.
+                $probe = self::query_session_progress($session_url, $file_size);
+                if ($probe['status'] === 'complete') {
+                    return ['status' => 'complete', 'next_offset' => $file_size, 'message' => ''];
+                }
+                if ($probe['status'] === 'expired') {
+                    return [
+                        'status'      => 'failed',
+                        'next_offset' => 0,
+                        'message'     => __('Upload session expired. Please retry the upload.', 'sitessaver'),
+                    ];
+                }
+                // If the server has advanced, bail out of the retry loop and let the
+                // caller resume from the confirmed offset.
+                if ($probe['status'] === 'incomplete' && $probe['next_offset'] > $range_start) {
+                    return ['status' => 'incomplete', 'next_offset' => $probe['next_offset'], 'message' => ''];
+                }
+                continue;
             }
 
-            $up_status = wp_remote_retrieve_response_code($upload_response);
-            
-            // 308 Resume Incomplete is expected for intermediate chunks
-            // 200/201 is expected for the final chunk
-            if ($up_status !== 308 && $up_status !== 200 && $up_status !== 201) {
-                fclose($handle);
-                if (!empty($job_id)) delete_transient('sitessaver_gdrive_job_' . $job_id);
-                $error_body = json_decode(wp_remote_retrieve_body($upload_response), true);
+            $code = (int) wp_remote_retrieve_response_code($response);
+
+            if ($code === 200 || $code === 201) {
+                return ['status' => 'complete', 'next_offset' => $file_size, 'message' => ''];
+            }
+
+            if ($code === 308) {
+                $next = self::parse_range_next_offset(
+                    (string) wp_remote_retrieve_header($response, 'range'),
+                    $range_end + 1
+                );
+                return ['status' => 'incomplete', 'next_offset' => $next, 'message' => ''];
+            }
+
+            if ($code === 404 || $code === 410) {
                 return [
-                    'success' => false, 
-                    'message' => $error_body['error']['message'] ?? __('Upload chunk failed.', 'sitessaver')
+                    'status'      => 'failed',
+                    'next_offset' => 0,
+                    'message'     => __('Upload session expired. Please retry the upload.', 'sitessaver'),
                 ];
             }
 
-            $offset += $current_size;
-
-            if (!empty($job_id)) {
-                $pct = round(($offset / $file_size) * 100);
-                set_transient('sitessaver_gdrive_job_' . $job_id, ['progress' => $pct, 'status' => 'uploading'], HOUR_IN_SECONDS);
+            if (in_array($code, $transient_codes, true) && $attempt < $max_attempts) {
+                self::backoff_sleep($attempt);
+                continue;
             }
+
+            // Permanent error — surface Google's message if available.
+            $body    = json_decode((string) wp_remote_retrieve_body($response), true);
+            $message = is_array($body) && isset($body['error']['message'])
+                ? (string) $body['error']['message']
+                : sprintf(__('Upload chunk failed (HTTP %d).', 'sitessaver'), $code);
+
+            return ['status' => 'failed', 'next_offset' => 0, 'message' => $message];
         }
 
-        fclose($handle);
-        if (!empty($job_id)) {
-            set_transient('sitessaver_gdrive_job_' . $job_id, ['progress' => 100, 'status' => 'completed'], HOUR_IN_SECONDS);
+        return [
+            'status'      => 'failed',
+            'next_offset' => 0,
+            'message'     => __('Upload chunk failed after repeated retries.', 'sitessaver'),
+        ];
+    }
+
+    /**
+     * Query a resumable upload session for the last committed byte so uploads
+     * can resume after a network drop.
+     *
+     * @return array{status: 'incomplete'|'complete'|'expired'|'error', next_offset: int}
+     */
+    private static function query_session_progress(string $session_url, int $file_size): array {
+        $response = wp_remote_request($session_url, [
+            'method'  => 'PUT',
+            'headers' => [
+                'Content-Length' => '0',
+                'Content-Range'  => "bytes */{$file_size}",
+            ],
+            'timeout' => 30,
+        ]);
+
+        if (is_wp_error($response)) {
+            return ['status' => 'error', 'next_offset' => 0];
         }
-        return ['success' => true, 'message' => __('Backup uploaded to Google Drive.', 'sitessaver')];
+
+        $code = (int) wp_remote_retrieve_response_code($response);
+
+        if ($code === 200 || $code === 201) {
+            return ['status' => 'complete', 'next_offset' => $file_size];
+        }
+
+        if ($code === 308) {
+            $next = self::parse_range_next_offset(
+                (string) wp_remote_retrieve_header($response, 'range'),
+                0
+            );
+            return ['status' => 'incomplete', 'next_offset' => $next];
+        }
+
+        if ($code === 404 || $code === 410) {
+            return ['status' => 'expired', 'next_offset' => 0];
+        }
+
+        return ['status' => 'error', 'next_offset' => 0];
+    }
+
+    /**
+     * Parse Google's `Range: bytes=0-<last>` header into the next byte offset.
+     * Falls back to $default if the header is missing or malformed.
+     */
+    private static function parse_range_next_offset(string $range_header, int $default): int {
+        if ($range_header === '') {
+            return $default;
+        }
+        if (preg_match('/bytes=\d+-(\d+)/', $range_header, $m) === 1) {
+            return ((int) $m[1]) + 1;
+        }
+        return $default;
+    }
+
+    /**
+     * Exponential backoff between retry attempts: 1s, 2s, 4s...
+     */
+    private static function backoff_sleep(int $attempt): void {
+        $seconds = 2 ** ($attempt - 1);
+        sleep(min($seconds, 8));
     }
 
     /**
@@ -344,7 +574,8 @@ final class GDrive {
 
         $query = "mimeType='application/zip' and trashed=false";
         if (!empty($folder_id)) {
-            $query .= " and '{$folder_id}' in parents";
+            $folder_id_q = self::drive_escape($folder_id);
+            $query .= " and '{$folder_id_q}' in parents";
         }
 
         $response = wp_remote_get(self::API_URL . '/files?' . http_build_query([

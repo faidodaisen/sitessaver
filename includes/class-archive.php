@@ -55,10 +55,8 @@ final class Archive {
             if ($file->isDir()) {
                 $zip->addEmptyDir($relative);
             } else {
-                // Skip files > 2GB (ZIP32 limit).
-                if ($file->getSize() > 2147483647) {
-                    continue;
-                }
+                // ZIP64 is supported by ZipArchive on PHP 7.4+ (libzip >= 1.0),
+                // so files >2GB are archived correctly without a size guard.
                 $zip->addFile($filepath, $relative);
             }
         }
@@ -96,7 +94,10 @@ final class Archive {
 
         $real_dest = rtrim($real_dest, DIRECTORY_SEPARATOR);
 
-        // Extract each file with path validation.
+        // Extract each file with path validation. Fail-closed: if any entry
+        // looks malicious we close the archive and return false rather than
+        // silently skipping it — that way a tampered backup is REJECTED
+        // wholesale, not half-restored.
         for ($i = 0; $i < $zip->numFiles; $i++) {
             $entry = $zip->getNameIndex($i);
 
@@ -107,18 +108,37 @@ final class Archive {
             // Normalize entry path (forward slashes, no backslashes).
             $entry = str_replace('\\', '/', $entry);
 
-            // Prevent path traversal attempts.
+            // Reject path traversal attempts.
             if (str_contains($entry, '..') || str_starts_with($entry, '/')) {
-                continue;
+                $zip->close();
+                return false;
+            }
+
+            // Reject symlink entries — a ZIP stores symlinks via the upper
+            // 16 bits of the external attribute (Unix mode). S_IFLNK = 0xA000.
+            $stat = $zip->statIndex($i);
+            if (is_array($stat) && isset($stat['external_attr'])) {
+                $unix_mode = ((int) $stat['external_attr']) >> 16;
+                if (($unix_mode & 0xF000) === 0xA000) {
+                    $zip->close();
+                    return false;
+                }
             }
 
             // Resolve full target path.
-            $target = $real_dest . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $entry);
-            $target_real = realpath(dirname($target));
+            $target      = $real_dest . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $entry);
+            $parent      = dirname($target);
+            if (!is_dir($parent)) {
+                wp_mkdir_p($parent);
+            }
+            $parent_real = realpath($parent);
 
             // Ensure target is within destination (zip-slip prevention).
-            if ($target_real === false || !str_starts_with($target_real . DIRECTORY_SEPARATOR, $real_dest . DIRECTORY_SEPARATOR)) {
-                continue;
+            if ($parent_real === false
+                || !str_starts_with($parent_real . DIRECTORY_SEPARATOR, $real_dest . DIRECTORY_SEPARATOR)
+            ) {
+                $zip->close();
+                return false;
             }
 
             // Handle directories.
@@ -128,17 +148,18 @@ final class Archive {
             }
 
             // Extract file.
-            wp_mkdir_p(dirname($target));
             $source = $zip->getStream($entry);
 
             if ($source === false) {
-                continue;
+                $zip->close();
+                return false;
             }
 
             $dest_file = fopen($target, 'w');
             if ($dest_file === false) {
                 fclose($source);
-                continue;
+                $zip->close();
+                return false;
             }
 
             stream_copy_to_stream($source, $dest_file);

@@ -47,10 +47,68 @@ spl_autoload_register(static function (string $class): void {
 
 add_action('plugins_loaded', static function (): void {
     SitesSaver\Plugin::instance()->init();
+
+    // One-time cleanup: prior versions persisted export state as options.
+    // Sweep any lingering rows now that state lives in transients.
+    if (get_option('sitessaver_cleaned_export_options') !== '1') {
+        global $wpdb;
+        $wpdb->query(
+            "DELETE FROM {$wpdb->options}
+             WHERE option_name LIKE 'sitessaver\\_export\\_%'
+                OR option_name = 'sitessaver_active_export_id'"
+        );
+        update_option('sitessaver_cleaned_export_options', '1', false);
+    }
+
+    // One-time autoload correction: previously the plugin stored several
+    // sizable or sensitive options with autoload=yes (WP default). Flip
+    // them to 'no' so they no longer ride on every page load.
+    if (get_option('sitessaver_autoload_migrated') !== '1') {
+        global $wpdb;
+        $targets = [
+            'sitessaver_gdrive_token',
+            'sitessaver_schedule_log',
+            'sitessaver_backup_labels',
+            'sitessaver_settings',
+            'sitessaver_schedule',
+        ];
+        foreach ($targets as $name) {
+            $wpdb->update(
+                $wpdb->options,
+                ['autoload' => 'no'],
+                ['option_name' => $name]
+            );
+        }
+        wp_cache_delete('alloptions', 'options');
+        update_option('sitessaver_autoload_migrated', '1', false);
+    }
 });
 
 // Activation hook — create storage directories.
 register_activation_hook(__FILE__, static function (): void {
+    // Hard requirements — abort activation with a friendly message if missing.
+    if (version_compare(PHP_VERSION, '8.1', '<')) {
+        deactivate_plugins(plugin_basename(__FILE__));
+        wp_die(
+            esc_html(sprintf(
+                /* translators: %s: current PHP version */
+                __('SitesSaver requires PHP 8.1 or newer. You are running PHP %s.', 'sitessaver'),
+                PHP_VERSION
+            )),
+            esc_html__('Plugin Activation Failed', 'sitessaver'),
+            ['back_link' => true]
+        );
+    }
+
+    if (!class_exists('ZipArchive')) {
+        deactivate_plugins(plugin_basename(__FILE__));
+        wp_die(
+            esc_html__('SitesSaver requires the PHP ZipArchive extension. Ask your host to enable ext-zip and try again.', 'sitessaver'),
+            esc_html__('Plugin Activation Failed', 'sitessaver'),
+            ['back_link' => true]
+        );
+    }
+
     $dirs = [SITESSAVER_STORAGE_DIR, SITESSAVER_TEMP_DIR];
 
     foreach ($dirs as $dir) {
@@ -59,10 +117,20 @@ register_activation_hook(__FILE__, static function (): void {
         }
     }
 
-    // Protect backup directory from direct access.
+    // Protect backup directory from direct access (Apache 2.4 and 2.2 syntax;
+    // Nginx hosts must add a location block manually — see README).
     $htaccess = SITESSAVER_STORAGE_DIR . '/.htaccess';
     if (!file_exists($htaccess)) {
-        file_put_contents($htaccess, "Order Deny,Allow\nDeny from all\n");
+        file_put_contents(
+            $htaccess,
+            "<IfModule mod_authz_core.c>\n"
+            . "    Require all denied\n"
+            . "</IfModule>\n"
+            . "<IfModule !mod_authz_core.c>\n"
+            . "    Order Deny,Allow\n"
+            . "    Deny from all\n"
+            . "</IfModule>\n"
+        );
     }
 
     $index = SITESSAVER_STORAGE_DIR . '/index.php';

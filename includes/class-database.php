@@ -31,8 +31,11 @@ final class Database {
         fwrite($handle, "SET FOREIGN_KEY_CHECKS = 0;\n");
         fwrite($handle, "SET SQL_MODE = 'NO_AUTO_VALUE_ON_ZERO';\n\n");
 
-        // Get all tables with the WP prefix.
-        $tables = $wpdb->get_col("SHOW TABLES LIKE '{$wpdb->prefix}%'");
+        // Get all tables with the WP prefix (escaped LIKE to avoid `_` wildcard
+        // accidentally matching neighbouring-prefix tables).
+        $tables = $wpdb->get_col(
+            $wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($wpdb->prefix) . '%')
+        );
 
         foreach ($tables as $table) {
             self::export_table($wpdb, $handle, $table);
@@ -98,7 +101,19 @@ final class Database {
     }
 
     /**
-     * Import a SQL file into the database.
+     * Read buffer size for streaming SQL import (bytes).
+     * Small enough to stay within memory; large enough for throughput.
+     */
+    private const IMPORT_READ_CHUNK = 65536;
+
+    /**
+     * Import a SQL file into the database using a streaming tokenizer.
+     *
+     * Memory is O(largest single statement), not O(file size), so multi-GB
+     * dumps import without OOM. URL replacement is applied per-statement.
+     *
+     * @throws \RuntimeException If the dump contains serialized PHP objects
+     *                           (security guardrail against object injection).
      */
     public static function import(string $sql_file, string $old_url = '', string $new_url = ''): bool {
         global $wpdb;
@@ -107,106 +122,236 @@ final class Database {
             return false;
         }
 
-        $contents = file_get_contents($sql_file);
-        if ($contents === false) {
+        $handle = fopen($sql_file, 'rb');
+        if ($handle === false) {
             return false;
         }
 
-        // URL replacement if migrating between domains.
-        if ($old_url !== '' && $new_url !== '' && $old_url !== $new_url) {
-            $contents = self::replace_urls($contents, $old_url, $new_url);
-        }
+        $do_replace = ($old_url !== '' && $new_url !== '' && $old_url !== $new_url);
+        $old_no_scheme = $do_replace ? (string) preg_replace('#^https?://#', '', $old_url) : '';
+        $new_no_scheme = $do_replace ? (string) preg_replace('#^https?://#', '', $new_url) : '';
 
-        // Split into individual statements.
-        $statements = self::split_sql($contents);
+        $current    = '';
+        $in_string  = false;
+        $escape     = false;
 
-        foreach ($statements as $statement) {
-            $statement = trim($statement);
-            if ($statement === '' || str_starts_with($statement, '--')) {
-                continue;
+        try {
+            while (!feof($handle)) {
+                $buffer = fread($handle, self::IMPORT_READ_CHUNK);
+                if ($buffer === false || $buffer === '') {
+                    break;
+                }
+
+                $buf_len = strlen($buffer);
+                for ($i = 0; $i < $buf_len; $i++) {
+                    $char = $buffer[$i];
+
+                    if ($escape) {
+                        $current .= $char;
+                        $escape = false;
+                        continue;
+                    }
+
+                    if ($char === '\\') {
+                        $current .= $char;
+                        $escape = true;
+                        continue;
+                    }
+
+                    if ($char === "'") {
+                        $in_string = !$in_string;
+                        $current .= $char;
+                        continue;
+                    }
+
+                    if (!$in_string && $char === ';') {
+                        self::execute_statement($wpdb, $current, $do_replace, $old_url, $new_url, $old_no_scheme, $new_no_scheme);
+                        $current = '';
+                        continue;
+                    }
+
+                    $current .= $char;
+                }
             }
 
-            $wpdb->query($statement); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- Restoring full SQL dump.
+            // Trailing statement without closing `;`.
+            if (trim($current) !== '') {
+                self::execute_statement($wpdb, $current, $do_replace, $old_url, $new_url, $old_no_scheme, $new_no_scheme);
+            }
+        } finally {
+            fclose($handle);
         }
 
         return true;
     }
 
     /**
-     * Replace old site URL with new site URL in SQL dump.
-     * Handles both plain and serialized strings.
+     * Normalise, URL-replace, and execute a single SQL statement.
      */
-    private static function replace_urls(string $sql, string $old_url, string $new_url): string {
-        // Plain URL replacement.
-        $sql = str_replace($old_url, $new_url, $sql);
-
-        // Handle serialized data — update string lengths.
-        // e.g. s:25:"https://old-domain.com/..." → s:25:"https://new-domain.com/..."
-        $old_no_scheme = preg_replace('#^https?://#', '', $old_url);
-        $new_no_scheme = preg_replace('#^https?://#', '', $new_url);
-
-        if ($old_no_scheme !== $new_no_scheme) {
-            $sql = str_replace($old_no_scheme, $new_no_scheme, $sql);
+    private static function execute_statement(
+        \wpdb $wpdb,
+        string $statement,
+        bool $do_replace,
+        string $old_url,
+        string $new_url,
+        string $old_no_scheme,
+        string $new_no_scheme
+    ): void {
+        $trimmed = trim($statement);
+        if ($trimmed === '' || str_starts_with($trimmed, '--') || str_starts_with($trimmed, '/*')) {
+            return;
         }
 
-        // Fix serialized string lengths after replacement.
-        $sql = preg_replace_callback(
-            '/s:(\d+):"(.*?)";/s',
-            static function (array $matches): string {
-                $actual_length = strlen($matches[2]);
-                return "s:{$actual_length}:\"{$matches[2]}\";";
-            },
-            $sql
-        );
+        if ($do_replace) {
+            $trimmed = self::replace_urls_with_aliases($trimmed, $old_url, $new_url, $old_no_scheme, $new_no_scheme);
+        }
 
-        return $sql;
+        // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- Restoring trusted admin-provided SQL dump.
+        $wpdb->query($trimmed);
     }
 
     /**
-     * Split SQL dump into individual statements.
+     * Replace old site URL with new site URL in a SQL fragment.
+     *
+     * Security:
+     *   - Rejects dumps containing serialized PHP objects (CWE-502 guard).
+     * Correctness:
+     *   - Recomputes serialized string byte-lengths with mb_strlen(..., '8bit').
+     *   - Only rewrites `s:N:"...";` tokens whose content actually changed,
+     *     preventing an attacker from exploiting a blanket length-normaliser
+     *     to smuggle malformed serialized payloads past WP's unserialize().
+     *
+     * Works on full dumps or individual statements (streaming-safe).
+     *
+     * @throws \RuntimeException If serialized PHP objects are detected.
      */
-    private static function split_sql(string $sql): array {
-        $statements = [];
-        $current    = '';
-        $in_string  = false;
-        $escape     = false;
+    private static function replace_urls_with_aliases(
+        string $sql,
+        string $old_url,
+        string $new_url,
+        string $old_no_scheme,
+        string $new_no_scheme
+    ): string {
+        // Fast path: nothing to do.
+        $has_url    = $old_url !== '' && str_contains($sql, $old_url);
+        $has_scheme = $old_no_scheme !== ''
+            && $old_no_scheme !== $new_no_scheme
+            && str_contains($sql, $old_no_scheme);
+
+        if (!$has_url && !$has_scheme) {
+            return $sql;
+        }
+
+        // Security gate: serialized PHP objects have no legitimate place in a
+        // WP options/meta dump. Refuse rather than try to "fix" them.
+        self::assert_no_serialized_objects($sql);
+
+        return self::rewrite_serialized_preserving($sql, $old_url, $new_url, $old_no_scheme, $new_no_scheme);
+    }
+
+    /**
+     * Throw if the SQL contains `O:` or `C:` serialized class markers.
+     */
+    private static function assert_no_serialized_objects(string $sql): void {
+        // O:<digits>:"ClassName":<digits>:{   or   C:<digits>:"ClassName":<digits>:{
+        if (
+            preg_match('/\bO:\d+:"[^"]+":\d+:\{/', $sql) === 1
+            || preg_match('/\bC:\d+:"[^"]+":\d+:\{/', $sql) === 1
+        ) {
+            throw new \RuntimeException(
+                'Import rejected: SQL dump contains serialized PHP objects (O:/C: markers). '
+                . 'Refusing to import to prevent object injection. Verify backup integrity before retrying.'
+            );
+        }
+    }
+
+    /**
+     * Single-pass byte-stream walker that:
+     *   1. Replaces URL occurrences in plain text regions.
+     *   2. For each `s:<N>:"..."` token, validates the declared byte-length,
+     *      replaces URLs inside the payload, and recomputes the length prefix
+     *      ONLY if the payload byte-count changed.
+     *
+     * This avoids the `.*?` + /s regex pitfall (null-byte, ReDoS, cross-token
+     * matches) and guarantees lengths are only normalised for touched tokens.
+     */
+    private static function rewrite_serialized_preserving(
+        string $sql,
+        string $old_url,
+        string $new_url,
+        string $old_no_scheme,
+        string $new_no_scheme
+    ): string {
         $len        = strlen($sql);
+        $out        = '';
+        $i          = 0;
+        $plain_from = 0;
 
-        for ($i = 0; $i < $len; $i++) {
-            $char = $sql[$i];
+        $replace_in = static function (string $s) use ($old_url, $new_url, $old_no_scheme, $new_no_scheme): string {
+            if ($old_url !== '') {
+                $s = str_replace($old_url, $new_url, $s);
+            }
+            if ($old_no_scheme !== '' && $old_no_scheme !== $new_no_scheme) {
+                $s = str_replace($old_no_scheme, $new_no_scheme, $s);
+            }
+            return $s;
+        };
 
-            if ($escape) {
-                $current .= $char;
-                $escape = false;
+        while ($i < $len) {
+            // Look for the next `s:` that could start a serialized string token.
+            if ($sql[$i] !== 's' || $i + 3 >= $len || $sql[$i + 1] !== ':') {
+                $i++;
                 continue;
             }
 
-            if ($char === '\\') {
-                $current .= $char;
-                $escape = true;
+            // Read digit run after `s:`.
+            $d = $i + 2;
+            while ($d < $len && ctype_digit($sql[$d])) {
+                $d++;
+            }
+            if ($d === $i + 2 || $d + 1 >= $len || $sql[$d] !== ':' || $sql[$d + 1] !== '"') {
+                $i++;
                 continue;
             }
 
-            if ($char === "'") {
-                $in_string = !$in_string;
-                $current .= $char;
+            $declared_len   = (int) substr($sql, $i + 2, $d - ($i + 2));
+            $content_start  = $d + 2;
+            $content_end    = $content_start + $declared_len;
+
+            // Validate that declared length lands on a closing `";`.
+            if ($content_end + 1 >= $len || $sql[$content_end] !== '"' || $sql[$content_end + 1] !== ';') {
+                $i++;
                 continue;
             }
 
-            if (!$in_string && $char === ';') {
-                $statements[] = $current;
-                $current = '';
-                continue;
+            // Flush plain region with URL replacement applied.
+            if ($plain_from < $i) {
+                $out .= $replace_in(substr($sql, $plain_from, $i - $plain_from));
             }
 
-            $current .= $char;
+            // Process the serialized string payload.
+            $content     = substr($sql, $content_start, $declared_len);
+            $new_content = $replace_in($content);
+
+            if ($new_content === $content) {
+                // Unchanged: emit verbatim, preserve original length prefix.
+                $out .= 's:' . $declared_len . ':"' . $content . '";';
+            } else {
+                // Changed: recompute byte-length (not char-length).
+                $new_byte_len = strlen($new_content); // strlen is byte-count in PHP.
+                $out .= 's:' . $new_byte_len . ':"' . $new_content . '";';
+            }
+
+            $i          = $content_end + 2;
+            $plain_from = $i;
         }
 
-        if (trim($current) !== '') {
-            $statements[] = $current;
+        // Trailing plain region.
+        if ($plain_from < $len) {
+            $out .= $replace_in(substr($sql, $plain_from));
         }
 
-        return $statements;
+        return $out;
     }
 
     /**
