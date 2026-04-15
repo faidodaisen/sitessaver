@@ -142,6 +142,14 @@ final class Ajax {
 
     /**
      * Import/restore from existing backup file.
+     *
+     * Why the output buffer:
+     *   Third-party plugins (Elementor, Landinghub, etc.) sometimes emit PHP
+     *   notices — e.g. WP 6.7's "textdomain loaded too early" — *during* the
+     *   import request. Any stray output ahead of `wp_send_json_*` corrupts
+     *   the JSON response and the client shows a generic "An error occurred"
+     *   with no hint of what actually ran. We buffer, discard pre-output, then
+     *   send a clean JSON envelope. Notices still reach debug.log.
      */
     public function handle_import(): void {
         sitessaver_verify_ajax();
@@ -149,13 +157,18 @@ final class Ajax {
         @set_time_limit(0);
         wp_raise_memory_limit('admin');
 
+        ob_start();
+
         $file = sanitize_file_name(wp_unslash($_POST['file'] ?? ''));
 
         if (empty($file)) {
+            self::discard_output_buffer();
             wp_send_json_error(['message' => __('No backup file specified.', 'sitessaver')]);
         }
 
         $result = Import::from_backup($file);
+
+        self::discard_output_buffer();
 
         if ($result['success']) {
             wp_send_json_success($result);
@@ -173,16 +186,36 @@ final class Ajax {
         @set_time_limit(0);
         wp_raise_memory_limit('admin');
 
+        ob_start();
+
         if (empty($_FILES['backup'])) {
+            self::discard_output_buffer();
             wp_send_json_error(['message' => __('No file uploaded.', 'sitessaver')]);
         }
 
         $result = Import::from_upload($_FILES['backup']);
 
+        self::discard_output_buffer();
+
         if ($result['success']) {
             wp_send_json_success($result);
         } else {
             wp_send_json_error($result);
+        }
+    }
+
+    /**
+     * Discard only the buffer we opened in this handler. Leaves any outer
+     * WordPress / third-party buffers untouched so we don't clobber their
+     * output lifecycle.
+     */
+    private static function discard_output_buffer(): void {
+        if (ob_get_level() === 0) {
+            return;
+        }
+        $contents = ob_get_clean();
+        if ($contents !== false && $contents !== '') {
+            error_log('[SitesSaver] Stray output during AJAX import suppressed: ' . substr($contents, 0, 500));
         }
     }
 

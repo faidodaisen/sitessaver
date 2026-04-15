@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.4] — 2026-04-15
+
+### Fixed
+- **Restore no longer fails with "An error occurred" on sites with chatty plugins.** The import AJAX handlers now open their own output buffer so stray PHP notices (e.g. WP 6.7's "textdomain loaded too early" from Elementor / Landinghub) can't corrupt the JSON response. Any captured noise is written to `debug.log` instead of reaching the browser.
+- **Restore actually drops existing tables now.** The SQL tokenizer was skipping any statement whose leading characters were `--` or `/*`, which meant the `-- Table: foo\nDROP TABLE IF EXISTS foo;` block produced by Export was silently discarded. The subsequent `CREATE TABLE` then failed with "Table already exists" and every `INSERT` failed with a duplicate-primary-key error, leaving the target site in a half-restored state. Leading comment lines are now stripped before the empty-statement check, so the DROP runs as intended.
+
+### Changed
+- `Database::execute_statement()` now delegates to a small `strip_leading_comments()` helper so the rule is explicit and auditable. Trailing/inline comments are left untouched — MySQL handles those on its own.
+
+---
+
 ## [1.1.3] — 2026-04-15
 
 ### Fixed
