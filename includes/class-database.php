@@ -207,6 +207,13 @@ final class Database {
 
     /**
      * Normalise, URL-replace, and execute a single SQL statement.
+     *
+     * Why strip-leading-comments matters:
+     *   The tokenizer splits on top-level `;`, so a statement can legitimately
+     *   look like `-- Table: wp_users\nDROP TABLE IF EXISTS wp_users;` — the
+     *   leading comment block is attached to the real DDL. A naive
+     *   `str_starts_with('--')` skip would silently drop the DROP TABLE and
+     *   cause "Table already exists" + duplicate-PK failures on restore.
      */
     private static function execute_statement(
         \wpdb $wpdb,
@@ -217,8 +224,8 @@ final class Database {
         string $old_no_scheme,
         string $new_no_scheme
     ): void {
-        $trimmed = trim($statement);
-        if ($trimmed === '' || str_starts_with($trimmed, '--') || str_starts_with($trimmed, '/*')) {
+        $trimmed = self::strip_leading_comments($statement);
+        if ($trimmed === '') {
             return;
         }
 
@@ -236,6 +243,36 @@ final class Database {
             $preview = substr($trimmed, 0, 160);
             error_log('[SitesSaver] Import SQL failed: ' . $wpdb->last_error . ' | stmt: ' . $preview);
         }
+    }
+
+    /**
+     * Strip leading `--` and `/* *\/` comment lines from a statement, then trim.
+     *
+     * Leaves trailing/inline comments intact (MySQL accepts them). Returns
+     * empty string if the statement was nothing but comments/whitespace.
+     */
+    private static function strip_leading_comments(string $statement): string {
+        $s = ltrim($statement);
+        while ($s !== '') {
+            if (str_starts_with($s, '--')) {
+                $nl = strpos($s, "\n");
+                if ($nl === false) {
+                    return '';
+                }
+                $s = ltrim(substr($s, $nl + 1));
+                continue;
+            }
+            if (str_starts_with($s, '/*')) {
+                $end = strpos($s, '*/');
+                if ($end === false) {
+                    return '';
+                }
+                $s = ltrim(substr($s, $end + 2));
+                continue;
+            }
+            break;
+        }
+        return $s;
     }
 
     /**
