@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.2] — 2026-04-15
+
+### Fixed
+- **Import no longer rejects legitimate backups** — the object-marker guard (`O:`/`C:` in serialized data) was throwing on every real-world WordPress dump, because widgets, cron events, transients and many plugin options legitimately serialize `stdClass` and other objects. Import is already gated by `manage_options` + nonce + manifest signature, which puts it firmly inside the trusted-admin boundary, so the hard reject was producing false positives. The check is now audit-only: it writes a single notice to `error_log` when object markers are seen and lets the restore proceed.
+
+---
+
 ## [1.1.1] — 2026-04-15
 
 Critical data-integrity fix for restore-with-URL-change.
