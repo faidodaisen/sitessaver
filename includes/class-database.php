@@ -241,17 +241,18 @@ final class Database {
     /**
      * Replace old site URL with new site URL in a SQL fragment.
      *
-     * Security:
-     *   - Rejects dumps containing serialized PHP objects (CWE-502 guard).
      * Correctness:
-     *   - Recomputes serialized string byte-lengths with mb_strlen(..., '8bit').
-     *   - Only rewrites `s:N:"...";` tokens whose content actually changed,
-     *     preventing an attacker from exploiting a blanket length-normaliser
-     *     to smuggle malformed serialized payloads past WP's unserialize().
+     *   - Recomputes serialized string byte-lengths with strlen() (byte count).
+     *   - Only rewrites `s:N:"...";` tokens whose content actually changed.
+     *
+     * Note on serialized objects: legitimate WordPress data routinely contains
+     * serialized objects (stdClass widgets, cron hooks, transient payloads),
+     * so a blanket reject produces false positives on real backups. Import is
+     * already gated by `manage_options` + nonce + manifest signature, which
+     * puts it inside the trusted-admin boundary. We log detected objects for
+     * auditability but do not abort the restore.
      *
      * Works on full dumps or individual statements (streaming-safe).
-     *
-     * @throws \RuntimeException If serialized PHP objects are detected.
      */
     private static function replace_urls_with_aliases(
         string $sql,
@@ -270,21 +271,24 @@ final class Database {
             return $sql;
         }
 
-        // Security gate: serialized PHP objects have no legitimate place in a
-        // WP options/meta dump. Refuse rather than try to "fix" them.
-        self::assert_no_serialized_objects($sql);
+        // Audit-only: note presence of serialized objects without blocking.
+        self::log_serialized_object_markers($sql);
 
         return self::rewrite_serialized_preserving($sql, $old_url, $new_url, $old_no_scheme, $new_no_scheme);
     }
 
     /**
-     * Throw if the SQL contains `O:` or `C:` serialized class markers.
+     * Log (once per import) whether the SQL contains `O:` or `C:` serialized
+     * class markers. Non-blocking — legitimate WordPress data contains these.
      *
      * Detects both unescaped (`O:8:"X":...`) and SQL-escaped (`O:8:\"X\":...`)
-     * forms. Legacy backups produced with mysqli_real_escape_string store the
-     * escaped form; modern exports store the unescaped form.
+     * forms so legacy backups (mysqli_real_escape_string era) are also covered.
      */
-    private static function assert_no_serialized_objects(string $sql): void {
+    private static function log_serialized_object_markers(string $sql): void {
+        static $already_logged = false;
+        if ($already_logged) {
+            return;
+        }
         $patterns = [
             '/\bO:\d+:"[^"]+":\d+:\{/',
             '/\bC:\d+:"[^"]+":\d+:\{/',
@@ -293,10 +297,9 @@ final class Database {
         ];
         foreach ($patterns as $pattern) {
             if (preg_match($pattern, $sql) === 1) {
-                throw new \RuntimeException(
-                    'Import rejected: SQL dump contains serialized PHP objects (O:/C: markers). '
-                    . 'Refusing to import to prevent object injection. Verify backup integrity before retrying.'
-                );
+                error_log('[SitesSaver] Notice: imported dump contains serialized PHP objects (O:/C: markers). This is normal for widgets/cron/transients.');
+                $already_logged = true;
+                return;
             }
         }
     }
