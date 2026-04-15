@@ -7,8 +7,12 @@
 *.swp
 *.zip
 .DS_Store
+/
+
 
 .idea/
+
+
 .idx/
 .local-metadata/
 .raw/

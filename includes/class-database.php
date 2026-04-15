@@ -81,11 +81,11 @@ final class Database {
             }
 
             foreach ($rows as $row) {
-                $values = array_map(static function ($val) use ($wpdb): string {
+                $values = array_map(static function ($val): string {
                     if ($val === null) {
                         return 'NULL';
                     }
-                    return "'" . $wpdb->_real_escape((string) $val) . "'";
+                    return "'" . self::escape_sql_value((string) $val) . "'";
                 }, $row);
 
                 $columns = implode('`, `', array_keys($row));
@@ -98,6 +98,26 @@ final class Database {
         }
 
         fwrite($handle, "\n");
+    }
+
+    /**
+     * Escape a value for a single-quoted SQL string literal.
+     *
+     * Mirrors mysqli_real_escape_string EXCEPT it does NOT escape `"`.
+     * Leaving `"` unescaped preserves `s:N:"..."` serialized-string markers
+     * in the dump so the import-time walker can recompute byte-lengths after
+     * URL replacement. Since values are wrapped in single quotes, `"` does
+     * not need escaping for SQL validity.
+     */
+    private static function escape_sql_value(string $val): string {
+        return strtr($val, [
+            '\\'   => '\\\\',
+            "\0"   => '\\0',
+            "\n"   => '\\n',
+            "\r"   => '\\r',
+            "\x1a" => '\\Z',
+            "'"    => "\\'",
+        ]);
     }
 
     /**
@@ -207,7 +227,15 @@ final class Database {
         }
 
         // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- Restoring trusted admin-provided SQL dump.
-        $wpdb->query($trimmed);
+        $result = $wpdb->query($trimmed);
+
+        // Log failures so silent row-loss is visible in debug.log rather than
+        // surfacing only as "data missing after restore". wpdb returns false on
+        // DDL/DML errors; last_error carries the MySQL message.
+        if ($result === false && $wpdb->last_error !== '') {
+            $preview = substr($trimmed, 0, 160);
+            error_log('[SitesSaver] Import SQL failed: ' . $wpdb->last_error . ' | stmt: ' . $preview);
+        }
     }
 
     /**
@@ -251,29 +279,39 @@ final class Database {
 
     /**
      * Throw if the SQL contains `O:` or `C:` serialized class markers.
+     *
+     * Detects both unescaped (`O:8:"X":...`) and SQL-escaped (`O:8:\"X\":...`)
+     * forms. Legacy backups produced with mysqli_real_escape_string store the
+     * escaped form; modern exports store the unescaped form.
      */
     private static function assert_no_serialized_objects(string $sql): void {
-        // O:<digits>:"ClassName":<digits>:{   or   C:<digits>:"ClassName":<digits>:{
-        if (
-            preg_match('/\bO:\d+:"[^"]+":\d+:\{/', $sql) === 1
-            || preg_match('/\bC:\d+:"[^"]+":\d+:\{/', $sql) === 1
-        ) {
-            throw new \RuntimeException(
-                'Import rejected: SQL dump contains serialized PHP objects (O:/C: markers). '
-                . 'Refusing to import to prevent object injection. Verify backup integrity before retrying.'
-            );
+        $patterns = [
+            '/\bO:\d+:"[^"]+":\d+:\{/',
+            '/\bC:\d+:"[^"]+":\d+:\{/',
+            '/\bO:\d+:\\\\"[^"\\\\]+\\\\":\d+:\{/',
+            '/\bC:\d+:\\\\"[^"\\\\]+\\\\":\d+:\{/',
+        ];
+        foreach ($patterns as $pattern) {
+            if (preg_match($pattern, $sql) === 1) {
+                throw new \RuntimeException(
+                    'Import rejected: SQL dump contains serialized PHP objects (O:/C: markers). '
+                    . 'Refusing to import to prevent object injection. Verify backup integrity before retrying.'
+                );
+            }
         }
     }
 
     /**
      * Single-pass byte-stream walker that:
      *   1. Replaces URL occurrences in plain text regions.
-     *   2. For each `s:<N>:"..."` token, validates the declared byte-length,
-     *      replaces URLs inside the payload, and recomputes the length prefix
-     *      ONLY if the payload byte-count changed.
+     *   2. For each `s:<N>:"..."` serialized-string token (unescaped form) or
+     *      `s:<N>:\"...\"` (SQL-escaped form used by legacy dumps), validates
+     *      the declared byte-length, replaces URLs inside the logical payload,
+     *      and recomputes the length prefix ONLY if the payload changed.
      *
-     * This avoids the `.*?` + /s regex pitfall (null-byte, ReDoS, cross-token
-     * matches) and guarantees lengths are only normalised for touched tokens.
+     * Handling both forms is required because older SitesSaver exports used
+     * mysqli_real_escape_string (which escapes `"`), and those backups must
+     * still import correctly when the site URL changes.
      */
     private static function rewrite_serialized_preserving(
         string $sql,
@@ -309,17 +347,24 @@ final class Database {
             while ($d < $len && ctype_digit($sql[$d])) {
                 $d++;
             }
-            if ($d === $i + 2 || $d + 1 >= $len || $sql[$d] !== ':' || $sql[$d + 1] !== '"') {
+            if ($d === $i + 2 || $d + 1 >= $len || $sql[$d] !== ':') {
                 $i++;
                 continue;
             }
 
-            $declared_len   = (int) substr($sql, $i + 2, $d - ($i + 2));
-            $content_start  = $d + 2;
-            $content_end    = $content_start + $declared_len;
+            $declared_len = (int) substr($sql, $i + 2, $d - ($i + 2));
 
-            // Validate that declared length lands on a closing `";`.
-            if ($content_end + 1 >= $len || $sql[$content_end] !== '"' || $sql[$content_end + 1] !== ';') {
+            // Detect token form:
+            //   unescaped:   s:N:"..."
+            //   SQL-escaped: s:N:\"...\"
+            $token = null;
+            if ($sql[$d + 1] === '"') {
+                $token = self::parse_unescaped_sstring($sql, $len, $d + 2, $declared_len);
+            } elseif ($d + 2 < $len && $sql[$d + 1] === '\\' && $sql[$d + 2] === '"') {
+                $token = self::parse_escaped_sstring($sql, $len, $d + 3, $declared_len);
+            }
+
+            if ($token === null) {
                 $i++;
                 continue;
             }
@@ -329,20 +374,23 @@ final class Database {
                 $out .= $replace_in(substr($sql, $plain_from, $i - $plain_from));
             }
 
-            // Process the serialized string payload.
-            $content     = substr($sql, $content_start, $declared_len);
+            $content     = $token['content'];
             $new_content = $replace_in($content);
 
             if ($new_content === $content) {
-                // Unchanged: emit verbatim, preserve original length prefix.
-                $out .= 's:' . $declared_len . ':"' . $content . '";';
+                // Unchanged: emit verbatim bytes (preserves original escape form).
+                $out .= substr($sql, $i, $token['end_pos'] - $i);
             } else {
-                // Changed: recompute byte-length (not char-length).
-                $new_byte_len = strlen($new_content); // strlen is byte-count in PHP.
-                $out .= 's:' . $new_byte_len . ':"' . $new_content . '";';
+                $new_byte_len = strlen($new_content);
+                if ($token['escaped']) {
+                    // Re-emit in SQL-escaped form so the surrounding SQL literal stays valid.
+                    $out .= 's:' . $new_byte_len . ':\\"' . self::escape_sql_value($new_content) . '\\";';
+                } else {
+                    $out .= 's:' . $new_byte_len . ':"' . $new_content . '";';
+                }
             }
 
-            $i          = $content_end + 2;
+            $i          = $token['end_pos'];
             $plain_from = $i;
         }
 
@@ -352,6 +400,73 @@ final class Database {
         }
 
         return $out;
+    }
+
+    /**
+     * Parse an unescaped `s:N:"..."` serialized-string token at the given offset.
+     *
+     * @return array{content:string,end_pos:int,escaped:bool}|null
+     */
+    private static function parse_unescaped_sstring(string $sql, int $len, int $content_start, int $declared_len): ?array {
+        $content_end = $content_start + $declared_len;
+        if ($content_end + 1 >= $len || $sql[$content_end] !== '"' || $sql[$content_end + 1] !== ';') {
+            return null;
+        }
+        return [
+            'content' => substr($sql, $content_start, $declared_len),
+            'end_pos' => $content_end + 2,
+            'escaped' => false,
+        ];
+    }
+
+    /**
+     * Parse a SQL-escaped `s:N:\"...\"` serialized-string token.
+     *
+     * Decodes backslash escapes while counting logical (unescaped) bytes to
+     * find the closing `\";`. Returns the decoded content so URL replacement
+     * operates on the same byte sequence the length prefix refers to.
+     *
+     * @return array{content:string,end_pos:int,escaped:bool}|null
+     */
+    private static function parse_escaped_sstring(string $sql, int $len, int $content_start, int $declared_len): ?array {
+        $pos     = $content_start;
+        $content = '';
+        $count   = 0;
+
+        while ($pos < $len && $count < $declared_len) {
+            if ($sql[$pos] === '\\' && $pos + 1 < $len) {
+                $next = $sql[$pos + 1];
+                switch ($next) {
+                    case '0':  $content .= "\0";    break;
+                    case 'n':  $content .= "\n";    break;
+                    case 'r':  $content .= "\r";    break;
+                    case 'Z':  $content .= "\x1a";  break;
+                    case '\\': $content .= '\\';    break;
+                    case "'":  $content .= "'";     break;
+                    case '"':  $content .= '"';     break;
+                    default:   $content .= $next;
+                }
+                $pos += 2;
+            } else {
+                $content .= $sql[$pos];
+                $pos++;
+            }
+            $count++;
+        }
+
+        if ($count !== $declared_len) {
+            return null;
+        }
+        // Expect closing `\";`
+        if ($pos + 2 >= $len || $sql[$pos] !== '\\' || $sql[$pos + 1] !== '"' || $sql[$pos + 2] !== ';') {
+            return null;
+        }
+
+        return [
+            'content' => $content,
+            'end_pos' => $pos + 3,
+            'escaped' => true,
+        ];
     }
 
     /**
