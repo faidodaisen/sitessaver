@@ -7,8 +7,12 @@
 *.swp
 *.zip
 .DS_Store
+.audit/
+.claude/
 .gitnexus
 .idea/
+AGENTS.md
+CLAUDE.md
 .idx/
 .local-metadata/
 .raw/

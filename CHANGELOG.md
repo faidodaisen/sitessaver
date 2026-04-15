@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.1] — 2026-04-15
+
+Critical data-integrity fix for restore-with-URL-change.
+
+### Fixed
+- **Serialized data no longer corrupted on restore** — SQL dumps produced by `Database::export()` escaped double-quotes with `mysqli_real_escape_string`, but the import-time URL-replacement walker was looking for unescaped `s:N:"..."` tokens. When the target site URL differed from the source, serialized options (widgets, theme mods, plugin settings) fell through to a plain `str_replace` path that rewrote the URL without updating the byte-length prefix — producing length-mismatched serialized data that WordPress silently read back as empty. After restore, "lots of data missing" was the user-visible symptom.
+- **Export escaping rewritten** — new dumps use a custom escaper that mirrors `mysqli_real_escape_string` except it does not escape `"` (single-quoted SQL literals don't require it), which keeps serialized-string markers intact for the walker.
+- **Walker now accepts both token forms** — `s:N:"..."` (new dumps) and `s:N:\"...\"` (legacy v1.1.0 dumps), so existing backups also restore cleanly with URL replacement applied.
+- **`assert_no_serialized_objects()` detects both forms** — the object-injection guard no longer bypasses legacy-escaped dumps.
+- **INSERT failures no longer silent** — `execute_statement()` now logs `$wpdb->last_error` to the error log when a statement fails, so future row-level issues surface instead of appearing as "data missing".
+
+---
+
 ## [1.1.0] — 2026-04-14
 
 Major security + reliability release. Upgrade recommended for all installations.
@@ -39,11 +52,6 @@ Major security + reliability release. Upgrade recommended for all installations.
 - **Refresh-token hardening** — GDrive refresh token stored with `autoload = no`, never loaded into every-request `alloptions`.
 - **`SHOW TABLES LIKE` parameterised** — table dump query now uses `$wpdb->prepare()` with `esc_like()`; prefix wildcards can no longer accidentally match neighbouring installations sharing the database.
 - **Centralised backup path resolver** — `sitessaver_resolve_backup_path()` enforces sanitisation + realpath containment at every handler that operates on backup files (delete, download, upload to Drive).
-
-### Internal
-- 6-phase remediation plan documented under `.audit/FIX_PLAN.md`.
-- GitNexus code-intelligence index committed (`.claude/skills/gitnexus/`).
-- Project documentation refreshed: `CLAUDE.md`, `AGENTS.md`.
 
 ### Upgrade Notes
 - **Existing Google Drive connections keep working** — the `state` param is only required on new connections made after this release. No action needed for already-connected sites.
