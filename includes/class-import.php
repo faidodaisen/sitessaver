@@ -267,33 +267,74 @@ final class Import {
     }
 
     /**
-     * Post-import cleanup: flush caches, rewrite rules, etc.
+     * Post-import cleanup.
+     *
+     * Why this is split in two:
+     *   During restore we're mid-AJAX with the OLD plugin/theme set loaded in
+     *   memory and `init` already fired. Calling switch_theme() /
+     *   update_option('active_plugins') / flush_rewrite_rules() here forces
+     *   the NEW plugin set to boot inside the same request, which triggers
+     *   "textdomain loaded too early" notices (Elementor, Landinghub, etc.)
+     *   and can leave rewrite rules half-stale.
+     *
+     *   Mirroring the All-in-One WP Migration UX: we just queue a flag here,
+     *   the UI forces the user to log out + log back in, and the deferred
+     *   work runs on the first clean admin request via `admin_init`. The
+     *   user is then parked on Settings > Permalinks and asked to save twice
+     *   to flush rewrite rules.
      */
     private static function post_import(array $manifest): void {
-        // Flush rewrite rules.
-        flush_rewrite_rules();
+        global $wpdb;
 
-        // Clear object cache.
-        wp_cache_flush();
+        // Transients: raw SQL, no hook side effects.
+        $wpdb->query("DELETE FROM {$wpdb->options} WHERE option_name LIKE '_transient_%'");
+        $wpdb->query("DELETE FROM {$wpdb->options} WHERE option_name LIKE '_site_transient_%'");
 
-        // Update active plugins from manifest if available.
-        if (!empty($manifest['active_plugins'])) {
-            update_option('active_plugins', $manifest['active_plugins']);
+        // Queue deferred finalisation. Autoload = no so it doesn't ride on
+        // every admin page until it's consumed.
+        update_option(
+            'sitessaver_pending_finalize',
+            [
+                'active_plugins' => $manifest['active_plugins'] ?? null,
+                'active_theme'   => $manifest['active_theme']   ?? null,
+                'queued_at'      => time(),
+            ],
+            false
+        );
+    }
+
+    /**
+     * Run the deferred finalisation on a fresh admin request.
+     *
+     * Hooked to `admin_init` (see Plugin::init). Safe to call switch_theme()
+     * and update_option('active_plugins') here because `init` hasn't fired
+     * yet in this request — when it does, the restored plugin set boots
+     * normally without the too-early textdomain warnings.
+     */
+    public static function run_deferred_finalisation(): void {
+        $pending = get_option('sitessaver_pending_finalize', null);
+        if (!is_array($pending)) {
+            return;
+        }
+        delete_option('sitessaver_pending_finalize');
+
+        if (!empty($pending['active_plugins']) && is_array($pending['active_plugins'])) {
+            update_option('active_plugins', $pending['active_plugins']);
         }
 
-        // Re-activate the theme if it is present on the target install.
-        // Switching to a missing slug corrupts `stylesheet`/`template` options
-        // and leaves the site unbootable — validate before switching.
-        if (!empty($manifest['active_theme'])) {
-            $theme = wp_get_theme($manifest['active_theme']);
+        if (!empty($pending['active_theme'])) {
+            $theme = wp_get_theme($pending['active_theme']);
             if ($theme->exists()) {
-                switch_theme($manifest['active_theme']);
+                switch_theme($pending['active_theme']);
             }
         }
 
-        // Clear any transients.
-        global $wpdb;
-        $wpdb->query("DELETE FROM {$wpdb->options} WHERE option_name LIKE '_transient_%'");
-        $wpdb->query("DELETE FROM {$wpdb->options} WHERE option_name LIKE '_site_transient_%'");
+        wp_cache_flush();
+
+        // Counter — starts at 2 (user must save Permalinks twice). Admin
+        // decrements it on each ?settings-updated=true round-trip. When it
+        // hits zero the rewrite rules are considered flushed and the
+        // restore banner disappears.
+        set_transient('sitessaver_needs_permalinks_flush', 2, DAY_IN_SECONDS);
     }
 }

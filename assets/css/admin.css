@@ -453,3 +453,113 @@
         padding-bottom: 5px;
     }
 }
+
+/* ==========================================================================
+   Restore-complete modal (AIO-style logout + save-permalinks flow)
+   ========================================================================== */
+
+.sitessaver-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.6);
+    backdrop-filter: blur(4px);
+    z-index: 99999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    animation: sitessaver-fade-in 0.2s ease-out;
+}
+
+.sitessaver-modal {
+    background: #fff;
+    border-radius: 12px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    max-width: 520px;
+    width: 100%;
+    padding: 32px;
+    text-align: center;
+    animation: sitessaver-pop-in 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+    max-height: 90vh;
+    overflow-y: auto;
+}
+
+.sitessaver-modal-icon {
+    font-size: 56px;
+    color: #10b981;
+    line-height: 1;
+    margin-bottom: 12px;
+}
+
+.sitessaver-modal h2 {
+    margin: 0 0 8px;
+    font-size: 22px;
+    font-weight: 600;
+    color: #0f172a;
+}
+
+.sitessaver-modal-lead {
+    margin: 0 0 20px;
+    color: #475569;
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+.sitessaver-modal-steps {
+    text-align: left;
+    margin: 0 0 24px;
+    padding-left: 22px;
+    color: #334155;
+    font-size: 14px;
+    line-height: 1.7;
+}
+
+.sitessaver-modal-steps li + li {
+    margin-top: 6px;
+}
+
+.sitessaver-modal-steps em {
+    font-style: normal;
+    background: #f1f5f9;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 13px;
+}
+
+.sitessaver-modal-actions {
+    display: flex;
+    justify-content: center;
+    gap: 12px;
+    margin-bottom: 16px;
+}
+
+.sitessaver-modal-actions .btn {
+    min-width: 180px;
+    justify-content: center;
+}
+
+.sitessaver-modal-footnote {
+    margin: 0;
+    font-size: 12px;
+    color: #94a3b8;
+    font-style: italic;
+}
+
+.ri-spin {
+    display: inline-block;
+    animation: sitessaver-spin 0.8s linear infinite;
+}
+
+@keyframes sitessaver-fade-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+@keyframes sitessaver-pop-in {
+    from { opacity: 0; transform: translateY(12px) scale(0.96); }
+    to   { opacity: 1; transform: translateY(0)    scale(1); }
+}
+
+@keyframes sitessaver-spin {
+    to { transform: rotate(360deg); }
+}

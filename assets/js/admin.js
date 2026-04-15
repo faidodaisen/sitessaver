@@ -29,6 +29,54 @@
         });
     }
 
+    // ---------- RESTORE-COMPLETE MODAL ----------
+    // Mirrors the All-in-One WP Migration UX: after a successful restore we
+    // force a logout + permalinks-save round-trip so the new plugin set
+    // boots cleanly and rewrite rules are flushed.
+
+    function showRestoreCompleteModal() {
+        // Don't stack modals.
+        if ($('#sitessaver-restore-modal').length) return;
+
+        var html = ''
+            + '<div id="sitessaver-restore-modal" class="sitessaver-modal-backdrop">'
+            +   '<div class="sitessaver-modal" role="dialog" aria-modal="true" aria-labelledby="sitessaver-modal-title">'
+            +     '<div class="sitessaver-modal-icon"><i class="ri-checkbox-circle-fill"></i></div>'
+            +     '<h2 id="sitessaver-modal-title">Restore complete</h2>'
+            +     '<p class="sitessaver-modal-lead">Your site has been restored. To finish, we need to reload WordPress with the restored plugins and theme:</p>'
+            +     '<ol class="sitessaver-modal-steps">'
+            +       '<li><strong>You will be logged out</strong> automatically.</li>'
+            +       '<li><strong>Log in again</strong> using the restored site\u2019s credentials.</li>'
+            +       '<li>You\u2019ll land on <em>Settings \u2192 Permalinks</em>. Click <strong>Save Changes</strong> <u>twice</u> to flush rewrite rules.</li>'
+            +     '</ol>'
+            +     '<div class="sitessaver-modal-actions">'
+            +       '<button type="button" class="btn btn-primary" id="sitessaver-finalize-btn">'
+            +         '<i class="ri-logout-box-r-line"></i> Finish & log out'
+            +       '</button>'
+            +     '</div>'
+            +     '<p class="sitessaver-modal-footnote">Do not close this tab until you\u2019ve completed the two permalinks saves.</p>'
+            +   '</div>'
+            + '</div>';
+
+        $('body').append(html);
+
+        $('#sitessaver-finalize-btn').on('click', function () {
+            var $btn = $(this).prop('disabled', true);
+            $btn.html('<i class="ri-loader-4-line ri-spin"></i> Logging out...');
+
+            ajax('sitessaver_finalize_restore', {},
+                function (res) {
+                    window.location.href = res.redirect;
+                },
+                function (err) {
+                    $btn.prop('disabled', false)
+                        .html('<i class="ri-logout-box-r-line"></i> Finish & log out');
+                    alert(err.message || 'Could not finalise. Please log out manually and save Permalinks twice.');
+                }
+            );
+        });
+    }
+
     function updateProgress($wrap, pct, text) {
         var $p = $wrap.find('.sitessaver-progress');
         $p.show();
@@ -238,6 +286,7 @@
                 function (res) {
                     hideProgress($form);
                     showResult($form, res.message || SS.strings.done, false);
+                    showRestoreCompleteModal();
                 },
                 function (err) {
                     hideProgress($form);
@@ -263,8 +312,7 @@
         ajax('sitessaver_import', { file: file },
             function (res) {
                 hideProgress($form);
-                alert(res.message || SS.strings.done);
-                location.reload();
+                showRestoreCompleteModal();
             },
             function (err) {
                 hideProgress($form);
@@ -454,8 +502,7 @@
 
         ajax('sitessaver_gdrive_restore', { file_id: id }, function (res) {
             $progress.hide().find('.sitessaver-progress-fill').removeClass('indeterminate');
-            alert(res.message || 'Restored!');
-            location.reload();
+            showRestoreCompleteModal();
         }, function (err) {
             $progress.hide().find('.sitessaver-progress-fill').removeClass('indeterminate');
             alert(err.message || SS.strings.error);
