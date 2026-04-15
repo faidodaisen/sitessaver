@@ -6,6 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.3] — 2026-04-15
+
+### Fixed
+- **No more "textdomain loaded too early" notices after restore.** Elementor, Landinghub, and any plugin that declares a textdomain was firing the WP 6.7 warning because we were activating the restored plugin set and calling `switch_theme()` mid-AJAX, after `init` had already fired. The restored plugins would boot inside the wrong request and call `load_plugin_textdomain()` too early.
+
+### Changed
+- **Two-step restore finalisation (All-in-One WP Migration style).**
+  - `post_import()` no longer touches `active_plugins`, `switch_theme()`, `wp_cache_flush()`, or `flush_rewrite_rules()` during the AJAX restore. Only transients are cleared inline.
+  - A new modal appears after a successful restore explaining the three steps: log out, log in, save Permalinks twice.
+  - A new `sitessaver_finalize_restore` AJAX endpoint runs the deferred activation, logs the user out, and returns a login URL that redirects to Settings > Permalinks after re-auth.
+  - On the Permalinks page the plugin shows a banner and counts two saves before declaring the restore complete — this is what flushes rewrite rules cleanly.
+- Works for all three restore paths: upload, restore-from-local-backup, and restore-from-Google-Drive.
+
+---
+
 ## [1.1.2] — 2026-04-15
 
 ### Fixed

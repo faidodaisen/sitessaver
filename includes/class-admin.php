@@ -20,6 +20,84 @@ final class Admin {
     public function init(): void {
         add_action('admin_menu', [$this, 'register_menu']);
         add_action('admin_enqueue_scripts', [$this, 'enqueue_assets']);
+
+        // Run deferred post-import finalisation on the first clean admin
+        // request after a restore, then track the permalinks-save cycle.
+        add_action('admin_init', [$this, 'handle_post_import_finalisation'], 1);
+        add_action('admin_notices', [$this, 'render_restore_finalisation_notice']);
+    }
+
+    /**
+     * First-request-after-restore hook.
+     *
+     *  1. Runs the deferred work (activates plugins, theme, clears cache).
+     *  2. If we're now on Settings > Permalinks and a save just happened,
+     *     decrement the save-counter; when it hits zero the restore is
+     *     fully finalised and the banner disappears.
+     */
+    public function handle_post_import_finalisation(): void {
+        Import::run_deferred_finalisation();
+
+        if (!current_user_can('manage_options')) {
+            return;
+        }
+
+        global $pagenow;
+        if ($pagenow !== 'options-permalink.php') {
+            return;
+        }
+
+        // WP redirects to ?settings-updated=true after saving the permalinks
+        // form. That's our cue the user just clicked "Save Changes".
+        if (isset($_GET['settings-updated']) && $_GET['settings-updated'] === 'true') {
+            $remaining = (int) get_transient('sitessaver_needs_permalinks_flush');
+            if ($remaining > 0) {
+                $remaining--;
+                if ($remaining <= 0) {
+                    delete_transient('sitessaver_needs_permalinks_flush');
+                    set_transient('sitessaver_restore_complete', 1, HOUR_IN_SECONDS);
+                } else {
+                    set_transient('sitessaver_needs_permalinks_flush', $remaining, DAY_IN_SECONDS);
+                }
+            }
+        }
+    }
+
+    /**
+     * Banner on Settings > Permalinks during restore finalisation.
+     */
+    public function render_restore_finalisation_notice(): void {
+        global $pagenow;
+
+        if (get_transient('sitessaver_restore_complete')) {
+            delete_transient('sitessaver_restore_complete');
+            echo '<div class="notice notice-success is-dismissible"><p><strong>SitesSaver:</strong> ' .
+                esc_html__('Restore complete. Your site is now running on the restored backup.', 'sitessaver') .
+                '</p></div>';
+            return;
+        }
+
+        $remaining = (int) get_transient('sitessaver_needs_permalinks_flush');
+        if ($remaining <= 0) {
+            return;
+        }
+
+        if ($pagenow !== 'options-permalink.php') {
+            // Gently nudge from other admin pages.
+            $url = esc_url(admin_url('options-permalink.php?sitessaver_finalize=1'));
+            echo '<div class="notice notice-warning"><p><strong>SitesSaver:</strong> ' .
+                esc_html__('Site restore is almost done — finish by saving permalinks.', 'sitessaver') .
+                ' <a href="' . $url . '" class="button button-primary" style="margin-left:8px;">' .
+                esc_html__('Go to Permalinks', 'sitessaver') . '</a></p></div>';
+            return;
+        }
+
+        $clicks = $remaining === 2
+            ? __('Click "Save Changes" below — twice — to flush rewrite rules and finalise the restore.', 'sitessaver')
+            : __('Click "Save Changes" one more time to finalise the restore.', 'sitessaver');
+
+        echo '<div class="notice notice-warning"><p><strong>SitesSaver:</strong> ' .
+            esc_html($clicks) . '</p></div>';
     }
 
     public function register_menu(): void {

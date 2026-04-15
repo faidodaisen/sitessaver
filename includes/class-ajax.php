@@ -39,6 +39,7 @@ final class Ajax {
             'sitessaver_gdrive_delete'  => 'handle_gdrive_delete',
             'sitessaver_upload_chunk'   => 'handle_upload_chunk',
             'sitessaver_cleanup_chunks' => 'handle_cleanup_chunks',
+            'sitessaver_finalize_restore' => 'handle_finalize_restore',
         ];
 
 
@@ -183,6 +184,27 @@ final class Ajax {
         } else {
             wp_send_json_error($result);
         }
+    }
+
+    /**
+     * Finalize a restore: run the deferred post-import work, log the user
+     * out, and hand back a login URL that will redirect to Settings >
+     * Permalinks after re-auth (mirrors the All-in-One WP Migration UX).
+     */
+    public function handle_finalize_restore(): void {
+        sitessaver_verify_ajax();
+
+        Import::run_deferred_finalisation();
+
+        $redirect_after_login = admin_url('options-permalink.php?sitessaver_finalize=1');
+        $login_url = wp_login_url($redirect_after_login);
+
+        wp_logout();
+
+        wp_send_json_success([
+            'redirect' => $login_url,
+            'message'  => __('Restore finalised. Please log in again.', 'sitessaver'),
+        ]);
     }
 
     /**
