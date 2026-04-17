@@ -35,6 +35,48 @@
                             </div>
                         </td>
                     </tr>
+                    <tr>
+                        <th><?php esc_html_e('Save To', 'sitessaver'); ?></th>
+                        <td>
+                            <?php
+                            $gdrive_connected = \SitesSaver\GDrive::is_connected();
+                            ?>
+                            <div class="ss-destination-group">
+                                <label class="ss-destination-option">
+                                    <input type="radio" name="export_destination" value="local" checked />
+                                    <span class="ss-destination-label">
+                                        <i class="ri-hard-drive-2-line"></i>
+                                        <?php esc_html_e('Local Only', 'sitessaver'); ?>
+                                    </span>
+                                </label>
+                                <label class="ss-destination-option<?php echo $gdrive_connected ? '' : ' ss-destination-disabled'; ?>">
+                                    <input type="radio" name="export_destination" value="gdrive" <?php echo $gdrive_connected ? '' : 'disabled'; ?> />
+                                    <span class="ss-destination-label">
+                                        <i class="ri-google-line"></i>
+                                        <?php esc_html_e('Google Drive', 'sitessaver'); ?>
+                                    </span>
+                                </label>
+                                <label class="ss-destination-option<?php echo $gdrive_connected ? '' : ' ss-destination-disabled'; ?>">
+                                    <input type="radio" name="export_destination" value="both" <?php echo $gdrive_connected ? '' : 'disabled'; ?> />
+                                    <span class="ss-destination-label">
+                                        <i class="ri-layout-grid-line"></i>
+                                        <?php esc_html_e('Local + Google Drive', 'sitessaver'); ?>
+                                    </span>
+                                </label>
+                            </div>
+                            <?php if ( ! $gdrive_connected ) : ?>
+                            <p class="description" style="margin-top:8px;">
+                                <?php
+                                printf(
+                                    /* translators: %s: settings page link */
+                                    esc_html__('Google Drive not connected. %s to enable Drive upload.', 'sitessaver'),
+                                    '<a href="' . esc_url( admin_url( 'admin.php?page=sitessaver-settings' ) ) . '">' . esc_html__( 'Connect in Settings', 'sitessaver' ) . '</a>'
+                                );
+                                ?>
+                            </p>
+                            <?php endif; ?>
+                        </td>
+                    </tr>
                 </table>
 
                 <div class="sitessaver-progress" style="display:none;">

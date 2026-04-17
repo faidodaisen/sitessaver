@@ -58,11 +58,18 @@ final class Ajax {
         @set_time_limit(0);
         wp_raise_memory_limit('admin');
 
+        $allowed_destinations = ['local', 'gdrive', 'both'];
+        $destination = sanitize_text_field(wp_unslash($_POST['export_destination'] ?? 'local'));
+        if (!in_array($destination, $allowed_destinations, true)) {
+            $destination = 'local';
+        }
+
         $options = [
-            'include_db'      => (bool) ($_POST['include_db'] ?? true),
-            'include_media'   => (bool) ($_POST['include_media'] ?? true),
-            'include_plugins' => (bool) ($_POST['include_plugins'] ?? true),
-            'include_themes'  => (bool) ($_POST['include_themes'] ?? true),
+            'include_db'         => (bool) ($_POST['include_db'] ?? true),
+            'include_media'      => (bool) ($_POST['include_media'] ?? true),
+            'include_plugins'    => (bool) ($_POST['include_plugins'] ?? true),
+            'include_themes'     => (bool) ($_POST['include_themes'] ?? true),
+            'export_destination' => $destination,
         ];
 
         $status = Export::start($options);
