@@ -97,8 +97,124 @@
         var $card = $r.find('.ss-result-card');
         $card.removeClass('success error').addClass(isError ? 'error' : 'success');
         $card.find('i').attr('class', isError ? 'ri-error-warning-fill' : 'ri-checkbox-circle-fill');
-        $r.find('.sitessaver-result-text').html(msg); // Allow HTML for links
+        $r.find('.sitessaver-result-text').html(msg);
     }
+
+    // ---------- PROGRESS MODAL ----------
+
+    var ssModal = {
+        $el: null,
+        cancelable: true,
+        onCancel: null,
+
+        build: function () {
+            if ($('#ss-progress-modal').length) return;
+            var html =
+                '<div id="ss-progress-modal" class="sitessaver-modal-backdrop" style="display:none;">' +
+                  '<div class="sitessaver-modal" role="dialog" aria-modal="true">' +
+                    '<div class="ss-progress-modal-icon" id="ss-pm-icon"><i class="ri-loader-4-line ri-spin"></i></div>' +
+                    '<h2 id="ss-pm-title"></h2>' +
+                    '<p class="ss-progress-modal-subtitle" id="ss-pm-subtitle"></p>' +
+                    '<div class="ss-progress-modal-bar-wrap">' +
+                      '<div class="sitessaver-progress" style="display:block;">' +
+                        '<div class="sitessaver-progress-text">' +
+                          '<span class="step-label"></span>' +
+                          '<span class="step-pct">0%</span>' +
+                        '</div>' +
+                        '<div class="sitessaver-progress-bar"><div class="sitessaver-progress-fill"></div></div>' +
+                      '</div>' +
+                    '</div>' +
+                    '<p class="ss-progress-modal-step" id="ss-pm-step"></p>' +
+                    '<div class="ss-progress-modal-caution">' +
+                      '<i class="ri-alert-line"></i>' +
+                      '<span id="ss-pm-caution"></span>' +
+                    '</div>' +
+                    '<div class="ss-cancel-confirm" id="ss-cancel-confirm">' +
+                      '<p><i class="ri-error-warning-line"></i> Are you sure you want to cancel?</p>' +
+                      '<div class="ss-cancel-confirm-actions">' +
+                        '<button type="button" class="btn btn-outline" id="ss-cancel-no">No, continue</button>' +
+                        '<button type="button" class="btn" style="background:var(--ss-danger);color:#fff;border-color:var(--ss-danger);" id="ss-cancel-yes">Yes, cancel</button>' +
+                      '</div>' +
+                    '</div>' +
+                    '<div class="ss-progress-modal-actions">' +
+                      '<button type="button" class="btn btn-outline" id="ss-pm-cancel-btn"><i class="ri-close-line"></i> Cancel</button>' +
+                    '</div>' +
+                  '</div>' +
+                '</div>';
+            $('body').append(html);
+            this.$el = $('#ss-progress-modal');
+
+            var self = this;
+            $(document).on('click', '#ss-pm-cancel-btn', function () {
+                if (!self.cancelable) return;
+                $('#ss-cancel-confirm').slideDown(150);
+                $(this).prop('disabled', true);
+            });
+            $(document).on('click', '#ss-cancel-no', function () {
+                $('#ss-cancel-confirm').slideUp(150);
+                $('#ss-pm-cancel-btn').prop('disabled', false);
+            });
+            $(document).on('click', '#ss-cancel-yes', function () {
+                if (self.onCancel) self.onCancel();
+            });
+        },
+
+        open: function (opts) {
+            this.build();
+            this.cancelable = opts.cancelable !== false;
+            this.onCancel   = opts.onCancel || null;
+
+            $('#ss-pm-icon').attr('class', 'ss-progress-modal-icon' + (opts.warning ? ' is-warning' : ''));
+            $('#ss-pm-icon i').attr('class', 'ri-loader-4-line ri-spin');
+            $('#ss-pm-title').text(opts.title || '');
+            $('#ss-pm-subtitle').text(opts.subtitle || '');
+            $('#ss-pm-caution').text(opts.caution || 'Do not close this tab or navigate away while the operation is running.');
+            $('#ss-pm-step').text('');
+            $('#ss-cancel-confirm').hide();
+            $('#ss-pm-cancel-btn').prop('disabled', false).toggle(!!this.cancelable);
+            this.setProgress(0, '');
+            this.$el.fadeIn(200);
+            $('body').addClass('ss-modal-open');
+        },
+
+        setProgress: function (pct, label) {
+            var $p = this.$el.find('.sitessaver-progress');
+            $p.find('.sitessaver-progress-fill').removeClass('indeterminate').css('width', pct + '%');
+            $p.find('.step-label').text(label);
+            $p.find('.step-pct').text(pct + '%');
+            $('#ss-pm-step').text(label);
+        },
+
+        setIndeterminate: function (label) {
+            var $p = this.$el.find('.sitessaver-progress');
+            $p.find('.sitessaver-progress-fill').addClass('indeterminate').css('width', '100%');
+            $p.find('.step-label').text(label);
+            $p.find('.step-pct').text('');
+            $('#ss-pm-step').text(label);
+        },
+
+        disableCancel: function (reason) {
+            this.cancelable = false;
+            var $btn = $('#ss-pm-cancel-btn');
+            $btn.prop('disabled', true);
+            if (reason) $btn.text(reason);
+            $('#ss-cancel-confirm').hide();
+        },
+
+        done: function (iconClass) {
+            $('#ss-pm-icon i').attr('class', iconClass || 'ri-checkbox-circle-fill').css('color', 'var(--ss-success)');
+            $('#ss-pm-icon').removeClass('is-warning');
+            $('#ss-pm-cancel-btn').hide();
+            $('#ss-cancel-confirm').hide();
+        },
+
+        close: function () {
+            if (this.$el) {
+                this.$el.fadeOut(200);
+                $('body').removeClass('ss-modal-open');
+            }
+        }
+    };
 
 
     // ---------- EXPORT ----------
@@ -106,56 +222,110 @@
     $(document).on('submit', '#sitessaver-export-form', function (e) {
         e.preventDefault();
         var $form = $(this);
-        var $btn = $('#sitessaver-export-btn');
+        var $btn  = $('#sitessaver-export-btn');
 
         $btn.prop('disabled', true);
         $form.find('.sitessaver-result').hide();
-        updateProgress($form, 0, SS.strings.exporting);
-        
+
+        var destination = $form.find('[name=export_destination]:checked').val() || 'local';
+        var cancelled   = false;
+
+        var cautionText = destination === 'local'
+            ? 'Do not close this tab while the backup is being created.'
+            : 'Do not close this tab. The backup will be uploaded to Google Drive after it is created.';
+
+        ssModal.open({
+            title:    'Exporting Site',
+            subtitle: 'Your site backup is being created. This may take a few minutes.',
+            caution:  cautionText,
+            cancelable: true,
+            onCancel: function () {
+                cancelled = true;
+                ssModal.disableCancel('Cancelling...');
+            }
+        });
+
         var data = {
-            include_db: $form.find('[name=include_db]').is(':checked') ? 1 : 0,
-            include_media: $form.find('[name=include_media]').is(':checked') ? 1 : 0,
-            include_plugins: $form.find('[name=include_plugins]').is(':checked') ? 1 : 0,
-            include_themes: $form.find('[name=include_themes]').is(':checked') ? 1 : 0
+            include_db:          $form.find('[name=include_db]').is(':checked') ? 1 : 0,
+            include_media:       $form.find('[name=include_media]').is(':checked') ? 1 : 0,
+            include_plugins:     $form.find('[name=include_plugins]').is(':checked') ? 1 : 0,
+            include_themes:      $form.find('[name=include_themes]').is(':checked') ? 1 : 0,
+            export_destination:  destination
         };
 
         ajax('sitessaver_export', data, function (res) {
-            var steps = res.steps;
-            var uid = res.status.uid;
+            var steps       = res.steps;
+            var uid         = res.status.uid;
             var currentStep = 0;
 
             function runNextStep() {
-                if (currentStep >= steps.length) {
-                    ajax('sitessaver_get_export_status', { uid: uid }, function(finalRes) {
-                        hideProgress($form);
-                        var result = finalRes.status.result;
-                        var dlUrl = SS.ajaxUrl + '?action=sitessaver_download_backup&file=' + encodeURIComponent(result.file) + '&nonce=' + SS.downloadNonce;
-                        var msg = SS.strings.done + ' — ' + result.file + ' (' + result.size + ') <br><br>';
-                        msg += '<a href="' + dlUrl + '" class="ss-download-link" target="_blank"><i class="ri-download-2-line"></i> Click here to download your backup</a>';
-                        showResult($form, msg, false);
+                if (cancelled) {
+                    ajax('sitessaver_cancel_export', { uid: uid }, function () {
+                        ssModal.close();
+                        showResult($form, 'Export cancelled.', true);
                         $btn.prop('disabled', false);
                     });
                     return;
                 }
 
-                var step = steps[currentStep];
-                updateProgress($form, step.pct, step.label);
+                if (currentStep >= steps.length) {
+                    ajax('sitessaver_get_export_status', { uid: uid }, function (finalRes) {
+                        ssModal.done();
+                        setTimeout(function () {
+                            ssModal.close();
+                            var result = finalRes.status.result;
+                            var dest   = result.destination || 'local';
+                            var msg    = '';
 
-                ajax('sitessaver_export_step', { uid: uid, step_index: currentStep }, 
+                            if ((dest === 'local' || dest === 'both') && result.file) {
+                                var dlUrl = SS.ajaxUrl + '?action=sitessaver_download_backup&file=' + encodeURIComponent(result.file) + '&nonce=' + SS.downloadNonce;
+                                msg += SS.strings.done + ' — ' + result.file + ' (' + result.size + ')<br><br>';
+                                msg += '<a href="' + dlUrl + '" class="ss-download-link" target="_blank"><i class="ri-download-2-line"></i> Download backup</a>';
+                            }
+
+                            if ((dest === 'gdrive' || dest === 'both') && result.gdrive) {
+                                if (msg) msg += '<br><br>';
+                                if (result.gdrive.success) {
+                                    msg += '<i class="ri-google-line"></i> ' + (result.gdrive.message || 'Uploaded to Google Drive.');
+                                    if (result.gdrive_folder_url) {
+                                        msg += ' <a href="' + result.gdrive_folder_url + '" target="_blank" rel="noopener"><i class="ri-external-link-line"></i> Open Drive folder</a>';
+                                    }
+                                } else {
+                                    msg += '<span style="color:var(--ss-danger)"><i class="ri-error-warning-line"></i> Google Drive upload failed: ' + (result.gdrive.message || 'Unknown error') + '</span>';
+                                }
+                            }
+
+                            if (!msg) msg = SS.strings.done;
+                            showResult($form, msg, false);
+                            $btn.prop('disabled', false);
+                        }, 800);
+                    });
+                    return;
+                }
+
+                var step  = steps[currentStep];
+                var label = step.label;
+                if (step.id === 'finalize' && (destination === 'gdrive' || destination === 'both')) {
+                    label = 'Uploading to Google Drive...';
+                    ssModal.disableCancel('Uploading to Drive…');
+                }
+                ssModal.setProgress(step.pct, label);
+
+                ajax('sitessaver_export_step', { uid: uid, step_index: currentStep },
                     function (stepRes) {
                         if (stepRes.success) {
                             currentStep++;
                             runNextStep();
                         } else {
-                            handleError(stepRes);
+                            handleExportError(stepRes);
                         }
                     },
-                    handleError
+                    handleExportError
                 );
             }
 
-            function handleError(err) {
-                hideProgress($form);
+            function handleExportError(err) {
+                ssModal.close();
                 showResult($form, err.message || SS.strings.error, true);
                 $btn.prop('disabled', false);
             }
@@ -163,6 +333,7 @@
             runNextStep();
 
         }, function (err) {
+            ssModal.close();
             showResult($form, err.message || SS.strings.error, true);
             $btn.prop('disabled', false);
         });
@@ -221,25 +392,44 @@
             return;
         }
 
-        var $form = $('.sitessaver-wrap');
-        var chunkSize = 2 * 1024 * 1024;
+        var $form       = $('.sitessaver-wrap');
+        var chunkSize   = 2 * 1024 * 1024;
         var totalChunks = Math.ceil(file.size / chunkSize);
-        var uploadId = generateUploadId();
+        var uploadId    = generateUploadId();
         var currentChunk = 0;
         var assembledFile = '';
+        var cancelled   = false;
+        var activeXhr   = null;
 
         $form.find('.sitessaver-result').hide();
-        updateProgress($form, 0, SS.strings.importing + ' (0%)');
+
+        ssModal.open({
+            title:    'Importing Backup',
+            subtitle: 'Uploading your backup file. Please wait.',
+            caution:  'Do not close this tab or navigate away. Cancelling during upload will discard the file.',
+            cancelable: true,
+            onCancel: function () {
+                cancelled = true;
+                if (activeXhr) activeXhr.abort();
+                ajax('sitessaver_cleanup_chunks', { upload_id: uploadId });
+                ssModal.close();
+                showResult($form, 'Import cancelled.', true);
+            }
+        });
+
+        ssModal.setProgress(0, 'Uploading (0%)');
 
         function sendNextChunk() {
+            if (cancelled) return;
+
             if (currentChunk >= totalChunks) {
                 startRestoration(assembledFile);
                 return;
             }
 
-            var start = currentChunk * chunkSize;
-            var end = Math.min(start + chunkSize, file.size);
-            var blob = file.slice(start, end);
+            var start    = currentChunk * chunkSize;
+            var end      = Math.min(start + chunkSize, file.size);
+            var blob     = file.slice(start, end);
             var formData = new FormData();
             formData.append('action', 'sitessaver_upload_chunk');
             formData.append('nonce', SS.nonce);
@@ -249,47 +439,58 @@
             formData.append('filename', file.name);
             formData.append('upload_id', uploadId);
 
-            $.ajax({
+            activeXhr = $.ajax({
                 url: SS.ajaxUrl,
                 type: 'POST',
                 data: formData,
                 processData: false,
                 contentType: false,
                 success: function (res) {
+                    if (cancelled) return;
                     if (res.success) {
                         if (res.data && res.data.assembled_file) {
                             assembledFile = res.data.assembled_file;
                         }
                         currentChunk++;
                         var pct = Math.round((currentChunk / totalChunks) * 100);
-                        updateProgress($form, pct, SS.strings.importing + ' (' + pct + '%)');
+                        ssModal.setProgress(pct, 'Uploading (' + pct + '%)');
                         sendNextChunk();
                     } else {
                         onUploadError(res.data ? res.data.message : SS.strings.error);
                     }
                 },
-                error: function () { onUploadError(SS.strings.error); }
+                error: function (xhr, status) {
+                    if (cancelled || status === 'abort') return;
+                    onUploadError(SS.strings.error);
+                }
             });
         }
 
         function onUploadError(msg) {
             ajax('sitessaver_cleanup_chunks', { upload_id: uploadId });
-            hideProgress($form);
+            ssModal.close();
             showResult($form, msg, true);
         }
 
         function startRestoration(filename) {
-            updateProgress($form, 100, SS.strings.restoring);
-            $form.find('.sitessaver-progress-fill').addClass('indeterminate');
+            // Restore phase — cannot cancel, warn user clearly
+            ssModal.disableCancel('Restoring — cannot cancel');
+            $('#ss-pm-title').text('Restoring Site');
+            $('#ss-pm-subtitle').text('Database and files are being restored. This cannot be interrupted.');
+            $('#ss-pm-caution').text('Do not close this tab. Interrupting the restore may leave your site in a broken state.');
+            ssModal.setIndeterminate('Restoring database and files...');
 
             ajax('sitessaver_import', { file: filename },
                 function (res) {
-                    hideProgress($form);
-                    showResult($form, res.message || SS.strings.done, false);
-                    showRestoreCompleteModal();
+                    ssModal.done();
+                    setTimeout(function () {
+                        ssModal.close();
+                        showResult($form, res.message || SS.strings.done, false);
+                        showRestoreCompleteModal();
+                    }, 800);
                 },
                 function (err) {
-                    hideProgress($form);
+                    ssModal.close();
                     showResult($form, err.message || SS.strings.error, true);
                 }
             );
@@ -302,21 +503,29 @@
     // ---------- RESTORE (from existing backup) ----------
 
     $(document).on('click', '.sitessaver-restore-btn', function () {
-        var file = $(this).data('file');
+        var file  = $(this).data('file');
+        var $form = $('.sitessaver-wrap');
         if (!confirm(SS.strings.confirmRestore)) return;
 
-        var $form = $('.sitessaver-wrap'); // Fallback container
-        updateProgress($form, 0, SS.strings.restoring);
-        $form.find('.sitessaver-progress-fill').addClass('indeterminate');
+        ssModal.open({
+            title:      'Restoring Site',
+            subtitle:   'Database and files are being restored. Please wait.',
+            caution:    'Do not close this tab. Interrupting the restore may leave your site in a broken state.',
+            cancelable: false
+        });
+        ssModal.setIndeterminate('Restoring database and files...');
 
         ajax('sitessaver_import', { file: file },
-            function (res) {
-                hideProgress($form);
-                showRestoreCompleteModal();
+            function () {
+                ssModal.done();
+                setTimeout(function () {
+                    ssModal.close();
+                    showRestoreCompleteModal();
+                }, 800);
             },
             function (err) {
-                hideProgress($form);
-                alert(err.message || SS.strings.error);
+                ssModal.close();
+                showResult($form, err.message || SS.strings.error, true);
             }
         );
     });
@@ -527,42 +736,68 @@
 
     function runExportLoop($form, uid, steps, startStep) {
         var currentStep = startStep;
-        var $btn = $('#sitessaver-export-btn');
+        var $btn        = $('#sitessaver-export-btn');
+        var cancelled   = false;
         $btn.prop('disabled', true);
 
+        ssModal.open({
+            title:      'Resuming Export',
+            subtitle:   'Continuing your site backup from where it left off.',
+            caution:    'Do not close this tab while the backup is being created.',
+            cancelable: true,
+            onCancel: function () {
+                cancelled = true;
+                ssModal.disableCancel('Cancelling...');
+            }
+        });
+
         function runNextStep() {
-            if (currentStep >= steps.length) {
-                ajax('sitessaver_get_export_status', { uid: uid }, function (finalRes) {
-                    hideProgress($form);
-                    var result = (finalRes.status && finalRes.status.result) || {};
-                    if (result.file) {
-                        var dlUrl = SS.ajaxUrl + '?action=sitessaver_download_backup&file=' + encodeURIComponent(result.file) + '&nonce=' + SS.downloadNonce;
-                        var msg = SS.strings.done + ' — ' + result.file + ' (' + result.size + ') <br><br>';
-                        msg += '<a href="' + dlUrl + '" class="ss-download-link" target="_blank"><i class="ri-download-2-line"></i> Click here to download your backup</a>';
-                        showResult($form, msg, false);
-                    } else {
-                        showResult($form, SS.strings.done, false);
-                    }
+            if (cancelled) {
+                ajax('sitessaver_cancel_export', { uid: uid }, function () {
+                    ssModal.close();
                     $('.ss-resume-banner').remove();
+                    showResult($form, 'Export cancelled.', true);
                     $btn.prop('disabled', false);
                 });
                 return;
             }
 
+            if (currentStep >= steps.length) {
+                ajax('sitessaver_get_export_status', { uid: uid }, function (finalRes) {
+                    ssModal.done();
+                    setTimeout(function () {
+                        ssModal.close();
+                        var result = (finalRes.status && finalRes.status.result) || {};
+                        var msg = '';
+                        if (result.file) {
+                            var dlUrl = SS.ajaxUrl + '?action=sitessaver_download_backup&file=' + encodeURIComponent(result.file) + '&nonce=' + SS.downloadNonce;
+                            msg = SS.strings.done + ' — ' + result.file + ' (' + result.size + ') <br><br>';
+                            msg += '<a href="' + dlUrl + '" class="ss-download-link" target="_blank"><i class="ri-download-2-line"></i> Click here to download your backup</a>';
+                        } else {
+                            msg = SS.strings.done;
+                        }
+                        showResult($form, msg, false);
+                        $('.ss-resume-banner').remove();
+                        $btn.prop('disabled', false);
+                    }, 800);
+                });
+                return;
+            }
+
             var step = steps[currentStep];
-            updateProgress($form, step.pct, step.label);
+            ssModal.setProgress(step.pct, step.label);
 
             ajax('sitessaver_export_step', { uid: uid, step_index: currentStep }, function (stepRes) {
                 if (stepRes.success) {
                     currentStep++;
                     runNextStep();
                 } else {
-                    hideProgress($form);
+                    ssModal.close();
                     showResult($form, stepRes.message || SS.strings.error, true);
                     $btn.prop('disabled', false);
                 }
             }, function (err) {
-                hideProgress($form);
+                ssModal.close();
                 showResult($form, err.message || SS.strings.error, true);
                 $btn.prop('disabled', false);
             });

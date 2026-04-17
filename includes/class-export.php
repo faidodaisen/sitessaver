@@ -151,17 +151,43 @@ final class Export {
                 case 'finalize':
                     // Isolated cleanup — ONLY delete this export's temp dir.
                     self::remove_directory($temp_dir);
-                    
-                    $zip_path = SITESSAVER_STORAGE_DIR . '/' . $status['backup_name'];
+
+                    $zip_path    = SITESSAVER_STORAGE_DIR . '/' . $status['backup_name'];
+                    $destination = $options['export_destination'] ?? 'local';
+
                     $result = [
-                        'success' => true,
-                        'file'    => $status['backup_name'],
-                        'path'    => $zip_path,
-                        'size'    => sitessaver_format_size((int) filesize($zip_path)),
+                        'success'     => true,
+                        'file'        => $status['backup_name'],
+                        'path'        => $zip_path,
+                        'size'        => sitessaver_format_size((int) filesize($zip_path)),
+                        'destination' => $destination,
                     ];
-                    
+
+                    // Upload to Google Drive if requested.
+                    if (in_array($destination, ['gdrive', 'both'], true)) {
+                        $job_id       = 'exp_gdrive_' . $uid;
+                        $gdrive_result = GDrive::upload($zip_path, $status['backup_name'], $job_id);
+                        $result['gdrive'] = $gdrive_result;
+
+                        // If destination is gdrive-only and upload failed, surface the error.
+                        if ($destination === 'gdrive' && empty($gdrive_result['success'])) {
+                            throw new \RuntimeException($gdrive_result['message'] ?? __('Failed to upload to Google Drive.', 'sitessaver'));
+                        }
+
+                        if (!empty($gdrive_result['success'])) {
+                            $result['gdrive_folder_url'] = GDrive::get_folder_url();
+                        }
+
+                        // gdrive-only: remove local copy after successful upload.
+                        if ($destination === 'gdrive' && !empty($gdrive_result['success'])) {
+                            @unlink($zip_path);
+                            $result['file'] = '';
+                            $result['path'] = '';
+                        }
+                    }
+
                     do_action('sitessaver_export_complete', $status['backup_name'], $zip_path);
-                    
+
                     $status['status'] = 'completed';
                     $status['result'] = $result;
                     self::save_status($uid, $status);
