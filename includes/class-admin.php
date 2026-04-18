@@ -36,13 +36,44 @@ final class Admin {
      *     fully finalised and the banner disappears.
      */
     public function handle_post_import_finalisation(): void {
-        Import::run_deferred_finalisation();
+        // Finalisation is now driven purely by a signed token in the URL, NOT
+        // by an AJAX call. Why the pivot:
+        //   Previously the client fired `sitessaver_finalize_restore` AJAX,
+        //   which then ran switch_theme() + update_option('active_plugins') +
+        //   wp_logout() inside a request whose auth cookie was signed by the
+        //   PRE-restore DB. That path was fragile across three different
+        //   failure modes (nonce drift, wp_logout action hooks from other
+        //   plugins, Cloudflare-style middleware corrupting the JSON body).
+        //
+        //   The flow now: after a successful restore the client redirects
+        //   straight to wp-login.php with redirect_to=<permalinks?sitessaver_finalize=TOKEN>.
+        //   The browser's auth cookie won't validate against the restored DB,
+        //   so WordPress shows the login prompt — the user re-auths with the
+        //   backup's credentials. On successful login WP bounces to the
+        //   permalinks page carrying our token. This hook runs under the
+        //   freshly authenticated session, so current_user_can() + nonce
+        //   checks all work normally.
+        global $pagenow;
+
+        $token = isset($_GET['sitessaver_finalize'])
+            ? sanitize_text_field(wp_unslash($_GET['sitessaver_finalize']))
+            : '';
+
+        // Accept the finalize token on ANY admin page (WP may strip query
+        // params on certain redirects but permalinks is the configured
+        // destination) — the heavy work should run once per restore.
+        if ($token !== '') {
+            $pending = get_option('sitessaver_pending_finalize', null);
+            $expected = is_array($pending) ? (string) ($pending['token'] ?? '') : '';
+            if ($expected !== '' && hash_equals($expected, $token)) {
+                Import::run_deferred_finalisation();
+            }
+        }
 
         if (!current_user_can('manage_options')) {
             return;
         }
 
-        global $pagenow;
         if ($pagenow !== 'options-permalink.php') {
             return;
         }

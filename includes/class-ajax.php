@@ -178,6 +178,13 @@ final class Ajax {
         self::discard_output_buffer();
 
         if ($result['success']) {
+            // Post-restore authorization token. The browser's cookie was
+            // issued against the PRE-restore DB; after restore the new user
+            // table + auth salts may not recognise it, so the finalize AJAX
+            // call can't rely on the standard nonce/capability check. Hand
+            // the client this short-lived token to present on finalize.
+            $result['finalize_token'] = Import::current_finalize_token();
+            $result['finalize_url']   = Import::build_finalize_redirect_url();
             wp_send_json_success($result);
         } else {
             wp_send_json_error($result);
@@ -205,6 +212,8 @@ final class Ajax {
         self::discard_output_buffer();
 
         if ($result['success']) {
+            $result['finalize_token'] = Import::current_finalize_token();
+            $result['finalize_url']   = Import::build_finalize_redirect_url();
             wp_send_json_success($result);
         } else {
             wp_send_json_error($result);
@@ -227,23 +236,22 @@ final class Ajax {
     }
 
     /**
-     * Finalize a restore: run the deferred post-import work, log the user
-     * out, and hand back a login URL that will redirect to Settings >
-     * Permalinks after re-auth (mirrors the All-in-One WP Migration UX).
+     * Backward-compat AJAX stub. The redirect-based finalize flow (added in
+     * 1.1.6) means this endpoint is no longer called by current JS — the
+     * client navigates straight to wp-login.php and the deferred work runs
+     * in Admin::handle_post_import_finalisation under a clean session.
+     *
+     * We keep the endpoint registered so that any in-flight browser tab
+     * still on cached 1.1.5 JS can complete gracefully: we simply return the
+     * redirect URL and let the client navigate there.
      */
     public function handle_finalize_restore(): void {
-        sitessaver_verify_ajax();
-
-        Import::run_deferred_finalisation();
-
-        $redirect_after_login = admin_url('options-permalink.php?sitessaver_finalize=1');
-        $login_url = wp_login_url($redirect_after_login);
-
-        wp_logout();
-
+        // No auth check — the URL we return carries a one-time token that is
+        // validated server-side at the landing page. Returning the URL itself
+        // leaks nothing sensitive (it's the public login page).
         wp_send_json_success([
-            'redirect' => $login_url,
-            'message'  => __('Restore finalised. Please log in again.', 'sitessaver'),
+            'redirect' => Import::build_finalize_redirect_url(),
+            'message'  => __('Please log in with your restored credentials to complete the restore.', 'sitessaver'),
         ]);
     }
 
@@ -572,6 +580,8 @@ final class Ajax {
         $restore = Import::from_backup($dl['file']);
 
         if ($restore['success']) {
+            $restore['finalize_token'] = Import::current_finalize_token();
+            $restore['finalize_url']   = Import::build_finalize_redirect_url();
             wp_send_json_success($restore);
         } else {
             wp_send_json_error($restore);

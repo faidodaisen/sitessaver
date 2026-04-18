@@ -34,7 +34,27 @@
     // force a logout + permalinks-save round-trip so the new plugin set
     // boots cleanly and rewrite rules are flushed.
 
-    function showRestoreCompleteModal() {
+    // Finalize redirect URL built server-side by Import::build_finalize_redirect_url().
+    // Points at wp-login.php with redirect_to=<permalinks?sitessaver_finalize=TOKEN>.
+    // Why we navigate there instead of calling an AJAX finalize:
+    //   The browser's auth cookie was issued by the PRE-restore DB. ANY
+    //   server-side action that relies on current-user context (AJAX nonce,
+    //   capability checks, wp_logout action hooks from third-party plugins,
+    //   even some Cloudflare/WAF rules) can fail because user context is
+    //   effectively undefined. Navigating straight to wp-login.php sidesteps
+    //   all of it — the user re-authenticates with the backup's credentials,
+    //   and the deferred finalization runs under the fresh session when the
+    //   browser lands on options-permalink.php?sitessaver_finalize=TOKEN.
+    var ssFinalizeUrl = '';
+
+    function showRestoreCompleteModal(payload) {
+        // Accept either the old string-token form or the new payload object
+        // { finalize_token, finalize_url } for forward/backward compat.
+        if (typeof payload === 'object' && payload) {
+            if (typeof payload.finalize_url === 'string' && payload.finalize_url) {
+                ssFinalizeUrl = payload.finalize_url;
+            }
+        }
         // Don't stack modals.
         if ($('#sitessaver-restore-modal').length) return;
 
@@ -64,16 +84,43 @@
             var $btn = $(this).prop('disabled', true);
             $btn.html('<i class="ri-loader-4-line ri-spin"></i> Logging out...');
 
-            ajax('sitessaver_finalize_restore', {},
-                function (res) {
-                    window.location.href = res.redirect;
-                },
-                function (err) {
-                    $btn.prop('disabled', false)
-                        .html('<i class="ri-logout-box-r-line"></i> Finish & log out');
-                    alert(err.message || 'Could not finalise. Please log out manually and save Permalinks twice.');
+            // Clear WordPress auth cookies on the client. Why: the cookies
+            // were signed by the PRE-restore auth salts and are now garbage
+            // as far as the restored DB is concerned. Clearing them client-
+            // side prevents wp-login.php from attempting to validate them
+            // and hitting any middleware that chokes on bad cookies.
+            //
+            // We expire every cookie whose name starts with
+            // `wordpress_logged_in_` or `wordpress_sec_` or `wordpress_`
+            // on both the current host and any parent domain.
+            var hostParts = window.location.hostname.split('.');
+            var domainVariants = [''];
+            for (var i = 0; i < hostParts.length - 1; i++) {
+                domainVariants.push(hostParts.slice(i).join('.'));
+            }
+            var cookies = document.cookie ? document.cookie.split('; ') : [];
+            for (var c = 0; c < cookies.length; c++) {
+                var name = cookies[c].split('=')[0];
+                if (name.indexOf('wordpress') === 0 || name.indexOf('wp-') === 0 || name.indexOf('wp_') === 0) {
+                    for (var d = 0; d < domainVariants.length; d++) {
+                        var domainAttr = domainVariants[d] ? '; domain=' + domainVariants[d] : '';
+                        document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/' + domainAttr;
+                        document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/wp-admin' + domainAttr;
+                    }
                 }
-            );
+            }
+
+            // Direct navigation — no AJAX. If for any reason the server-built
+            // URL isn't available (e.g. viewing a restore-complete modal
+            // rendered by an older plugin build), fall back to wp-login.php
+            // relative to the current host so the user can at least re-auth.
+            var target = ssFinalizeUrl;
+            if (!target) {
+                // Last-ditch fallback: go to the site's login page. User will
+                // then need to manually navigate to Settings > Permalinks.
+                target = window.location.protocol + '//' + window.location.host + '/wp-login.php';
+            }
+            window.location.href = target;
         });
     }
 
@@ -486,7 +533,7 @@
                     setTimeout(function () {
                         ssModal.close();
                         showResult($form, res.message || SS.strings.done, false);
-                        showRestoreCompleteModal();
+                        showRestoreCompleteModal(res);
                     }, 800);
                 },
                 function (err) {
@@ -516,11 +563,11 @@
         ssModal.setIndeterminate('Restoring database and files...');
 
         ajax('sitessaver_import', { file: file },
-            function () {
+            function (res) {
                 ssModal.done();
                 setTimeout(function () {
                     ssModal.close();
-                    showRestoreCompleteModal();
+                    showRestoreCompleteModal(res);
                 }, 800);
             },
             function (err) {
@@ -711,7 +758,7 @@
 
         ajax('sitessaver_gdrive_restore', { file_id: id }, function (res) {
             $progress.hide().find('.sitessaver-progress-fill').removeClass('indeterminate');
-            showRestoreCompleteModal();
+            showRestoreCompleteModal(res);
         }, function (err) {
             $progress.hide().find('.sitessaver-progress-fill').removeClass('indeterminate');
             alert(err.message || SS.strings.error);
