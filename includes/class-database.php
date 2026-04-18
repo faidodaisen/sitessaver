@@ -298,20 +298,159 @@ final class Database {
         string $old_no_scheme,
         string $new_no_scheme
     ): string {
-        // Fast path: nothing to do.
-        $has_url    = $old_url !== '' && str_contains($sql, $old_url);
-        $has_scheme = $old_no_scheme !== ''
-            && $old_no_scheme !== $new_no_scheme
-            && str_contains($sql, $old_no_scheme);
+        // Build a comprehensive replacement map covering every scheme +
+        // escape variant we've encountered in the wild. Why this matters:
+        //
+        // Page builders (Breakdance, Elementor, Oxygen, Bricks) store their
+        // tree as JSON-inside-postmeta, and inside that JSON URLs are stored
+        // with backslash-escaped slashes: `https:\/\/old.com\/...`. Further,
+        // sites frequently mix schemes — a site running on HTTPS exports
+        // with `home_url = https://old.com` but the backup's DB can
+        // legitimately contain HTTP variants (hardcoded assets, CDN
+        // fallbacks, plugins that force-regenerate URLs). When migrating
+        // to a local dev site on HTTP (e.g. Laragon's feldatravel.test),
+        // the replacer must swap BOTH `https://old.com` AND `http://old.com`
+        // to the destination's canonical URL — otherwise Breakdance renders
+        // `<img src="https://feldatravel.test/...">` on a server that only
+        // answers HTTP, and the browser shows a broken image.
+        //
+        // We derive bare hosts from both old_url and new_url, then build
+        // the cross-product of schemes × escape-forms so strtr() can do a
+        // single-pass replacement with array_combine(). This mirrors how
+        // All-in-One WP Migration handles the problem.
+        $pairs = self::build_replacement_pairs($old_url, $new_url, $old_no_scheme, $new_no_scheme);
+        if (empty($pairs)) {
+            return $sql;
+        }
 
-        if (!$has_url && !$has_scheme) {
+        // Fast-path: only rewrite statements that actually contain one of
+        // our source patterns. Checking str_contains against each `from`
+        // is cheap compared to the serialize-preserving walker.
+        $hit = false;
+        foreach ($pairs as $from => $_) {
+            if ($from !== '' && str_contains($sql, $from)) {
+                $hit = true;
+                break;
+            }
+        }
+        if (!$hit) {
             return $sql;
         }
 
         // Audit-only: note presence of serialized objects without blocking.
         self::log_serialized_object_markers($sql);
 
-        return self::rewrite_serialized_preserving($sql, $old_url, $new_url, $old_no_scheme, $new_no_scheme);
+        return self::rewrite_serialized_preserving($sql, $pairs);
+    }
+
+    /**
+     * Build the full replacement map. Returns [from => to, ...] with:
+     *   - scheme variants: https://, http://, and protocol-relative //
+     *   - bare host variant (feldatravel.fidodesign.dev → feldatravel.test)
+     *   - JSON-escaped variants (forward slashes as \/ )
+     *   - trailing-slash variants dropped (str_replace is substring-based)
+     *
+     * All entries map TO the new canonical URL (with its new scheme), so
+     * cross-scheme migrations (https → http or vice-versa) flatten to the
+     * destination's canonical form.
+     *
+     * Order matters: longest patterns come first so strtr() (which is
+     * greedy on longest match) rewrites the most specific variants before
+     * the shorter bare-host one touches a substring of a URL.
+     *
+     * @return array<string,string>
+     */
+    public static function build_replacement_pairs(
+        string $old_url,
+        string $new_url,
+        string $old_no_scheme,
+        string $new_no_scheme
+    ): array {
+        if ($old_url === '' || $new_url === '') {
+            return [];
+        }
+
+        // Strip trailing slashes so substitutions don't double-slash the
+        // following path component.
+        $old_url       = rtrim($old_url, '/');
+        $new_url       = rtrim($new_url, '/');
+        $old_no_scheme = rtrim($old_no_scheme, '/');
+        $new_no_scheme = rtrim($new_no_scheme, '/');
+
+        // Idempotency guard — if old === new in every respect, skip the
+        // whole replacement pass. Running this twice with the same map on
+        // already-replaced content is a no-op, but short-circuiting saves
+        // the whole byte-walker run on multi-GB dumps.
+        if ($old_url === $new_url && $old_no_scheme === $new_no_scheme) {
+            return [];
+        }
+
+        // Short-pattern safety — refuse to rewrite a bare hostname that
+        // contains no dot (e.g. `localhost`). Substring-matching against
+        // `localhost` would catch it inside any longer word and produce
+        // destructive collisions (`localhost.example.com`, or the string
+        // `localhost` mentioned in prose). A real WordPress site URL always
+        // has either a TLD dot or an explicit port — the latter case users
+        // should keep in the source/dest URL as http://localhost:8080.
+        $has_dot = str_contains($old_no_scheme, '.') && str_contains($new_no_scheme, '.');
+
+        $new_scheme = str_starts_with($new_url, 'https://') ? 'https' : 'http';
+
+        // www ↔ non-www variants — WordPress sites commonly migrate between
+        // www.example.com and example.com. The canonical pair above handles
+        // the configured URLs; these extras catch the other variant that
+        // might linger in post_content or widget data from earlier moves.
+        $old_hosts = [$old_no_scheme];
+        $new_hosts = [$new_no_scheme];
+        if (str_starts_with($old_no_scheme, 'www.') && !str_starts_with($new_no_scheme, 'www.')) {
+            $old_hosts[] = substr($old_no_scheme, 4);
+            $new_hosts[] = $new_no_scheme;
+        } elseif (!str_starts_with($old_no_scheme, 'www.') && str_starts_with($new_no_scheme, 'www.')) {
+            $old_hosts[] = 'www.' . $old_no_scheme;
+            $new_hosts[] = $new_no_scheme;
+        }
+
+        $variants = [];
+        foreach ($old_hosts as $idx => $old_host) {
+            $new_host = $new_hosts[$idx] ?? $new_no_scheme;
+
+            // Scheme-explicit plain.
+            $variants['https://' . $old_host] = $new_scheme . '://' . $new_host;
+            $variants['http://'  . $old_host] = $new_scheme . '://' . $new_host;
+
+            // JSON-escaped (`https:\/\/old.com`) — page builders store their
+            // trees as JSON inside postmeta; json_encode() escapes forward
+            // slashes by default.
+            $variants['https:\\/\\/' . $old_host] = $new_scheme . ':\\/\\/' . $new_host;
+            $variants['http:\\/\\/'  . $old_host] = $new_scheme . ':\\/\\/' . $new_host;
+
+            // Protocol-relative (used in CSS/HTML for retina + CDN patterns).
+            $variants['//' . $old_host]     = '//' . $new_host;
+            $variants['\\/\\/' . $old_host] = '\\/\\/' . $new_host;
+
+            // Bare host fallback (relative URLs, dangling hosts, references
+            // in plain prose). Only emit when safe (has dot) and hosts differ.
+            if ($has_dot && $old_host !== $new_host) {
+                $variants[$old_host] = $new_host;
+            }
+        }
+
+        // Drop any self-mappings (no-op) and empty keys.
+        foreach ($variants as $from => $to) {
+            if ($from === '' || $from === $to) {
+                unset($variants[$from]);
+            }
+        }
+
+        return $variants;
+    }
+
+    /**
+     * Remove leading http:// or https:// from a string, returning the
+     * protocol-relative form. Preserves the rest of the URL byte-for-byte.
+     */
+    private static function strip_scheme_prefix(string $url): string {
+        return (string) preg_replace('#^https?:#i', '', $url);
     }
 
     /**
@@ -353,26 +492,27 @@ final class Database {
      * mysqli_real_escape_string (which escapes `"`), and those backups must
      * still import correctly when the site URL changes.
      */
-    private static function rewrite_serialized_preserving(
-        string $sql,
-        string $old_url,
-        string $new_url,
-        string $old_no_scheme,
-        string $new_no_scheme
-    ): string {
+    /**
+     * @param array<string,string> $pairs Replacement map built by build_replacement_pairs().
+     */
+    private static function rewrite_serialized_preserving(string $sql, array $pairs): string {
         $len        = strlen($sql);
         $out        = '';
         $i          = 0;
         $plain_from = 0;
 
-        $replace_in = static function (string $s) use ($old_url, $new_url, $old_no_scheme, $new_no_scheme): string {
-            if ($old_url !== '') {
-                $s = str_replace($old_url, $new_url, $s);
-            }
-            if ($old_no_scheme !== '' && $old_no_scheme !== $new_no_scheme) {
-                $s = str_replace($old_no_scheme, $new_no_scheme, $s);
-            }
-            return $s;
+        // Longest-first so more-specific variants (scheme+host) rewrite
+        // before the bare-host pattern could touch the same substring.
+        uksort($pairs, static fn($a, $b): int => strlen($b) <=> strlen($a));
+        $from = array_keys($pairs);
+        $to   = array_values($pairs);
+
+        $replace_in = static function (string $s) use ($from, $to): string {
+            // strtr with an associative array is the canonical multi-pattern
+            // single-pass replacer — same approach All-in-One WP Migration
+            // uses. It's O(n·m) in worst case but much faster in practice
+            // than looping str_replace().
+            return strtr($s, array_combine($from, $to));
         };
 
         while ($i < $len) {
