@@ -117,7 +117,19 @@ final class Export {
 
                 case 'plugins':
                     if (!empty($options['include_plugins'])) {
-                        self::copy_directory(WP_PLUGIN_DIR, $temp_dir . '/wp-content/plugins', ['sitessaver']);
+                        // Exclude BOTH the top-level folder AND every file inside it.
+                        // Pre-1.1.7 the exclude was `['sitessaver']` — fnmatch does not
+                        // treat that as a directory prefix, so every file under
+                        // `sitessaver/*` was silently included in the backup. Restores
+                        // then overwrote the live plugin with the backup's (older) copy,
+                        // silently reverting whatever bugfixes the running plugin had.
+                        // We now pass an explicit path-prefix pattern AND rely on the
+                        // prefix-aware check added to copy_directory() below.
+                        self::copy_directory(
+                            WP_PLUGIN_DIR,
+                            $temp_dir . '/wp-content/plugins',
+                            ['sitessaver', 'sitessaver/*']
+                        );
                     }
                     break;
 
@@ -295,9 +307,27 @@ final class Export {
             $dest_path = $dest . '/' . $relative;
 
             // Check exclusions.
+            //
+            // The historic implementation only compared patterns against the
+            // full relative path and its basename via fnmatch, which is NOT
+            // recursive — `fnmatch('sitessaver', 'sitessaver/foo.php')` is
+            // false. That let the plugin's own folder slip into backups and
+            // subsequently self-cannibalise on restore. We now also:
+            //
+            //   - Treat `pattern/*` (or bare `pattern` when it's a top-level
+            //     directory name) as a directory-prefix match.
+            //   - Split the relative path and check if the FIRST segment
+            //     matches the pattern — this covers the common case of
+            //     excluding a whole top-level directory by name.
             $skip = false;
+            $first_segment = strtok($relative, '/');
             foreach ($exclude as $pattern) {
-                if (fnmatch($pattern, $relative) || fnmatch($pattern, basename($relative))) {
+                $base_pattern = rtrim($pattern, '/*');
+                if (fnmatch($pattern, $relative)
+                    || fnmatch($pattern, basename($relative))
+                    || $first_segment === $base_pattern
+                    || str_starts_with($relative, $base_pattern . '/')
+                ) {
                     $skip = true;
                     break;
                 }
