@@ -6,6 +6,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.8] — 2026-04-20
+
+### Fixed — Hardcoded URLs in plugin/theme source files
+
+Restoring a backup to a different domain left images broken on pages rendered by **custom plugins** (and some themes) that hardcoded the source site's `http://old-domain/...` path inside PHP arrays, JSON configs, or CSS `background-image:` declarations. v1.1.7 rewrote URLs in the database only — when the rendering code lives in a PHP file, the DB replacement never reaches it, and the page emits `<img src="http://old-domain/...">` on the new host.
+
+Real-world reproduction: a custom plugin at `wp-content/plugins/felda-travel/modules/umrah-redesign/data.php` hardcoded 13 image URLs. After restore to an HTTPS destination, all 13 rendered as dead links even though the database was fully rewritten.
+
+### Added — File-content URL rewriter during restore
+
+`Import::restore_content()` now passes source/destination URLs into `merge_directory()`, which calls a new `copy_with_url_rewrite()` helper for each file under `wp-content/plugins/`, `wp-content/themes/`, and `wp-content/mu-plugins/`. The same `Database::build_replacement_pairs()` map is used, so file-embedded URLs get the same cross-scheme/escape-variant coverage the DB layer gets.
+
+Guardrails to prevent corrupting third-party code:
+
+- **Extension allowlist.** Only text formats are touched: `php`, `html`, `css`, `scss`, `js`, `mjs`, `json`, `xml`, `svg`, `txt`, `md`, `yml`, `ini`, `conf`, `po`. Binary assets (images, fonts, archives) get a byte-identical `copy()`.
+- **Tree skip list.** `vendor/`, `node_modules/`, `.git/`, `composer.lock`, `package-lock.json`, `yarn.lock` are never rewritten — third-party dependencies don't hardcode the site URL and mis-rewriting a dependency lock breaks installs.
+- **Size ceiling.** Files over 5 MB are passed through unchanged (minified bundles: too costly, low signal; user-authored hardcoded URLs live in small config/data files).
+- **Uploads untouched.** `wp-content/uploads/` keeps the byte-identical copy path — binary image/PDF/SVG content may contain URL-like byte sequences where substitution would corrupt the file.
+- **Fast-path.** Files that don't contain any source pattern skip the rewrite entirely — normal `copy()` is used. Minimal overhead on large plugin trees that don't reference the source domain.
+
+### Test coverage
+
+`storage/ss_file_rewrite_test.php` — 9-case harness covering: the exact felda-travel `data.php` reproduction, JSON with escaped slashes, CSS `background-image`, JS protocol-relative strings, binary WebP skip, clean-file byte-identical copy, `vendor/` skip, `composer.lock` skip, and >5 MB size-ceiling skip. All pass.
+
+---
+
 ## [1.1.7] — 2026-04-19
 
 ### Added — Migration coverage hardening (scope: WordPress enthusiast tier)
