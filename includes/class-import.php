@@ -150,7 +150,9 @@ final class Import {
             // 4. Restore wp-content files.
             $content_src = $temp_dir . '/wp-content';
             if (is_dir($content_src)) {
-                self::restore_content($content_src);
+                $old_url = $manifest['home_url'] ?? '';
+                $new_url = home_url();
+                self::restore_content($content_src, $old_url, $new_url);
             }
 
             // 5. Post-import tasks.
@@ -208,8 +210,15 @@ final class Import {
 
     /**
      * Restore wp-content directories from extracted backup.
+     *
+     * $old_url/$new_url are used to rewrite URL references embedded in
+     * copied text files (plugins/themes/mu-plugins source). Necessary for
+     * custom plugins that hardcode `home_url()`-equivalent strings in PHP
+     * arrays/JSON/CSS — a site migration otherwise leaves those strings
+     * pointing at the source domain and renders broken `<img src="...">`
+     * tags even though the database was fully rewritten.
      */
-    private static function restore_content(string $content_src): void {
+    private static function restore_content(string $content_src, string $old_url = '', string $new_url = ''): void {
         // Per-destination skip lists. The critical one is `plugins`: we MUST
         // NOT overwrite the currently-running SitesSaver plugin files. Prior
         // to 1.1.7 the export filter was broken (fnmatch didn't recurse) so
@@ -218,13 +227,28 @@ final class Import {
         // why every attempted bugfix in 1.1.5 / 1.1.6 appeared to revert
         // immediately after the user tested a restore. We block both the
         // running plugin's own slug and any well-known alternate casing.
+        //
+        // `rewrite` flag: if true, merge_directory() runs URL replacement on
+        // each text file as it's copied. We enable it for plugins/themes/
+        // mu-plugins (source code that can legitimately reference the site
+        // URL) and keep it OFF for uploads (binary images, PDFs; replacing
+        // bytes inside those would corrupt them).
         $running_plugin_dir = basename(dirname(SITESSAVER_FILE));
         $dirs = [
-            'uploads'    => ['dest' => WP_CONTENT_DIR . '/uploads', 'skip' => []],
-            'plugins'    => ['dest' => WP_PLUGIN_DIR,               'skip' => [$running_plugin_dir]],
-            'themes'     => ['dest' => get_theme_root(),            'skip' => []],
-            'mu-plugins' => ['dest' => WPMU_PLUGIN_DIR,             'skip' => []],
+            'uploads'    => ['dest' => WP_CONTENT_DIR . '/uploads', 'skip' => [], 'rewrite' => false],
+            'plugins'    => ['dest' => WP_PLUGIN_DIR,               'skip' => [$running_plugin_dir], 'rewrite' => true],
+            'themes'     => ['dest' => get_theme_root(),            'skip' => [], 'rewrite' => true],
+            'mu-plugins' => ['dest' => WPMU_PLUGIN_DIR,             'skip' => [], 'rewrite' => true],
         ];
+
+        // Build the same cross-scheme replacement map the DB importer uses,
+        // so file-embedded URLs match behaviour across both layers.
+        $pairs = [];
+        if ($old_url !== '' && $new_url !== '' && $old_url !== $new_url) {
+            $old_no_scheme = (string) preg_replace('#^https?://#', '', $old_url);
+            $new_no_scheme = (string) preg_replace('#^https?://#', '', $new_url);
+            $pairs = Database::build_replacement_pairs($old_url, $new_url, $old_no_scheme, $new_no_scheme);
+        }
 
         foreach ($dirs as $name => $cfg) {
             $src = $content_src . '/' . $name;
@@ -236,7 +260,7 @@ final class Import {
             // Merge files (overwrite existing, keep extras). Skip list is
             // matched against the FIRST path segment so the entire subtree
             // is safely ignored.
-            self::merge_directory($src, $cfg['dest'], $cfg['skip']);
+            self::merge_directory($src, $cfg['dest'], $cfg['skip'], $cfg['rewrite'] ? $pairs : []);
         }
 
         // Flush page-builder CSS caches. Why: Breakdance, Elementor, Oxygen,
@@ -386,11 +410,13 @@ final class Import {
 
     /**
      * Recursively merge source into destination (overwrite conflicts), with
-     * an optional first-path-segment skip list.
+     * an optional first-path-segment skip list and optional per-file URL
+     * rewriting.
      *
-     * @param string[] $skip_roots First-segment names to skip (e.g. ['sitessaver']).
+     * @param string[]             $skip_roots First-segment names to skip (e.g. ['sitessaver']).
+     * @param array<string,string> $url_pairs  Replacement pairs applied to text files. Empty = byte-identical copy.
      */
-    private static function merge_directory(string $source, string $dest, array $skip_roots = []): void {
+    private static function merge_directory(string $source, string $dest, array $skip_roots = [], array $url_pairs = []): void {
         if (!is_dir($dest)) {
             wp_mkdir_p($dest);
         }
@@ -440,7 +466,11 @@ final class Import {
                 // in the DB was fine but pointed at a missing file. We now
                 // track failures and log a summary so the admin can see
                 // exactly which files couldn't be restored.
-                if (!copy($file->getPathname(), $dest_path)) {
+                $ok = !empty($url_pairs) && self::is_rewritable_text_file($file->getPathname(), $relative)
+                    ? self::copy_with_url_rewrite($file->getPathname(), $dest_path, $url_pairs)
+                    : copy($file->getPathname(), $dest_path);
+
+                if (!$ok) {
                     $failures++;
                     if ($failures <= 50) {
                         error_log(sprintf(
@@ -461,6 +491,103 @@ final class Import {
                 $dest
             ));
         }
+    }
+
+    /**
+     * Decide whether a file is a candidate for URL rewriting.
+     *
+     * We only touch source-text files inside plugins/themes. Skip:
+     *   - binary artefacts (images, fonts, archives, compiled bytecode)
+     *   - vendor/node_modules/lock bundles (rewriting here is high-risk and
+     *     unnecessary — vendor code never hardcodes the site URL)
+     *   - files larger than 5 MB (minified bundles; too costly, low signal)
+     *
+     * The hardcoded-URL problem this guards against is limited to custom
+     * user plugins/themes where the author typed the site URL into a PHP
+     * array or a small JSON config — those files are always <1 MB.
+     */
+    private static function is_rewritable_text_file(string $abs_path, string $relative): bool {
+        $rel_lower = strtolower(str_replace('\\', '/', $relative));
+
+        // Skip package-manager / build-artefact trees. These never contain
+        // site-specific URLs and a mis-rewrite here breaks dependencies.
+        foreach (['/vendor/', '/node_modules/', '/.git/', '/composer.lock', '/package-lock.json', '/yarn.lock'] as $needle) {
+            if (str_contains('/' . $rel_lower, $needle)) {
+                return false;
+            }
+        }
+
+        // Only rewrite text formats we know how to edit safely.
+        static $allowed = [
+            'php', 'phtml', 'inc',
+            'html', 'htm',
+            'css', 'scss', 'sass', 'less',
+            'js', 'mjs', 'cjs',
+            'json',
+            'xml', 'svg',
+            'txt', 'md', 'yml', 'yaml',
+            'env', 'ini', 'conf',
+            'po', 'pot',
+        ];
+        $ext = strtolower((string) pathinfo($rel_lower, PATHINFO_EXTENSION));
+        if ($ext === '' || !in_array($ext, $allowed, true)) {
+            return false;
+        }
+
+        // Hard size ceiling. Minified third-party bundles can be megabytes;
+        // user-authored hardcoded URLs live in small config/data files.
+        $size = @filesize($abs_path);
+        if ($size === false || $size > 5 * 1024 * 1024) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Read → rewrite URLs → write. Returns true on success, false otherwise.
+     *
+     * Uses strtr() with the same pair map the DB importer uses so both
+     * layers produce consistent output. If no substring matches, we fall
+     * back to a byte-identical copy (saves the write for files that don't
+     * mention the old domain at all — the common case).
+     */
+    private static function copy_with_url_rewrite(string $src, string $dest, array $url_pairs): bool {
+        $contents = @file_get_contents($src);
+        if ($contents === false) {
+            return false;
+        }
+
+        // Fast-path: skip rewrite if none of the source patterns appear.
+        // Makes the common "file doesn't reference old domain" case a cheap
+        // read + write instead of a full strtr() over multi-MB payloads.
+        $hit = false;
+        foreach ($url_pairs as $from => $_) {
+            if ($from !== '' && str_contains($contents, $from)) {
+                $hit = true;
+                break;
+            }
+        }
+
+        if (!$hit) {
+            return copy($src, $dest);
+        }
+
+        $rewritten = strtr($contents, $url_pairs);
+
+        // Preserve source file permissions where possible — some shared
+        // hosts strip exec bits on file_put_contents() creation.
+        $written = @file_put_contents($dest, $rewritten);
+        if ($written === false) {
+            return false;
+        }
+
+        $perms = @fileperms($src);
+        if ($perms !== false) {
+            @chmod($dest, $perms & 0777);
+        }
+
+        return true;
     }
 
     /**
