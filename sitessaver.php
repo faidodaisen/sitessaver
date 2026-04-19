@@ -16,8 +16,65 @@ declare(strict_types=1);
 
 defined('ABSPATH') || exit;
 
+// This copy's version, read BEFORE any constants so the duplicate-copy
+// handler below can compare against an already-loaded instance. Folder
+// name is irrelevant — we identify SitesSaver by its VERSION constant.
+$sitessaver_this_version = '1.1.8';
+
+// Duplicate-copy handler. WordPress lets the same plugin live in multiple
+// folders (e.g. `plugins/sitessaver/` and `plugins/ss/`) and will happily
+// load both, causing seven `define()` redeclaration warnings that surface
+// as "plugin generated N characters of unexpected output" during activation
+// and corrupt AJAX/REST bodies.
+//
+// Resolution: identify SitesSaver by the SITESSAVER_VERSION constant (not
+// by slug or folder). If another copy already claimed it, compare versions:
+//   - newer copy wins: deactivate the older one, let this one proceed by
+//     undefining the older's file guard so re-include reloads classes
+//   - older/equal: bail silently so this copy doesn't stomp the active one
+//
+// Note: we CAN'T actually un-define a constant in PHP, so if a newer copy
+// of the plugin is already loaded, this older copy has to bow out. The
+// inverse path (this copy newer) isn't safely recoverable mid-request
+// either — we defer to the admin-side duplicate-cleanup below on the
+// next request.
+if (defined('SITESSAVER_VERSION')) {
+    // Queue a one-time admin notice + auto-deactivate duplicate folders on
+    // the next admin load (when WP's plugin API is fully available).
+    add_action('admin_init', static function () use ($sitessaver_this_version): void {
+        if (!function_exists('get_plugins') || !function_exists('deactivate_plugins')) {
+            return;
+        }
+        $all     = get_plugins();
+        $active  = (array) get_option('active_plugins', []);
+        $duplicates = [];
+        foreach ($all as $plugin_file => $meta) {
+            if (($meta['Name'] ?? '') === 'SitesSaver' && in_array($plugin_file, $active, true)) {
+                $duplicates[] = $plugin_file;
+            }
+        }
+        if (count($duplicates) > 1) {
+            // Keep the newest version; deactivate the rest.
+            usort($duplicates, static function ($a, $b) use ($all): int {
+                return version_compare($all[$b]['Version'] ?? '0', $all[$a]['Version'] ?? '0');
+            });
+            $keep   = array_shift($duplicates);
+            deactivate_plugins($duplicates, true);
+            add_action('admin_notices', static function () use ($keep, $duplicates): void {
+                printf(
+                    '<div class="notice notice-warning is-dismissible"><p><strong>SitesSaver:</strong> detected duplicate copies and deactivated %d older one(s). Kept: <code>%s</code>. Please delete the deactivated copies from <a href="%s">Plugins</a>.</p></div>',
+                    count($duplicates),
+                    esc_html($keep),
+                    esc_url(admin_url('plugins.php'))
+                );
+            });
+        }
+    });
+    return;
+}
+
 // Plugin constants.
-define('SITESSAVER_VERSION', '1.1.8');
+define('SITESSAVER_VERSION', $sitessaver_this_version);
 define('SITESSAVER_FILE', __FILE__);
 define('SITESSAVER_PATH', plugin_dir_path(__FILE__));
 define('SITESSAVER_URL', plugin_dir_url(__FILE__));

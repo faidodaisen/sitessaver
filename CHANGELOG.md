@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.1.8] — 2026-04-20
 
+### Fixed — "Plugin generated N characters of unexpected output during activation"
+
+When a user had two copies of SitesSaver installed (e.g. `plugins/sitessaver/` + `plugins/ss/`) and activated both, WordPress loaded them sequentially and the second copy re-`define()`d seven constants. Each triggered a PHP warning that got echoed during activation, leaving the user with:
+
+> *"The plugin generated 1154 characters of unexpected output during activation. If you notice headers already sent messages, problems with syndication feeds or other issues, try deactivating or removing this plugin."*
+
+Worse, the same redeclaration warnings could corrupt AJAX/REST response bodies.
+
+**Fix:** the bootstrap in [sitessaver.php](sitessaver.php) now checks `defined('SITESSAVER_VERSION')` before defining anything. If another copy is already loaded, the second copy:
+
+1. Silently returns (no redeclaration, no warning text).
+2. Registers an `admin_init` handler that detects all active plugins with `Name: SitesSaver`, keeps only the newest version, auto-deactivates the rest, and surfaces an admin notice pointing to **Plugins** for cleanup.
+
+Identity is matched by the `SITESSAVER_VERSION` constant (and the `Plugin Name: SitesSaver` header), not by folder slug — so the guard works regardless of whether the user renamed a copy to `ss/`, `sitessaver-backup/`, or anything else.
+
 ### Fixed — Hardcoded URLs in plugin/theme source files
 
 Restoring a backup to a different domain left images broken on pages rendered by **custom plugins** (and some themes) that hardcoded the source site's `http://old-domain/...` path inside PHP arrays, JSON configs, or CSS `background-image:` declarations. v1.1.7 rewrote URLs in the database only — when the rendering code lives in a PHP file, the DB replacement never reaches it, and the page emits `<img src="http://old-domain/...">` on the new host.
