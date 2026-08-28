@@ -42,6 +42,13 @@ final class Archive {
             \RecursiveIteratorIterator::SELF_FIRST
         );
 
+        // Track add failures. ZipArchive::addFile() returning false means the
+        // entry never made it into the archive — previously ignored, so a
+        // backup could be missing files and still report success. The user
+        // only discovers it during a restore, which is the worst possible
+        // moment.
+        $failed = 0;
+
         foreach ($files as $file) {
             $filepath     = $file->getPathname();
             $relative     = str_replace($source_dir, '', $filepath);
@@ -55,13 +62,46 @@ final class Archive {
             if ($file->isDir()) {
                 $zip->addEmptyDir($relative);
             } else {
+                // Files can vanish between the directory scan and the add
+                // (active caches, session GC, another job cleaning temp).
+                // Skipping a file that no longer exists is correct; failing
+                // to add one that DOES exist is data loss and must be loud.
+                if (!is_readable($filepath)) {
+                    $failed++;
+                    error_log('[SitesSaver] Archive: unreadable, skipped — ' . $relative);
+                    continue;
+                }
+
                 // ZIP64 is supported by ZipArchive on PHP 7.4+ (libzip >= 1.0),
                 // so files >2GB are archived correctly without a size guard.
-                $zip->addFile($filepath, $relative);
+                if (!$zip->addFile($filepath, $relative)) {
+                    $failed++;
+                    if ($failed <= 50) {
+                        error_log('[SitesSaver] Archive: addFile failed — ' . $relative);
+                    }
+                }
             }
         }
 
-        return $zip->close();
+        // close() performs the actual write. A false return means the archive
+        // is incomplete or corrupt; returning success here would hand the user
+        // a broken backup file that looks fine in the listing.
+        if (!$zip->close()) {
+            error_log('[SitesSaver] Archive: ZipArchive::close() failed for ' . $output_zip);
+            return false;
+        }
+
+        if ($failed > 0) {
+            error_log(sprintf('[SitesSaver] Archive: %d file(s) could not be added to %s.', $failed, basename($output_zip)));
+        }
+
+        // Final sanity check — the archive must exist and be openable.
+        if (!file_exists($output_zip) || filesize($output_zip) === 0) {
+            error_log('[SitesSaver] Archive: output file missing or empty after close — ' . $output_zip);
+            return false;
+        }
+
+        return true;
     }
 
     /**

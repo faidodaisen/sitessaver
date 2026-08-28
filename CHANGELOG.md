@@ -6,6 +6,111 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.9] — 2026-08-29
+
+Full correctness audit against **WordPress 7.1** on **PHP 8.3 and 8.5**, driven by a live
+test site. Every item below was reproduced before it was fixed, and re-verified after.
+See [release-notes-v1.1.9.md](release-notes-v1.1.9.md) for the detailed write-up.
+
+### Fixed — Serialized data corrupted on restore (critical)
+
+The importer treated a serialized string's declared length (`s:19:"..."`) as a count of raw
+bytes in the SQL file. The exporter escapes backslash, NUL, newline, CR, ^Z and apostrophe,
+so the literal is longer than the declared length: the parse landed mid-token and failed, and
+the walker fell back to plain-text replacement — changing the payload length **without**
+updating the `s:N:` prefix. `unserialize()` then rejected the row.
+
+This is why page-builder layouts, widget settings, and plugin options came back empty after a
+migration whenever a value happened to contain a quote, a backslash, or a newline. The parser
+now decodes escapes while counting logical bytes, and re-escapes on output.
+
+### Fixed — Nested serialized data corrupted on restore (critical)
+
+WordPress stores an already-serialized string by serializing it a second time
+(`maybe_serialize`). The walker fixed only the outer length prefix and left the inner one
+stale, so the outer value unserialized and the inner one did not. The walker is now
+recursive, depth-bounded at 8.
+
+### Fixed — SQL tokenizer split statements incorrectly (critical)
+
+The streaming tokenizer only understood single quotes. It did not recognise `--`, `#` or
+`/* */` comments (a `;` inside one split the statement), double-quoted strings, backtick
+identifiers, `DELIMITER` directives (triggers and procedures were shredded), or mysqldump
+conditional comments `/*!40101 ... */` (charset and sql_mode setup was silently dropped).
+All are now handled, including when the construct straddles a 64 KB read boundary.
+
+### Fixed — Rows lost from tables with generated columns (critical)
+
+Export emitted `INSERT` statements listing `STORED`/`VIRTUAL` generated columns. MySQL
+rejects those outright, so **every row** of such a table was dropped on restore. WooCommerce
+lookup tables and several analytics plugins use generated columns. They are now omitted from
+the column list.
+
+### Fixed — Google Drive download could destroy a local backup (critical)
+
+`wp_remote_get(..., ['stream' => true])` writes the response body to disk regardless of HTTP
+status, and the destination was the final backup path. A 404 or 401 wrote a JSON error blob
+as a `.zip`, reported success, and overwrote an existing backup of the same name. Downloads
+now stage into the temp directory, verify the status code and ZIP magic bytes, and publish
+under a non-clashing name.
+
+### Fixed — ZIP write failures ignored (critical)
+
+`ZipArchive::addFile()` and `close()` return values were discarded, so a backup missing files
+still reported success and the user only found out during a restore. Both are now checked,
+failures are logged, and the archive is verified non-empty before the export completes.
+
+### Security — `finalize_restore` leaked the admin finalize token
+
+The endpoint had no authorisation check and returned a URL embedding the one-time token that
+authorises restore finalisation (activating the backup's plugin set, switching its theme).
+Verified with a subscriber session: any logged-in user could read it. It now requires either
+a `manage_options` session or possession of the token itself. The token path is kept
+deliberately, because after a restore the browser's cookie was minted against the pre-restore
+database and the legitimate user can fail a capability check through no fault of their own.
+
+### Fixed — PHP 8.4+ deprecation in the Google Drive client
+
+`ensure_folder_exists(string $token = null)` is an implicitly-nullable parameter, deprecated
+in PHP 8.4. On an AJAX endpoint the resulting notice can corrupt the JSON body. Now `?string`.
+
+### Changed — Icons bundled locally, CDN dependency removed
+
+The admin UI loaded RemixIcon from jsdelivr, which breaks on offline and intranet installs,
+behind strict CSPs, and violates the WordPress.org guideline against loading external
+resources. The 41 glyphs actually used are now bundled: **123 KB of CSS reduced to 3 KB**,
+with the font served from the plugin directory. Regenerate with `php tools/build-icons.php`.
+
+### Fixed — Google Drive reliability
+
+- **Missing timeouts.** The duplicate-file lookup, folder lookup/creation, and file listing
+  used WordPress's 5-second default. A slow response silently skipped de-duplication, so every
+  scheduled backup added another copy to Drive. All calls now set explicit timeouts.
+- **Infinite upload loop.** A session repeatedly answering `308` without advancing spun
+  forever. Now bounded at 5 stalled rounds.
+- **Chunk size could exhaust memory.** The 5 MB chunk is held in memory and copied by the HTTP
+  layer, which could fatal mid-upload on a small `memory_limit`. It now scales to the available
+  budget, never below Google's 256 KiB minimum and always on a 256 KiB boundary.
+- **Listing errors looked like "no backups".** A non-2xx response returned an empty list with
+  no error, so an expired token presented as an empty Drive tab. The error is now surfaced.
+
+### Fixed — Plugin polluted its own backups
+
+Export-state transients were dumped into every archive and restored onto the target,
+resurrecting a phantom "export in progress". They are now excluded from the dump.
+
+### Added — Regression test suites
+
+Two standalone suites (no WordPress, no database) covering every defect above:
+
+- `tests/test-sql-tokenizer.php` — 35 cases: tokenizer constructs, chunk-boundary splits, and
+  full export → rewrite → `unserialize()` fidelity for escape-hazard payloads.
+- `tests/test-core-standalone.php` — 13 cases: import, archive create/extract, zip-slip
+  rejection, and replacement-map edges.
+
+Both pass 35/35 and 13/13 on PHP 8.3 and PHP 8.5, with zero deprecations raised from plugin code.
+
+---
 ## [1.1.8] — 2026-04-20
 
 ### Fixed — "Plugin generated N characters of unexpected output during activation"

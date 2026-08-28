@@ -1,0 +1,75 @@
+/*!
+ * SitesSaver icon subset — derived from RemixIcon 3.5.0 (Apache-2.0).
+ * https://github.com/Remix-Design/RemixIcon
+ *
+ * Only the 41 glyphs this plugin uses are declared, and the font is
+ * served locally. Loading the upstream CSS from a CDN broke the admin UI on
+ * offline installs and is disallowed by the WordPress.org plugin guidelines.
+ * Regenerate with tools/build-icons.php after adding a new icon.
+ */
+@font-face {
+    font-family: 'remixicon';
+    src: url('../fonts/remixicon.woff2') format('woff2');
+    font-display: swap;
+    font-weight: normal;
+    font-style: normal;
+}
+
+[class^="ri-"], [class*=" ri-"] {
+    font-family: 'remixicon' !important;
+    font-style: normal;
+    font-weight: normal;
+    font-variant: normal;
+    line-height: 1;
+    text-transform: none;
+    speak: never;
+    display: inline-block;
+    vertical-align: middle;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+.ri-add-circle-line:before { content: "\ea11"; }
+.ri-alert-line:before { content: "\ea21"; }
+.ri-arrow-left-line:before { content: "\ea60"; }
+.ri-book-open-line:before { content: "\eadb"; }
+.ri-calendar-event-fill:before { content: "\eb24"; }
+.ri-checkbox-circle-fill:before { content: "\eb80"; }
+.ri-close-line:before { content: "\eb99"; }
+.ri-database-2-line:before { content: "\ec16"; }
+.ri-delete-bin-line:before { content: "\ec2a"; }
+.ri-download-2-fill:before { content: "\ec53"; }
+.ri-download-2-line:before { content: "\ec54"; }
+.ri-download-cloud-2-line:before { content: "\ec56"; }
+.ri-drive-fill:before { content: "\ec65"; }
+.ri-drive-line:before { content: "\ec66"; }
+.ri-error-warning-fill:before { content: "\eca0"; }
+.ri-error-warning-line:before { content: "\eca1"; }
+.ri-external-link-line:before { content: "\ecaf"; }
+.ri-file-zip-line:before { content: "\ed1f"; }
+.ri-folder-open-line:before { content: "\ed70"; }
+.ri-folder-shield-2-line:before { content: "\ed7a"; }
+.ri-google-fill:before { content: "\edd4"; }
+.ri-google-line:before { content: "\edd5"; }
+.ri-hard-drive-2-line:before { content: "\edf9"; }
+.ri-heart-fill:before { content: "\ee0e"; }
+.ri-history-line:before { content: "\ee17"; }
+.ri-layout-grid-line:before { content: "\ee90"; }
+.ri-loader-4-line:before { content: "\eec6"; }
+.ri-logout-box-r-line:before { content: "\eeda"; }
+.ri-logout-circle-line:before { content: "\eedc"; }
+.ri-pencil-line:before { content: "\efe0"; }
+.ri-play-circle-line:before { content: "\f009"; }
+.ri-question-line:before { content: "\f045"; }
+.ri-refresh-line:before { content: "\f064"; }
+.ri-save-line:before { content: "\f0b3"; }
+.ri-server-line:before { content: "\f0e0"; }
+.ri-settings-4-line:before { content: "\f0e8"; }
+.ri-settings-5-fill:before { content: "\f0e9"; }
+.ri-shield-check-fill:before { content: "\f0ff"; }
+.ri-time-line:before { content: "\f20f"; }
+.ri-upload-2-fill:before { content: "\f249"; }
+.ri-upload-cloud-2-line:before { content: "\f24c"; }
+
+@keyframes ri-spin { to { transform: rotate(360deg); } }
+.ri-spin { animation: ri-spin 1s linear infinite; }
