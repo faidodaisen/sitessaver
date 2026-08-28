@@ -246,9 +246,26 @@ final class Ajax {
      * redirect URL and let the client navigate there.
      */
     public function handle_finalize_restore(): void {
-        // No auth check — the URL we return carries a one-time token that is
-        // validated server-side at the landing page. Returning the URL itself
-        // leaks nothing sensitive (it's the public login page).
+        // SECURITY: returning this URL unconditionally leaked the embedded
+        // one-time finalize token, which is what authorises the deferred work
+        // (activating the backup's plugin set, switching its theme) on the
+        // landing page. A plain subscriber could read it straight out of this
+        // JSON body — verified with a subscriber session.
+        //
+        // A nonce alone is not sufficient here: after a restore the browser's
+        // cookie was minted against the PRE-restore DB, so the legitimate user
+        // can fail a capability check through no fault of their own. We accept
+        // EITHER a real admin session OR possession of the token itself, which
+        // the client already received in the import response.
+        $supplied  = sanitize_text_field(wp_unslash($_POST['token'] ?? ''));
+        $expected  = Import::current_finalize_token();
+        $has_token = $expected !== '' && $supplied !== '' && hash_equals($expected, $supplied);
+
+        if (!$has_token && !current_user_can('manage_options')) {
+            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
+            return;
+        }
+
         wp_send_json_success([
             'redirect' => Import::build_finalize_redirect_url(),
             'message'  => __('Please log in with your restored credentials to complete the restore.', 'sitessaver'),

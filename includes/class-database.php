@@ -62,14 +62,29 @@ final class Database {
             fwrite($handle, $create[1] . ";\n\n");
         }
 
+        // Generated (STORED/VIRTUAL) columns must be omitted from the column
+        // list: MySQL rejects any INSERT that supplies a value for them with
+        // "The value specified for generated column ... is not allowed", and
+        // the whole row is then lost on restore. WooCommerce lookup tables and
+        // several analytics plugins use generated columns, so this silently
+        // dropped real customer data.
+        $generated = self::generated_columns($wpdb, $table);
+
         // Data — chunked to avoid memory issues.
         $chunk_size = 100;
         $offset     = 0;
 
+        // The options table gets a WHERE clause that drops this plugin's own
+        // in-flight export state. Without it, the transients describing the
+        // export that is CREATING this backup are captured inside it, and a
+        // restore then resurrects a phantom "export in progress" on the target
+        // site (progress modal reappears, cancel button does nothing).
+        $where = self::row_filter_for($wpdb, $table);
+
         while (true) {
             $rows = $wpdb->get_results(
                 $wpdb->prepare(
-                    "SELECT * FROM `{$escaped_table}` LIMIT %d OFFSET %d",
+                    "SELECT * FROM `{$escaped_table}` {$where} LIMIT %d OFFSET %d",
                     $chunk_size,
                     $offset
                 ),
@@ -81,6 +96,13 @@ final class Database {
             }
 
             foreach ($rows as $row) {
+                if ($generated !== []) {
+                    $row = array_diff_key($row, array_flip($generated));
+                }
+                if ($row === []) {
+                    continue;
+                }
+
                 $values = array_map(static function ($val): string {
                     if ($val === null) {
                         return 'NULL';
@@ -98,6 +120,52 @@ final class Database {
         }
 
         fwrite($handle, "\n");
+    }
+
+    /**
+     * Per-table row filter applied during export.
+     *
+     * Only the options table is filtered, and only to exclude SitesSaver's own
+     * transient export/import state. Everything else is dumped verbatim.
+     *
+     * Returns a ready-to-inline `WHERE ...` fragment (or an empty string). The
+     * fragment contains no user input — the LIKE patterns are literals — so it
+     * is safe to interpolate.
+     */
+    private static function row_filter_for(\wpdb $wpdb, string $table): string {
+        if ($table !== $wpdb->options) {
+            return '';
+        }
+
+        return "WHERE option_name NOT LIKE '\\_transient\\_sitessaver\\_%'"
+             . " AND option_name NOT LIKE '\\_transient\\_timeout\\_sitessaver\\_%'"
+             . " AND option_name NOT LIKE '\\_site\\_transient\\_sitessaver\\_%'"
+             . " AND option_name NOT LIKE '\\_site\\_transient\\_timeout\\_sitessaver\\_%'"
+             . " AND option_name <> 'sitessaver_pending_finalize'";
+    }
+
+    /**
+     * Names of generated (STORED or VIRTUAL) columns for a table.
+     *
+     * Returns an empty array when information_schema is unavailable, which
+     * degrades to the previous behaviour rather than aborting the export.
+     *
+     * @return string[]
+     */
+    private static function generated_columns(\wpdb $wpdb, string $table): array {
+        $cols = $wpdb->get_col(
+            $wpdb->prepare(
+                "SELECT COLUMN_NAME FROM information_schema.COLUMNS
+                  WHERE TABLE_SCHEMA = %s
+                    AND TABLE_NAME = %s
+                    AND GENERATION_EXPRESSION IS NOT NULL
+                    AND GENERATION_EXPRESSION <> ''",
+                DB_NAME,
+                $table
+            )
+        );
+
+        return is_array($cols) ? array_map('strval', $cols) : [];
     }
 
     /**
@@ -151,9 +219,17 @@ final class Database {
         $old_no_scheme = $do_replace ? (string) preg_replace('#^https?://#', '', $old_url) : '';
         $new_no_scheme = $do_replace ? (string) preg_replace('#^https?://#', '', $new_url) : '';
 
-        $current    = '';
-        $in_string  = false;
-        $escape     = false;
+        // Tokenizer state. All of it must persist across fread() boundaries —
+        // a 64 KB chunk can end anywhere, including halfway through a quoted
+        // string, a comment, or a multi-character delimiter.
+        $current   = '';
+        $in_string = false;   // inside a quoted literal / identifier
+        $quote     = '';      // which quote char opened it: ' " or `
+        $escape    = false;   // previous byte was a backslash inside a literal
+        $in_line_c = false;   // inside a `--` or `#` comment (ends at newline)
+        $in_blk_c  = false;   // inside a /* ... */ comment
+        $blk_star  = false;   // previous byte inside the block comment was `*`
+        $delimiter = ';';     // current statement delimiter (DELIMITER can change it)
 
         try {
             while (!feof($handle)) {
@@ -166,27 +242,116 @@ final class Database {
                 for ($i = 0; $i < $buf_len; $i++) {
                     $char = $buffer[$i];
 
-                    if ($escape) {
-                        $current .= $char;
-                        $escape = false;
+                    // --- inside a line comment: swallow until newline --------
+                    if ($in_line_c) {
+                        if ($char === "\n") {
+                            $in_line_c = false;
+                            $current  .= $char;
+                        }
                         continue;
                     }
 
-                    if ($char === '\\') {
-                        $current .= $char;
-                        $escape = true;
+                    // --- inside a block comment: discard until `*/` ----------
+                    // The comment body is dropped, not appended: keeping it in
+                    // $current both bloats the statement and (because the body
+                    // can contain `*/`-like bytes) confused the terminator scan.
+                    // MySQL conditional-execution comments (`/*!40101 ... */`)
+                    // never enter this state — they are executable SQL and are
+                    // handled as ordinary statement text below.
+                    if ($in_blk_c) {
+                        if ($blk_star && $char === '/') {
+                            $in_blk_c = false;
+                            $blk_star = false;
+                        } else {
+                            $blk_star = ($char === '*');
+                        }
                         continue;
                     }
 
-                    if ($char === "'") {
-                        $in_string = !$in_string;
+                    // --- inside a quoted string / identifier -----------------
+                    if ($in_string) {
                         $current .= $char;
+
+                        if ($escape) {
+                            $escape = false;
+                            continue;
+                        }
+                        // Backslash escaping applies to ' and " but NOT to
+                        // backtick identifiers, where MySQL has no backslash
+                        // escape at all (`` is the only escape).
+                        if ($char === '\\' && $quote !== '`') {
+                            $escape = true;
+                            continue;
+                        }
+                        if ($char === $quote) {
+                            // A doubled quote ('' or "" or ``) is an escaped
+                            // quote, not a terminator. We can't see the next
+                            // byte if the chunk ends here, so we close the
+                            // string and let the re-open on the next byte
+                            // restore the state — which yields the identical
+                            // result for the purposes of delimiter detection.
+                            $in_string = false;
+                            $quote     = '';
+                        }
                         continue;
                     }
 
-                    if (!$in_string && $char === ';') {
+                    // --- outside any string/comment --------------------------
+
+                    // Comment openers. `--` requires a following whitespace or
+                    // end-of-line per MySQL, so `SELECT 5--3` is arithmetic.
+                    if ($char === '-' && $current !== '' && substr($current, -1) === '-') {
+                        $next = self::peek_byte($buffer, $i + 1, $handle);
+                        if ($next === '' || $next === ' ' || $next === "\t" || $next === "\n" || $next === "\r") {
+                            $in_line_c = true;
+                            $current   = substr($current, 0, -1); // drop the first '-'
+                            continue;
+                        }
+                    }
+                    if ($char === '#') {
+                        $in_line_c = true;
+                        continue;
+                    }
+                    if ($char === '*' && $current !== '' && substr($current, -1) === '/') {
+                        // `/*!` and `/*+` are executable comments — keep them.
+                        $next = self::peek_byte($buffer, $i + 1, $handle);
+                        if ($next !== '!' && $next !== '+') {
+                            $in_blk_c = true;
+                            $current  = substr($current, 0, -1); // drop the '/'
+                            continue;
+                        }
+                    }
+
+                    // String / identifier openers.
+                    if ($char === "'" || $char === '"' || $char === '`') {
+                        $in_string = true;
+                        $quote     = $char;
+                        $current  .= $char;
+                        continue;
+                    }
+
+                    // DELIMITER directive — mysqldump emits these around
+                    // triggers, procedures, and events. Without honouring it
+                    // the `;` inside a trigger body splits the statement and
+                    // the restore fails with a syntax error.
+                    if (($char === 'd' || $char === 'D') && trim($current) === '') {
+                        $word = self::read_delimiter_directive($buffer, $i, $handle);
+                        if ($word !== null) {
+                            $delimiter = $word['delimiter'];
+                            $i         = $word['resume_index'];
+                            $current   = '';
+                            continue;
+                        }
+                    }
+
+                    // Statement terminator (may be multi-byte after DELIMITER).
+                    if ($char === $delimiter[0]
+                        && (strlen($delimiter) === 1
+                            || self::matches_delimiter($buffer, $i, $delimiter, $handle))
+                    ) {
                         self::execute_statement($wpdb, $current, $do_replace, $old_url, $new_url, $old_no_scheme, $new_no_scheme);
                         $current = '';
+                        $i      += strlen($delimiter) - 1;
                         continue;
                     }
 
@@ -194,7 +359,7 @@ final class Database {
                 }
             }
 
-            // Trailing statement without closing `;`.
+            // Trailing statement without a closing delimiter.
             if (trim($current) !== '') {
                 self::execute_statement($wpdb, $current, $do_replace, $old_url, $new_url, $old_no_scheme, $new_no_scheme);
             }
@@ -203,6 +368,76 @@ final class Database {
         }
 
         return true;
+    }
+
+    /**
+     * Look ahead one byte, transparently crossing a chunk boundary.
+     *
+     * The tokenizer needs one byte of lookahead to disambiguate `--` (comment
+     * only when followed by whitespace) and `/*!` (executable comment). When
+     * the byte we need is the first byte of the *next* fread() chunk we peek
+     * it from the stream and rewind, so the main loop still sees it.
+     */
+    private static function peek_byte(string $buffer, int $index, $handle): string {
+        if ($index < strlen($buffer)) {
+            return $buffer[$index];
+        }
+        $pos  = ftell($handle);
+        $byte = (string) fread($handle, 1);
+        if ($pos !== false) {
+            fseek($handle, $pos);
+        }
+        return $byte;
+    }
+
+    /**
+     * Test whether the bytes at $index match a multi-character delimiter,
+     * peeking across a chunk boundary when necessary.
+     */
+    private static function matches_delimiter(string $buffer, int $index, string $delimiter, $handle): bool {
+        $len       = strlen($delimiter);
+        $available = substr($buffer, $index, $len);
+        if (strlen($available) < $len) {
+            $pos = ftell($handle);
+            $available .= (string) fread($handle, $len - strlen($available));
+            if ($pos !== false) {
+                fseek($handle, $pos);
+            }
+        }
+        return $available === $delimiter;
+    }
+
+    /**
+     * Parse a `DELIMITER <token>` directive starting at $index.
+     *
+     * Returns the new delimiter plus the buffer index to resume from, or null
+     * when the text at $index isn't actually a DELIMITER directive.
+     *
+     * @return array{delimiter:string,resume_index:int}|null
+     */
+    private static function read_delimiter_directive(string $buffer, int $index, $handle): ?array {
+        // Pull enough bytes to cover "DELIMITER " plus a short token, crossing
+        // the chunk boundary if needed.
+        $window = substr($buffer, $index, 32);
+        if (strlen($window) < 32) {
+            $pos     = ftell($handle);
+            $window .= (string) fread($handle, 32 - strlen($window));
+            if ($pos !== false) {
+                fseek($handle, $pos);
+            }
+        }
+
+        if (!preg_match('/^DELIMITER[ \t]+(\S+)[ \t]*(\r?\n|$)/i', $window, $m)) {
+            return null;
+        }
+
+        $consumed = strlen($m[0]);
+        // Only the portion that lives in this buffer advances the loop index;
+        // any remainder is naturally consumed by the following reads.
+        return [
+            'delimiter'    => $m[1],
+            'resume_index' => $index + min($consumed, strlen($buffer) - $index) - 1,
+        ];
     }
 
     /**
@@ -250,6 +485,11 @@ final class Database {
      *
      * Leaves trailing/inline comments intact (MySQL accepts them). Returns
      * empty string if the statement was nothing but comments/whitespace.
+     *
+     * MySQL conditional-execution comments (`/*!40101 SET ... *\/` and optimiser
+     * hints `/*+ ... *\/`) are NOT stripped — they carry executable SQL that
+     * mysqldump-produced files depend on. Treating them as comments silently
+     * dropped charset/sql_mode setup and produced mojibake on restore.
      */
     private static function strip_leading_comments(string $statement): string {
         $s = ltrim($statement);
@@ -262,7 +502,16 @@ final class Database {
                 $s = ltrim(substr($s, $nl + 1));
                 continue;
             }
-            if (str_starts_with($s, '/*')) {
+            if (str_starts_with($s, '#')) {
+                $nl = strpos($s, "\n");
+                if ($nl === false) {
+                    return '';
+                }
+                $s = ltrim(substr($s, $nl + 1));
+                continue;
+            }
+            // `/*!` and `/*+` are executable, not comments — stop stripping.
+            if (str_starts_with($s, '/*') && !str_starts_with($s, '/*!') && !str_starts_with($s, '/*+')) {
                 $end = strpos($s, '*/');
                 if ($end === false) {
                     return '';
@@ -555,18 +804,22 @@ final class Database {
             }
 
             $content     = $token['content'];
-            $new_content = $replace_in($content);
+            $new_content = self::rewrite_string_payload($content, $replace_in);
 
             if ($new_content === $content) {
                 // Unchanged: emit verbatim bytes (preserves original escape form).
                 $out .= substr($sql, $i, $token['end_pos'] - $i);
             } else {
+                // Length prefix counts LOGICAL bytes; the emitted payload must
+                // be re-escaped for the surrounding SQL string literal. Getting
+                // this pairing wrong is what corrupted every serialized value
+                // that contained a quote, backslash, or newline.
                 $new_byte_len = strlen($new_content);
                 if ($token['escaped']) {
-                    // Re-emit in SQL-escaped form so the surrounding SQL literal stays valid.
+                    // Legacy form also escapes the double quotes themselves.
                     $out .= 's:' . $new_byte_len . ':\\"' . self::escape_sql_value($new_content) . '\\";';
                 } else {
-                    $out .= 's:' . $new_byte_len . ':"' . $new_content . '";';
+                    $out .= 's:' . $new_byte_len . ':"' . self::escape_sql_value($new_content) . '";';
                 }
             }
 
@@ -583,20 +836,183 @@ final class Database {
     }
 
     /**
+     * Rewrite the payload of one serialized string, recursing when that payload
+     * is itself serialized data.
+     *
+     * Why recursion is required:
+     *   WordPress stores an already-serialized string through
+     *   `maybe_serialize()`, which serializes it a SECOND time. A meta value
+     *   like `serialize(['inner' => 'https://old/x'])` is therefore stored as
+     *       s:53:"a:1:{s:5:"inner";s:27:"https://old/x";}";
+     *   A single-level walker rewrites the OUTER length (53 → 60) but leaves
+     *   the INNER `s:27:` untouched, so the outer string unserializes fine and
+     *   the inner one fails — the classic "widget/page-builder settings are
+     *   empty after migration" symptom. Recursing means every nesting level
+     *   gets its length prefix recomputed.
+     *
+     * Depth is bounded because each level strictly shrinks the payload.
+     *
+     * @param callable(string):string $replace_in Plain-text replacement callback.
+     */
+    private static function rewrite_string_payload(string $content, callable $replace_in, int $depth = 0): string {
+        // Nested serialized data: recurse so inner length prefixes are fixed
+        // too. The cheap `s:` probe keeps the common (non-nested) case fast.
+        if ($depth < 8 && str_contains($content, 's:') && self::looks_serialized($content)) {
+            $inner = self::rewrite_serialized_preserving_inner($content, $replace_in, $depth + 1);
+            if ($inner !== $content) {
+                return $inner;
+            }
+        }
+
+        return $replace_in($content);
+    }
+
+    /**
+     * Cheap structural test for "this string is itself serialized PHP data".
+     *
+     * Deliberately conservative: we only recurse for container types whose
+     * payload can hold further `s:N:"..."` tokens. A false negative just means
+     * we fall back to plain replacement (the previous behaviour); a false
+     * positive is harmless because the inner walker is a no-op when it finds
+     * no valid tokens.
+     */
+    private static function looks_serialized(string $value): bool {
+        if (strlen($value) < 4) {
+            return false;
+        }
+        return (bool) preg_match('/^(a:\d+:\{|O:\d+:"|s:\d+:")/', $value);
+    }
+
+    /**
+     * Inner recursion entry point — same walker, applied to an already-decoded
+     * serialized payload (no SQL escaping involved at this level).
+     *
+     * @param callable(string):string $replace_in
+     */
+    private static function rewrite_serialized_preserving_inner(string $payload, callable $replace_in, int $depth): string {
+        $len        = strlen($payload);
+        $out        = '';
+        $i          = 0;
+        $plain_from = 0;
+
+        while ($i < $len) {
+            if ($payload[$i] !== 's' || $i + 3 >= $len || $payload[$i + 1] !== ':') {
+                $i++;
+                continue;
+            }
+
+            $d = $i + 2;
+            while ($d < $len && ctype_digit($payload[$d])) {
+                $d++;
+            }
+            if ($d === $i + 2 || $d + 1 >= $len || $payload[$d] !== ':' || $payload[$d + 1] !== '"') {
+                $i++;
+                continue;
+            }
+
+            $declared_len = (int) substr($payload, $i + 2, $d - ($i + 2));
+
+            // The payload here has ALREADY been un-escaped by the outer parser,
+            // so lengths are plain byte offsets — no escape decoding needed.
+            $content_start = $d + 2;
+            $content_end   = $content_start + $declared_len;
+            if ($content_end + 1 >= $len || $payload[$content_end] !== '"' || $payload[$content_end + 1] !== ';') {
+                $i++;
+                continue;
+            }
+            $token = [
+                'content' => substr($payload, $content_start, $declared_len),
+                'end_pos' => $content_end + 2,
+            ];
+
+            if ($plain_from < $i) {
+                $out .= $replace_in(substr($payload, $plain_from, $i - $plain_from));
+            }
+
+            $content     = $token['content'];
+            $new_content = self::rewrite_string_payload($content, $replace_in, $depth);
+
+            if ($new_content === $content) {
+                $out .= substr($payload, $i, $token['end_pos'] - $i);
+            } else {
+                $out .= 's:' . strlen($new_content) . ':"' . $new_content . '";';
+            }
+
+            $i          = $token['end_pos'];
+            $plain_from = $i;
+        }
+
+        if ($plain_from < $len) {
+            $out .= $replace_in(substr($payload, $plain_from));
+        }
+
+        return $out;
+    }
+
+    /**
      * Parse an unescaped `s:N:"..."` serialized-string token at the given offset.
      *
-     * @return array{content:string,end_pos:int,escaped:bool}|null
+     * IMPORTANT: `N` counts *logical* bytes (what PHP's unserialize() sees),
+     * but the token lives inside a SQL string literal where the exporter has
+     * escaped backslash, NUL, newline, CR, ^Z and apostrophe. So a value like
+     *     https://old.com/a\b        (19 logical bytes)
+     * is written to the dump as
+     *     s:19:"https://old.com/a\\b"   (20 literal bytes)
+     * Slicing 19 raw bytes lands mid-token, the parse fails, and the walker
+     * falls back to plain-text replacement — which changes the payload length
+     * WITHOUT updating the `s:19:` prefix. unserialize() then rejects the whole
+     * row, which is why page-builder / widget settings came back empty after a
+     * migration whenever a value happened to contain a quote, a backslash, or a
+     * newline. We therefore decode escapes while counting logical bytes.
+     *
+     * `raw` carries the original (still-escaped) bytes so an unchanged token
+     * can be re-emitted verbatim.
+     *
+     * @return array{content:string,end_pos:int,escaped:bool,raw:string}|null
      */
     private static function parse_unescaped_sstring(string $sql, int $len, int $content_start, int $declared_len): ?array {
-        $content_end = $content_start + $declared_len;
-        if ($content_end + 1 >= $len || $sql[$content_end] !== '"' || $sql[$content_end + 1] !== ';') {
+        $pos     = $content_start;
+        $content = '';
+        $count   = 0;
+
+        while ($pos < $len && $count < $declared_len) {
+            if ($sql[$pos] === '\\' && $pos + 1 < $len) {
+                $content .= self::decode_sql_escape($sql[$pos + 1]);
+                $pos     += 2;
+            } else {
+                $content .= $sql[$pos];
+                $pos++;
+            }
+            $count++;
+        }
+
+        if ($count !== $declared_len) {
             return null;
         }
+        if ($pos + 1 >= $len || $sql[$pos] !== '"' || $sql[$pos + 1] !== ';') {
+            return null;
+        }
+
         return [
-            'content' => substr($sql, $content_start, $declared_len),
-            'end_pos' => $content_end + 2,
+            'content' => $content,
+            'end_pos' => $pos + 2,
             'escaped' => false,
+            'raw'     => substr($sql, $content_start, $pos - $content_start),
         ];
+    }
+
+    /**
+     * Translate one byte following a backslash in a SQL string literal back to
+     * the byte it represents. Mirrors escape_sql_value().
+     */
+    private static function decode_sql_escape(string $next): string {
+        return match ($next) {
+            '0'     => "\0",
+            'n'     => "\n",
+            'r'     => "\r",
+            'Z'     => "\x1a",
+            default => $next,
+        };
     }
 
     /**
@@ -647,6 +1063,24 @@ final class Database {
             'end_pos' => $pos + 3,
             'escaped' => true,
         ];
+    }
+
+    /**
+     * Test seam: apply the URL rewrite to a SQL fragment.
+     *
+     * The replacement walker is the riskiest routine in the plugin — it rewrites
+     * serialized payloads byte-by-byte and recomputes their length prefixes — so
+     * it needs direct regression coverage. Exposing a thin, side-effect-free
+     * wrapper is preferable to reaching in with Reflection, whose
+     * setAccessible() is deprecated as of PHP 8.5.
+     *
+     * Not called by the plugin at runtime. See tests/test-sql-tokenizer.php.
+     */
+    public static function rewrite_for_tests(string $sql, string $old_url, string $new_url): string {
+        $old_no_scheme = (string) preg_replace('#^https?://#', '', $old_url);
+        $new_no_scheme = (string) preg_replace('#^https?://#', '', $new_url);
+
+        return self::replace_urls_with_aliases($sql, $old_url, $new_url, $old_no_scheme, $new_no_scheme);
     }
 
     /**

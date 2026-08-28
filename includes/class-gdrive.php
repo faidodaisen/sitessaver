@@ -134,8 +134,12 @@ final class GDrive {
     /**
      * Ensure a SitesSaver folder exists in Google Drive.
      * Auto-creates if missing.
+     *
+     * `?string` is explicit: an implicitly-nullable parameter (`string $x = null`)
+     * is deprecated in PHP 8.4 and emits a notice on every call, which on an
+     * AJAX endpoint can corrupt the JSON body.
      */
-    public static function ensure_folder_exists(string $token = null): string {
+    public static function ensure_folder_exists(?string $token = null): string {
         $token = $token ?? self::get_token();
         if (!$token) return '';
 
@@ -147,11 +151,16 @@ final class GDrive {
         $folder_name  = 'SitesSaver Backups (' . get_bloginfo('name') . ')';
         $folder_name_q = self::drive_escape($folder_name);
 
-        // Check if folder exists first.
+        // Check if folder exists first. An explicit timeout is required: the WP
+        // default is 5s, and a slow Drive response would otherwise abort the
+        // lookup and cause a duplicate folder to be created on every backup.
         $check = wp_remote_get(self::API_URL . '/files?' . http_build_query([
             'q' => "name='{$folder_name_q}' and mimeType='application/vnd.google-apps.folder' and trashed=false",
             'fields' => 'files(id)',
-        ]), ['headers' => ['Authorization' => 'Bearer ' . $token]]);
+        ]), [
+            'headers' => ['Authorization' => 'Bearer ' . $token],
+            'timeout' => 20,
+        ]);
 
         if (!is_wp_error($check)) {
             $body = json_decode(wp_remote_retrieve_body($check), true);
@@ -173,6 +182,7 @@ final class GDrive {
                 'name'     => $folder_name,
                 'mimeType' => 'application/vnd.google-apps.folder',
             ]),
+            'timeout' => 20,
         ]);
 
         if (!is_wp_error($create)) {
@@ -249,21 +259,31 @@ final class GDrive {
         
         if (!empty($folder_id)) {
             $metadata['parents'] = [$folder_id];
-            
-            // Delete existing file with the same name in this folder to avoid duplicates.
+
+            // Delete existing file with the same name in this folder to avoid
+            // duplicates. Explicit timeout: the WP default of 5s regularly
+            // expires on Drive list calls, and a timed-out lookup silently
+            // skipped the de-dupe so every scheduled backup added another copy.
             $filename_q  = self::drive_escape($filename);
             $folder_id_q = self::drive_escape($folder_id);
             $existing = wp_remote_get(self::API_URL . '/files?' . http_build_query([
                 'q' => "name='{$filename_q}' and '{$folder_id_q}' in parents and trashed=false",
                 'fields' => 'files(id)',
-            ]), ['headers' => ['Authorization' => 'Bearer ' . $token]]);
+            ]), [
+                'headers' => ['Authorization' => 'Bearer ' . $token],
+                'timeout' => 20,
+            ]);
 
             if (!is_wp_error($existing)) {
                 $body = json_decode(wp_remote_retrieve_body($existing), true);
                 foreach ($body['files'] ?? [] as $old_file) {
-                    wp_remote_request(self::API_URL . "/files/{$old_file['id']}", [
+                    if (empty($old_file['id'])) {
+                        continue;
+                    }
+                    wp_remote_request(self::API_URL . '/files/' . rawurlencode((string) $old_file['id']), [
                         'method'  => 'DELETE',
                         'headers' => ['Authorization' => 'Bearer ' . $token],
+                        'timeout' => 20,
                     ]);
                 }
             }
@@ -301,9 +321,15 @@ final class GDrive {
             return ['success' => false, 'message' => __('Cannot open backup file for reading.', 'sitessaver')];
         }
 
-        $chunk_size = 5 * 1024 * 1024; // 5 MB (must be a multiple of 256 KB per spec).
+        $chunk_size = self::resumable_chunk_size();
         $offset     = 0;
         $completed  = false;
+
+        // Guard against a session that keeps answering 308 without advancing.
+        // Without this the while-loop could spin forever against a misbehaving
+        // endpoint, pinning CPU until the request is killed.
+        $stalled_rounds = 0;
+        $max_stalls     = 5;
 
         try {
             while ($offset < $file_size) {
@@ -336,15 +362,28 @@ final class GDrive {
                     // 308 — per spec, Google may have committed fewer bytes than we
                     // sent (rare, but the Range header is authoritative). Advance to
                     // whatever Google confirmed.
+                    $previous = $offset;
                     $offset = $result['next_offset'] > $offset
                         ? $result['next_offset']
                         : $offset + $current_size;
+
+                    if ($offset <= $previous) {
+                        // No forward progress at all — bail out instead of spinning.
+                        if (++$stalled_rounds >= $max_stalls) {
+                            return [
+                                'success' => false,
+                                'message' => __('Upload stalled: Google Drive stopped accepting new bytes. Please retry.', 'sitessaver'),
+                            ];
+                        }
+                    } else {
+                        $stalled_rounds = 0;
+                    }
 
                     if (!empty($job_id)) {
                         $pct = (int) round(($offset / $file_size) * 100);
                         set_transient(
                             'sitessaver_gdrive_job_' . $job_id,
-                            ['progress' => $pct, 'status' => 'uploading'],
+                            ['progress' => min(99, max(0, $pct)), 'status' => 'uploading'],
                             HOUR_IN_SECONDS
                         );
                     }
@@ -375,6 +414,33 @@ final class GDrive {
                 delete_transient('sitessaver_gdrive_job_' . $job_id);
             }
         }
+    }
+
+    /**
+     * Chunk size for resumable uploads, in bytes.
+     *
+     * Google requires every non-final chunk to be a multiple of 256 KiB. We
+     * prefer 5 MiB, but the chunk is held entirely in memory (read into a
+     * string, then handed to wp_remote_request as the body — which copies it),
+     * so on a shared host with a small memory_limit a 5 MiB chunk can exhaust
+     * the budget mid-upload and fatal. We therefore scale down to fit, never
+     * below the 256 KiB minimum, and always on a 256 KiB boundary.
+     */
+    private static function resumable_chunk_size(): int {
+        $unit      = 256 * 1024;
+        $preferred = 5 * 1024 * 1024;
+
+        $limit = wp_convert_hr_to_bytes((string) ini_get('memory_limit'));
+        if ($limit <= 0) {
+            // Unlimited (-1) or unparseable — keep the preferred size.
+            return $preferred;
+        }
+
+        // Budget a quarter of the limit for the chunk plus its copies.
+        $budget = (int) floor($limit / 4);
+        $size   = (int) (floor(min($preferred, $budget) / $unit) * $unit);
+
+        return max($unit, $size);
     }
 
     /**
@@ -585,10 +651,23 @@ final class GDrive {
             'pageSize' => 50,
         ]), [
             'headers' => ['Authorization' => 'Bearer ' . $token],
+            'timeout' => 20,
         ]);
 
         if (is_wp_error($response)) {
             return ['files' => [], 'connected' => true, 'error' => $response->get_error_message()];
+        }
+
+        // A non-2xx here means the listing failed. Returning an empty file list
+        // without an error made the Drive tab look like "no backups yet" when
+        // the real cause was an expired token or a permissions change.
+        $code = (int) wp_remote_retrieve_response_code($response);
+        if ($code < 200 || $code >= 300) {
+            return [
+                'files'     => [],
+                'connected' => true,
+                'error'     => self::api_error_message($response, $code),
+            ];
         }
 
         $body  = json_decode(wp_remote_retrieve_body($response), true);
@@ -608,6 +687,17 @@ final class GDrive {
 
     /**
      * Download a file from Google Drive to local storage.
+     *
+     * Correctness notes (all three were real data-loss bugs):
+     *  1. `wp_remote_get(..., ['stream' => true])` writes the response body to
+     *     `filename` REGARDLESS of the HTTP status. A 404/401 JSON error blob
+     *     therefore landed on disk as a `.zip` and was reported as a successful
+     *     download; restoring it failed later with a confusing message.
+     *  2. Writing straight to the final path meant an existing local backup of
+     *     the same name was destroyed even when the download failed. We stage
+     *     into the temp dir and only publish after validation.
+     *  3. A downloaded file that isn't actually a ZIP is rejected up front
+     *     rather than at restore time.
      */
     public static function download(string $file_id): array {
         $token = self::get_token();
@@ -616,40 +706,122 @@ final class GDrive {
         }
 
         // Get file metadata.
-        $meta_response = wp_remote_get(self::API_URL . "/files/{$file_id}?fields=name,size", [
+        $meta_response = wp_remote_get(self::API_URL . "/files/" . rawurlencode($file_id) . "?fields=name,size", [
             'headers' => ['Authorization' => 'Bearer ' . $token],
+            'timeout' => 20,
         ]);
 
         if (is_wp_error($meta_response)) {
             return ['success' => false, 'message' => $meta_response->get_error_message()];
         }
 
-        $meta     = json_decode(wp_remote_retrieve_body($meta_response), true);
-        $filename = sanitize_file_name($meta['name'] ?? 'backup.zip');
-        $dest     = SITESSAVER_STORAGE_DIR . '/' . $filename;
-
-        // Download file content.
-        $response = wp_remote_get(self::API_URL . "/files/{$file_id}?alt=media", [
-            'headers'  => ['Authorization' => 'Bearer ' . $token],
-            'timeout'  => 300,
-            'stream'   => true,
-            'filename' => $dest,
-        ]);
-
-        if (is_wp_error($response)) {
-            return ['success' => false, 'message' => $response->get_error_message()];
-        }
-
-        if (file_exists($dest)) {
+        $meta_code = (int) wp_remote_retrieve_response_code($meta_response);
+        if ($meta_code < 200 || $meta_code >= 300) {
             return [
-                'success' => true,
-                'file'    => $filename,
-                'size'    => sitessaver_format_size((int) filesize($dest)),
-                'message' => __('Downloaded from Google Drive.', 'sitessaver'),
+                'success' => false,
+                'message' => self::api_error_message($meta_response, $meta_code),
             ];
         }
 
-        return ['success' => false, 'message' => __('Download failed.', 'sitessaver')];
+        $meta     = json_decode(wp_remote_retrieve_body($meta_response), true);
+        $filename = sanitize_file_name($meta['name'] ?? 'backup.zip');
+        if ($filename === '' || strtolower((string) pathinfo($filename, PATHINFO_EXTENSION)) !== 'zip') {
+            $filename = 'gdrive-' . wp_generate_password(6, false, false) . '.zip';
+        }
+
+        // Stage into temp so a failed download can never clobber an existing
+        // backup in the storage directory.
+        if (!is_dir(SITESSAVER_TEMP_DIR)) {
+            wp_mkdir_p(SITESSAVER_TEMP_DIR);
+        }
+        $staged = SITESSAVER_TEMP_DIR . '/gdrive-dl-' . wp_generate_password(8, false, false) . '.zip';
+
+        $response = wp_remote_get(self::API_URL . "/files/" . rawurlencode($file_id) . "?alt=media", [
+            'headers'  => ['Authorization' => 'Bearer ' . $token],
+            'timeout'  => 300,
+            'stream'   => true,
+            'filename' => $staged,
+        ]);
+
+        if (is_wp_error($response)) {
+            @unlink($staged);
+            return ['success' => false, 'message' => $response->get_error_message()];
+        }
+
+        $code = (int) wp_remote_retrieve_response_code($response);
+        if ($code < 200 || $code >= 300) {
+            // The body (an error JSON) was already streamed to $staged — bin it.
+            $message = self::staged_error_message($staged, $code);
+            @unlink($staged);
+            return ['success' => false, 'message' => $message];
+        }
+
+        if (!file_exists($staged) || filesize($staged) === 0) {
+            @unlink($staged);
+            return ['success' => false, 'message' => __('Download failed: empty response from Google Drive.', 'sitessaver')];
+        }
+
+        // Content check — must actually be a ZIP.
+        $handle = @fopen($staged, 'rb');
+        $magic  = $handle ? fread($handle, 4) : '';
+        if ($handle) {
+            fclose($handle);
+        }
+        if ($magic !== "PK\x03\x04" && $magic !== "PK\x05\x06") {
+            @unlink($staged);
+            return ['success' => false, 'message' => __('Download failed: the file from Google Drive is not a valid ZIP archive.', 'sitessaver')];
+        }
+
+        // Publish under a non-clashing name so an existing local backup with
+        // the same filename is preserved.
+        $dest_name = $filename;
+        if (file_exists(SITESSAVER_STORAGE_DIR . '/' . $dest_name)) {
+            $dest_name = pathinfo($filename, PATHINFO_FILENAME)
+                . '-' . wp_generate_password(4, false, false) . '.zip';
+        }
+        $dest = SITESSAVER_STORAGE_DIR . '/' . $dest_name;
+
+        if (!@rename($staged, $dest)) {
+            if (!@copy($staged, $dest)) {
+                @unlink($staged);
+                return ['success' => false, 'message' => __('Download failed: could not write to the backups directory.', 'sitessaver')];
+            }
+            @unlink($staged);
+        }
+
+        return [
+            'success' => true,
+            'file'    => $dest_name,
+            'size'    => sitessaver_format_size((int) filesize($dest)),
+            'message' => __('Downloaded from Google Drive.', 'sitessaver'),
+        ];
+    }
+
+    /**
+     * Extract Google's error message from a JSON API response, falling back to
+     * a generic HTTP-status message.
+     */
+    private static function api_error_message($response, int $code): string {
+        $body = json_decode((string) wp_remote_retrieve_body($response), true);
+        if (is_array($body) && isset($body['error']['message'])) {
+            return (string) $body['error']['message'];
+        }
+        /* translators: %d: HTTP status code */
+        return sprintf(__('Google Drive request failed (HTTP %d).', 'sitessaver'), $code);
+    }
+
+    /**
+     * Same as api_error_message() but reads the body from the staged file,
+     * since stream downloads put the response on disk instead of in memory.
+     */
+    private static function staged_error_message(string $staged, int $code): string {
+        $raw  = file_exists($staged) ? (string) @file_get_contents($staged, false, null, 0, 4096) : '';
+        $body = json_decode($raw, true);
+        if (is_array($body) && isset($body['error']['message'])) {
+            return (string) $body['error']['message'];
+        }
+        /* translators: %d: HTTP status code */
+        return sprintf(__('Download from Google Drive failed (HTTP %d).', 'sitessaver'), $code);
     }
 
     /**

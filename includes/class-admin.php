@@ -155,17 +155,22 @@ final class Admin {
             return;
         }
 
+        // Icons are bundled locally (a subset of RemixIcon containing only the
+        // glyphs this plugin uses). Previously this pulled the full stylesheet
+        // from jsdelivr, which left the admin UI unstyled on offline/intranet
+        // installs and behind strict CSPs, and is disallowed by the
+        // WordPress.org guideline against loading external resources.
         wp_enqueue_style(
-            'remixicon',
-            'https://cdn.jsdelivr.net/npm/remixicon@3.5.0/fonts/remixicon.css',
+            'sitessaver-icons',
+            SITESSAVER_URL . 'assets/css/icons.css',
             [],
-            '3.5.0'
+            SITESSAVER_VERSION
         );
 
         wp_enqueue_style(
             'sitessaver-admin',
             SITESSAVER_URL . 'assets/css/admin.css',
-            [],
+            ['sitessaver-icons'],
             SITESSAVER_VERSION
         );
 
