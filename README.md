@@ -6,7 +6,7 @@ A free WordPress plugin for full-site backup and migration. No restrictions, no 
 
 - **One-Click Backup** — Creates a complete backup of your entire WordPress site (database + all files) as a single ZIP file
 - **Easy Restore** — Drag and drop a backup ZIP to restore your site, or pick from existing backups
-- **Scheduled Backups** — Set it and forget it — daily, weekly, or monthly automatic backups with email notifications
+- **Scheduled Backups** — Set it and forget it — hourly through monthly automatic backups, several frequencies at once, with email notifications and a server-cron trigger for sites where WP-Cron is disabled
 - **Google Drive** — Automatically upload backups to your Google Drive for safe cloud storage
 - **Backup Manager** — Label, download, and manage all your backups from one dashboard
 - **Site Migration** — Move your WordPress site to a new domain — URLs are automatically updated everywhere, including in serialized data
@@ -57,6 +57,17 @@ In `wp-content/sitessaver-backups/` on your server. Google Drive is optional for
 
 **Will it slow down my site?**
 Backups run in the background. Scheduled backups use WP Cron so they don't affect page loads.
+
+**My scheduled backups run late, or not at all.**
+WP-Cron only fires when someone visits the site, and does nothing at all if `DISABLE_WP_CRON`
+is set in `wp-config.php`. Open **SitesSaver > Schedule** and use the *Server Cron* panel: it
+gives you a private trigger URL plus ready-made crontab, curl, and WP-CLI lines. If you have no
+shell access, point any uptime monitor at the URL instead. The URL is safe to call more often
+than your chosen frequency — SitesSaver replies "not due yet" until a backup is genuinely owed.
+
+**Can I run more than one frequency?**
+Yes. Frequency is a set of checkboxes, so Daily plus Monthly (recent restore points alongside a
+long-term archive) is a valid setup. Each frequency runs on its own independent timer.
 
 **Can I migrate to a new domain?**
 Yes. Export from the old site, import on the new one — all URLs (including serialized data) are updated automatically.

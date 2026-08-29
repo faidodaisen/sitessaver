@@ -75,11 +75,14 @@ final class Ajax {
         ];
 
         $status = Export::start($options);
-        $steps  = Export::get_steps();
+        // Step weights differ when the backup is also uploaded to Drive, so the
+        // table has to be built for THIS export's destination.
+        $steps  = Export::get_steps($destination);
 
         wp_send_json_success([
-            'status' => $status,
-            'steps'  => $steps,
+            'status'        => $status,
+            'steps'         => $steps,
+            'gdrive_job_id' => Export::gdrive_job_id($status['uid']),
         ]);
     }
 
@@ -111,15 +114,21 @@ final class Ajax {
 
         $uid    = sanitize_text_field((string) ($_POST['uid'] ?? get_transient('sitessaver_active_export_id') ?? ''));
         $status = $uid !== '' ? Export::get_status($uid) : [];
-        $steps  = Export::get_steps();
 
         if (empty($status)) {
             wp_send_json_error(['message' => __('No active export found.', 'sitessaver')]);
         }
 
+        // Rebuild the step table for the destination this export was started
+        // with. Resuming an orphaned export used to fall back to the default
+        // local table, which mislabelled the steps of a Drive export.
+        $destination = (string) ($status['options']['export_destination'] ?? 'local');
+        $steps       = Export::get_steps($destination);
+
         wp_send_json_success([
-            'status' => $status,
-            'steps'  => $steps,
+            'status'        => $status,
+            'steps'         => $steps,
+            'gdrive_job_id' => Export::gdrive_job_id($uid),
         ]);
     }
 

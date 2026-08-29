@@ -6,6 +6,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.0] — 2026-08-29
+
+Scheduling gains a Monthly option and the ability to run several frequencies at once, plus a
+server-cron trigger for sites where WP-Cron is disabled. Browser dialogs are replaced with a
+custom notification system. See [release-notes-v1.2.0.md](release-notes-v1.2.0.md).
+
+### Added — Monthly backups, and more than one frequency at a time
+
+Frequency is now a set of checkboxes rather than a single dropdown, so Daily (recent restore
+points) and Monthly (long-term archive) can run side by side. Each selected frequency is
+scheduled as its own cron event and tracks its own last-run time, so a monthly backup is not
+considered "already done" just because the daily one ran.
+
+Schedules saved by earlier versions keep working: the old single `frequency` string and the
+old scalar last-run timestamp are both read and migrated automatically.
+
+### Added — server cron trigger (works with `DISABLE_WP_CRON`)
+
+WP-Cron only fires when someone loads a page, so on a low-traffic site scheduled backups run
+late, and under `DISABLE_WP_CRON` they never run at all. The Schedule screen now shows a
+private, key-authenticated trigger URL with copy-paste crontab, curl, and WP-CLI lines, plus
+instructions for uptime-monitor services when there is no shell access.
+
+The endpoint is safe to call more often than the configured frequency — it answers "not due
+yet" until an interval has actually elapsed — so an hourly cron with Daily selected still
+produces exactly one backup a day. `&force=1` bypasses the check. A "Run backup now" button
+lets you confirm the setup without waiting for the next window.
+
+### Added — custom notification system
+
+Every `alert()`, `confirm()`, and `prompt()` is gone (19 call sites). Native dialogs block the
+JS thread — freezing any in-flight progress modal — cannot be styled or translated, and are
+suppressed outright by Chrome inside cross-origin iframes, which silently swallowed
+confirmations for anyone embedding wp-admin.
+
+Replaced with toasts (four variants, hover-pausable auto-dismiss) and modal dialogs with focus
+trapping, Escape-to-cancel, focus restore, and safe-button default focus on destructive
+actions.
+
+### Fixed — progress modal printed the current step twice
+
+The step label was rendered inside the progress bar *and* again in a separate line below it,
+so every export read "Copying plugins..." on two consecutive lines.
+
+### Fixed — progress bar sat at 100% for the whole Google Drive upload
+
+The Drive upload runs inside the `finalize` step, which was declared as 100% — so the bar
+filled completely and froze there for what is usually the slowest part of the export. When a
+backup is bound for Drive, local work now occupies the first 60% and the upload owns the
+remaining 40%, filled from the real byte progress the server already records. The label shows
+the live percentage, and the bar never moves backwards when Drive re-reports a retried chunk.
+
+### Fixed — assorted
+
+- Two CSS custom properties (`--ss-primary-rgb`, `--ss-text`) were used but never defined, so
+  several rules silently fell back to transparent/inherit. `.ss-modal-open` was referenced by
+  JS but had no CSS rule, so modal scroll-lock never worked.
+- Closing the progress modal released the scroll lock unconditionally, unlocking the page
+  while the restore-complete modal was still open.
+- Retention was stored without clamping; a crafted request could set it to 0 and delete every
+  backup on the next scheduled run.
+- The Drive upload status poller kept running after the upload finished.
+- Uninstall and deactivation only cleared the old argument-less cron event, stranding the
+  per-frequency ones.
+- `tools/build-icons.php` read codepoints from a stylesheet its own final step deletes, so a
+  second run reported every icon as missing and wrote an empty stylesheet.
+
+---
+
 ## [1.1.11] — 2026-08-29
 
 Fixes the post-restore finalisation step, which did neither of the two things its modal

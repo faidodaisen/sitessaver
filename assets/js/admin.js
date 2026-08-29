@@ -208,7 +208,10 @@
                 if (o.onCancel) o.onCancel();
             }
 
-            function confirm() {
+            // Named `accept`, not `confirm`: a local function called confirm()
+            // shadows window.confirm inside this closure, which is exactly the
+            // thing this module exists to stop anyone calling by accident.
+            function accept() {
                 if (settled) return;
                 var value = hasInput ? $el.find('#ss-dialog-input').val() : true;
                 if (hasInput && o.input.required && !$.trim(String(value))) {
@@ -220,7 +223,7 @@
                 if (o.onConfirm) o.onConfirm(value);
             }
 
-            $el.on('click', '.ss-dialog-confirm', confirm);
+            $el.on('click', '.ss-dialog-confirm', accept);
             $el.on('click', '.ss-dialog-cancel', cancel);
 
             // Click on the backdrop (never the panel) dismisses.
@@ -233,7 +236,7 @@
                     cancel();
                 } else if (e.key === 'Enter' && hasInput && $(e.target).is('#ss-dialog-input')) {
                     e.preventDefault();
-                    confirm();
+                    accept();
                 } else if (e.key === 'Tab') {
                     // Keep focus inside the dialog while it is open.
                     var $f = $el.find('button, input').filter(':visible');
@@ -609,6 +612,7 @@
         ajax('sitessaver_export', data, function (res) {
             var steps       = res.steps;
             var uid         = res.status.uid;
+            var gdriveJob   = res.gdrive_job_id;
             var currentStep = 0;
 
             function runNextStep() {
@@ -656,16 +660,23 @@
                     return;
                 }
 
-                var step  = steps[currentStep];
-                var label = step.label;
-                if (step.id === 'finalize' && (destination === 'gdrive' || destination === 'both')) {
-                    label = 'Uploading to Google Drive...';
+                var step = steps[currentStep];
+
+                // A step flagged `poll` runs a long server-side transfer whose
+                // real progress is reported separately. Show the START of its
+                // range and let the poller fill the rest, instead of jumping
+                // straight to the end percentage and freezing there.
+                if (step.poll === 'gdrive') {
                     ssModal.disableCancel('Uploading to Drive…');
+                    ssModal.setProgress(step.from || 0, step.label);
+                    startGdrivePolling(step);
+                } else {
+                    ssModal.setProgress(step.pct, step.label);
                 }
-                ssModal.setProgress(step.pct, label);
 
                 ajax('sitessaver_export_step', { uid: uid, step_index: currentStep },
                     function (stepRes) {
+                        stopGdrivePolling();
                         if (stepRes.success) {
                             currentStep++;
                             runNextStep();
@@ -673,11 +684,25 @@
                             handleExportError(stepRes);
                         }
                     },
-                    handleExportError
+                    function (err) {
+                        stopGdrivePolling();
+                        handleExportError(err);
+                    }
                 );
             }
 
+            var gdrivePoll = null;
+
+            function startGdrivePolling(step) {
+                gdrivePoll = pollGdriveInto(ssModal, gdriveJob, step, gdrivePoll);
+            }
+
+            function stopGdrivePolling() {
+                gdrivePoll = stopPoll(gdrivePoll);
+            }
+
             function handleExportError(err) {
+                stopGdrivePolling();
                 ssModal.close();
                 showResult($form, err.message || SS.strings.error, true);
                 $btn.prop('disabled', false);
@@ -691,6 +716,57 @@
             $btn.prop('disabled', false);
         });
     });
+
+
+    // ---- Live Google Drive upload progress ----
+    //
+    // A Drive upload runs inside ONE long export-step request, so the browser
+    // gets nothing back until it finishes. GDrive::upload() records byte
+    // progress in a transient as each chunk is accepted; polling that is what
+    // makes the bar advance during the upload instead of sitting at 100%,
+    // which is what it did when the upload was folded into a step already
+    // declared complete.
+    //
+    // Shared by the fresh-export and resume-export flows so they cannot drift.
+
+    function pollGdriveInto(modal, jobId, step, existing) {
+        if (!jobId || existing) return existing;
+
+        var from = step.from || 0;
+        var to   = step.pct;
+        var span = Math.max(0, to - from);
+        var last = from;
+        var handle;
+
+        handle = setInterval(function () {
+            ajax('sitessaver_get_gdrive_upload_status', { job_id: jobId }, function (jobRes) {
+                var uploaded = Number(jobRes.progress);
+                if (!isFinite(uploaded)) return;
+
+                // Map the upload's own 0-100 onto this step's slice of the bar.
+                var overall = Math.round(from + (span * (uploaded / 100)));
+
+                // Never go backwards: a retried chunk can re-report a lower
+                // offset, and a bar that jumps back looks broken.
+                if (overall < last) return;
+                last = overall;
+
+                var label = step.label;
+                if (uploaded > 0 && uploaded < 100) {
+                    label = 'Uploading to Google Drive... (' + uploaded + '%)';
+                }
+
+                modal.setProgress(Math.min(overall, to), label);
+            });
+        }, 1500);
+
+        return handle;
+    }
+
+    function stopPoll(handle) {
+        if (handle) clearInterval(handle);
+        return null;
+    }
 
 
     // ---------- IMPORT (upload) ----------
@@ -1312,10 +1388,11 @@
 
     // ---------- ACTIVE-EXPORT DETECTION (opt-in resume, never auto-run) ----------
 
-    function runExportLoop($form, uid, steps, startStep) {
+    function runExportLoop($form, uid, steps, startStep, gdriveJob) {
         var currentStep = startStep;
         var $btn        = $('#sitessaver-export-btn');
         var cancelled   = false;
+        var gdrivePoll  = null;
         $btn.prop('disabled', true);
 
         ssModal.open({
@@ -1363,9 +1440,17 @@
             }
 
             var step = steps[currentStep];
-            ssModal.setProgress(step.pct, step.label);
+
+            if (step.poll === 'gdrive') {
+                ssModal.disableCancel('Uploading to Drive…');
+                ssModal.setProgress(step.from || 0, step.label);
+                gdrivePoll = pollGdriveInto(ssModal, gdriveJob, step, gdrivePoll);
+            } else {
+                ssModal.setProgress(step.pct, step.label);
+            }
 
             ajax('sitessaver_export_step', { uid: uid, step_index: currentStep }, function (stepRes) {
+                gdrivePoll = stopPoll(gdrivePoll);
                 if (stepRes.success) {
                     currentStep++;
                     runNextStep();
@@ -1375,6 +1460,7 @@
                     $btn.prop('disabled', false);
                 }
             }, function (err) {
+                gdrivePoll = stopPoll(gdrivePoll);
                 ssModal.close();
                 showResult($form, err.message || SS.strings.error, true);
                 $btn.prop('disabled', false);
@@ -1418,7 +1504,7 @@
 
             $form.on('click', '.ss-resume-btn', function () {
                 $('.ss-resume-banner').remove();
-                runExportLoop($form, uid, steps, currentStep);
+                runExportLoop($form, uid, steps, currentStep, res.gdrive_job_id);
             });
 
             $form.on('click', '.ss-discard-btn', function () {

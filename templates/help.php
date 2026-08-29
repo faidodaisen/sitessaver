@@ -33,7 +33,11 @@
                 <p><?php esc_html_e('Go to Settings and click "Connect Google Drive". Once authorized, SitesSaver will automatically create a folder in your Drive. You can then manually upload backups or set up a schedule to do it automatically.', 'sitessaver'); ?></p>
 
                 <h3 style="margin-top: 24px;"><?php esc_html_e('4. Scheduling automatic backups', 'sitessaver'); ?></h3>
-                <p><?php esc_html_e('Go to the Schedule page to enable automated backups. You can choose the frequency (Daily, Weekly, etc.) and decide whether to keep them on your server, upload to Google Drive, or both.', 'sitessaver'); ?></p>
+                <p><?php esc_html_e('Go to the Schedule page to enable automated backups. Tick as many frequencies as you need — they each run on their own timer, so Daily plus Monthly gives you recent restore points alongside a long-term archive. You also decide whether to keep them on your server, upload to Google Drive, or both.', 'sitessaver'); ?></p>
+
+                <h3 style="margin-top: 24px;"><?php esc_html_e('5. My scheduled backups run late, or never', 'sitessaver'); ?></h3>
+                <p><?php esc_html_e('WordPress fires WP-Cron only when someone loads a page, so a quiet site can be hours or days behind — and if DISABLE_WP_CRON is set in wp-config.php, scheduled backups never run at all.', 'sitessaver'); ?></p>
+                <p><?php esc_html_e('The Schedule page has a Server Cron panel with a private trigger URL and ready-made crontab, curl, and WP-CLI lines. No shell access? Point a free uptime monitor at the same URL. It is safe to call more often than your chosen frequency: SitesSaver answers "not due yet" until a backup is genuinely owed. Keep the URL private, and regenerate it from that panel if it ever leaks.', 'sitessaver'); ?></p>
             </div>
         </div>
     </div>
