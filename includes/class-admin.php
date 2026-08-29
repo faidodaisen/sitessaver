@@ -46,13 +46,27 @@ final class Admin {
         //   plugins, Cloudflare-style middleware corrupting the JSON body).
         //
         //   The flow now: after a successful restore the client redirects
-        //   straight to wp-login.php with redirect_to=<permalinks?sitessaver_finalize=TOKEN>.
-        //   The browser's auth cookie won't validate against the restored DB,
-        //   so WordPress shows the login prompt — the user re-auths with the
-        //   backup's credentials. On successful login WP bounces to the
-        //   permalinks page carrying our token. This hook runs under the
-        //   freshly authenticated session, so current_user_can() + nonce
-        //   checks all work normally.
+        //   straight to wp-login.php with reauth=1 and a root-relative
+        //   redirect_to=<permalinks?sitessaver_finalize=TOKEN>.
+        //
+        //   `reauth=1` is what actually forces the logout. The old comment
+        //   here claimed the pre-restore cookie "won't validate against the
+        //   restored DB" — that is only true when the backup carries
+        //   different auth salts. Restoring a backup of the SAME site keeps
+        //   the salts, so the session stays valid and the user was never
+        //   logged out at all; wp-login.php just showed a form they could
+        //   ignore. With reauth=1, wp-login.php calls wp_clear_auth_cookie()
+        //   server-side, so the prompt is unavoidable either way.
+        //
+        //   The redirect_to is root-relative because wp-login.php runs it
+        //   through wp_validate_redirect(), which rejects any host not in
+        //   allowed_redirect_hosts and falls back to the dashboard. An
+        //   absolute URL built from the restored siteurl breaks whenever that
+        //   domain differs from the one the browser is on.
+        //
+        //   On successful login WP bounces to the permalinks page carrying
+        //   our token. This hook runs under the freshly authenticated
+        //   session, so current_user_can() + nonce checks all work normally.
         global $pagenow;
 
         $token = isset($_GET['sitessaver_finalize'])

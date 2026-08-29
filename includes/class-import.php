@@ -671,6 +671,31 @@ final class Import {
      * re-auths with the backup's credentials, WP redirects to the
      * redirect_to target — where Admin::handle_post_import_finalisation
      * runs the deferred work under a clean, freshly-authenticated session.
+     *
+     * Two details below are load-bearing; both were reproduced against a live
+     * WP 7.1 install, and getting either wrong dumps the user on the dashboard
+     * instead of Settings > Permalinks:
+     *
+     * 1. `reauth=1`. The premise that a pre-restore cookie "won't validate"
+     *    only holds when the backup carries different auth salts. Restoring a
+     *    backup of the SAME site keeps the salts, so the old cookie is still
+     *    perfectly valid and the user is never actually logged out. We cannot
+     *    clear it from JS either: WP sets the auth cookies HttpOnly
+     *    (pluggable.php, `setcookie(LOGGED_IN_COOKIE, ..., true)`), so the
+     *    client-side cookie sweep silently does nothing on exactly the cookies
+     *    that matter. `reauth=1` makes wp-login.php call wp_clear_auth_cookie()
+     *    server-side, which is the only thing that reliably forces the prompt.
+     *
+     * 2. A ROOT-RELATIVE redirect_to. On login wp-login.php passes the target
+     *    through wp_safe_redirect() -> wp_validate_redirect(), which drops any
+     *    URL whose host is not in `allowed_redirect_hosts` and falls back to
+     *    admin_url(). An absolute URL built here is computed from the RESTORED
+     *    siteurl, so whenever the backup's domain differs even cosmetically
+     *    from the host the browser is on (127.0.0.1 vs localhost, www vs
+     *    apex, a staging alias), validation rejects it and the user lands on
+     *    the dashboard. Verified: absolute+other-host -> rejected;
+     *    root-relative -> accepted. A root-relative path has no host to
+     *    disagree about, so it survives on whatever domain the user is on.
      */
     public static function build_finalize_redirect_url(): string {
         $token = self::current_finalize_token();
@@ -685,17 +710,31 @@ final class Import {
         wp_cache_delete('siteurl', 'options');
         wp_cache_delete('home', 'options');
 
-        if ($token === '') {
-            return wp_login_url();
+        // Root-relative login URL, for the same host-mismatch reason as the
+        // redirect target: navigating to the restored siteurl's wp-login.php
+        // can bounce the browser to a domain it isn't currently on.
+        $login = '/wp-login.php';
+        if (($path = wp_parse_url(wp_login_url(), PHP_URL_PATH)) !== null && $path !== '') {
+            $login = $path;
         }
 
-        $permalinks = add_query_arg(
-            'sitessaver_finalize',
-            $token,
-            admin_url('options-permalink.php')
-        );
+        if ($token === '') {
+            return add_query_arg('reauth', '1', $login);
+        }
 
-        return wp_login_url($permalinks);
+        $permalinks = '/wp-admin/options-permalink.php';
+        if (($apath = wp_parse_url(admin_url('options-permalink.php'), PHP_URL_PATH)) !== null && $apath !== '') {
+            $permalinks = $apath;
+        }
+        $permalinks = add_query_arg('sitessaver_finalize', $token, $permalinks);
+
+        return add_query_arg(
+            [
+                'reauth'      => '1',
+                'redirect_to' => rawurlencode($permalinks),
+            ],
+            $login
+        );
     }
 
     /**
