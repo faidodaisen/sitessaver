@@ -195,16 +195,31 @@ register_activation_hook(__FILE__, static function (): void {
         file_put_contents($index, '<?php // Silence is golden.');
     }
 
-    // Schedule default cron if settings exist.
+    // Re-arm scheduled backups. Deactivation clears the cron events, so a
+    // deactivate/reactivate cycle (which is what a plugin update does) would
+    // otherwise leave the schedule enabled in the settings but never firing.
+    //
+    // sync_cron_events() rebuilds one event per selected frequency and clears
+    // any stale ones first, so this is safe to run unconditionally.
     $schedule = get_option('sitessaver_schedule', []);
-    if (!empty($schedule['enabled'])) {
-        if (!wp_next_scheduled('sitessaver_scheduled_backup')) {
-            wp_schedule_event(time(), $schedule['frequency'] ?? 'daily', 'sitessaver_scheduled_backup');
-        }
+    if (is_array($schedule) && !empty($schedule['enabled'])) {
+        \SitesSaver\Schedule::sync_cron_events(
+            \SitesSaver\Schedule::selected_frequencies($schedule),
+            true
+        );
     }
 });
 
 // Deactivation hook — clear scheduled events.
 register_deactivation_hook(__FILE__, static function (): void {
+    // Each frequency is its own event (the frequency is passed as a cron
+    // argument), and wp_clear_scheduled_hook() only clears events whose args
+    // match. Passing an empty selection makes sync_cron_events() clear every
+    // one of them, including the legacy no-arg event.
+    if (class_exists(\SitesSaver\Schedule::class)) {
+        \SitesSaver\Schedule::sync_cron_events([], false);
+        return;
+    }
+
     wp_clear_scheduled_hook('sitessaver_scheduled_backup');
 });

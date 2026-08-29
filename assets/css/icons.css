@@ -2,7 +2,7 @@
  * SitesSaver icon subset — derived from RemixIcon 3.5.0 (Apache-2.0).
  * https://github.com/Remix-Design/RemixIcon
  *
- * Only the 41 glyphs this plugin uses are declared, and the font is
+ * Only the 46 glyphs this plugin uses are declared, and the font is
  * served locally. Loading the upstream CSS from a CDN broke the admin UI on
  * offline installs and is disallowed by the WordPress.org plugin guidelines.
  * Regenerate with tools/build-icons.php after adding a new icon.
@@ -30,11 +30,13 @@
 }
 
 .ri-add-circle-line:before { content: "\ea11"; }
+.ri-alert-fill:before { content: "\ea20"; }
 .ri-alert-line:before { content: "\ea21"; }
 .ri-arrow-left-line:before { content: "\ea60"; }
 .ri-book-open-line:before { content: "\eadb"; }
 .ri-calendar-event-fill:before { content: "\eb24"; }
 .ri-checkbox-circle-fill:before { content: "\eb80"; }
+.ri-checkbox-circle-line:before { content: "\eb81"; }
 .ri-close-line:before { content: "\eb99"; }
 .ri-database-2-line:before { content: "\ec16"; }
 .ri-delete-bin-line:before { content: "\ec2a"; }
@@ -46,6 +48,7 @@
 .ri-error-warning-fill:before { content: "\eca0"; }
 .ri-error-warning-line:before { content: "\eca1"; }
 .ri-external-link-line:before { content: "\ecaf"; }
+.ri-file-copy-line:before { content: "\ecd5"; }
 .ri-file-zip-line:before { content: "\ed1f"; }
 .ri-folder-open-line:before { content: "\ed70"; }
 .ri-folder-shield-2-line:before { content: "\ed7a"; }
@@ -54,6 +57,8 @@
 .ri-hard-drive-2-line:before { content: "\edf9"; }
 .ri-heart-fill:before { content: "\ee0e"; }
 .ri-history-line:before { content: "\ee17"; }
+.ri-information-fill:before { content: "\ee58"; }
+.ri-information-line:before { content: "\ee59"; }
 .ri-layout-grid-line:before { content: "\ee90"; }
 .ri-loader-4-line:before { content: "\eec6"; }
 .ri-logout-box-r-line:before { content: "\eeda"; }

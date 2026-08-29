@@ -26,7 +26,16 @@ if (is_array($token_data) && !empty($token_data['refresh_token'])) {
 }
 
 // 2. Clear any scheduled cron events.
+//
+// Scheduled backups register one event per frequency, with the frequency key
+// passed as a cron argument. wp_clear_scheduled_hook() only removes events
+// whose args match, so the no-arg call alone would strand every per-frequency
+// event in the cron array and leave WordPress trying to fire a hook that no
+// longer has a listener.
 wp_clear_scheduled_hook('sitessaver_scheduled_backup');
+foreach (['hourly', 'twicedaily', 'daily', 'weekly', 'sitessaver_monthly'] as $sitessaver_frequency) {
+    wp_clear_scheduled_hook('sitessaver_scheduled_backup', [$sitessaver_frequency]);
+}
 
 // 3. Delete every sitessaver_* option and transient in one sweep.
 $wpdb->query(

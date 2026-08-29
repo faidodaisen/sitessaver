@@ -29,6 +29,8 @@ final class Ajax {
             'sitessaver_download_backup'=> 'handle_download',
             'sitessaver_add_label'      => 'handle_label',
             'sitessaver_save_schedule'  => 'handle_save_schedule',
+            'sitessaver_regenerate_cron_key' => 'handle_regenerate_cron_key',
+            'sitessaver_run_schedule_now'    => 'handle_run_schedule_now',
             'sitessaver_save_settings'  => 'handle_save_settings',
             'sitessaver_gdrive_disconnect' => 'handle_gdrive_disconnect',
             'sitessaver_gdrive_upload'  => 'handle_gdrive_upload',
@@ -429,10 +431,61 @@ final class Ajax {
     public function handle_save_schedule(): void {
         sitessaver_verify_ajax();
 
+        // The form posts frequencies[] so several cadences can run together
+        // (e.g. Daily for recent restore points plus Monthly as an archive).
+        $posted = $_POST['frequencies'] ?? [];
+        if (is_string($posted)) {
+            // Tolerate a single scalar, which is what a legacy client or a
+            // hand-written request is most likely to send.
+            $posted = [$posted];
+        }
+
+        // Only accept keys we actually offer, plus the 'monthly' alias.
+        // normalize_frequency() maps anything unknown to 'daily', so filtering
+        // BEFORE normalising is what stops a typo becoming an unrequested
+        // daily backup.
+        $allowed = array_keys(Schedule::frequencies());
+        $allowed[] = 'monthly';
+
+        $frequencies = [];
+        if (is_array($posted)) {
+            foreach ($posted as $value) {
+                if (!is_string($value) || $value === '') {
+                    continue;
+                }
+                $key = sanitize_text_field(wp_unslash($value));
+                if (in_array($key, $allowed, true)) {
+                    $frequencies[] = Schedule::normalize_frequency($key);
+                }
+            }
+        }
+
+        $frequencies = array_values(array_unique($frequencies));
+
+        // A schedule with nothing selected would be enabled but silent, which
+        // is worse than telling the user outright.
+        if (!empty($_POST['enabled']) && $frequencies === []) {
+            wp_send_json_error([
+                'message' => __('Choose at least one backup frequency.', 'sitessaver'),
+            ]);
+        }
+
+        // Preserve the canonical ordering used everywhere else.
+        $frequencies = Schedule::selected_frequencies(['frequencies' => $frequencies]);
+
+        // Clamp rather than trust: the form caps retention at 100, but a
+        // hand-crafted POST could otherwise store 0 (delete everything on the
+        // next run) or a negative value.
+        $retention = (int) ($_POST['retention'] ?? 5);
+        $retention = max(1, min(100, $retention));
+
         $schedule = [
-            'enabled'   => (bool) ($_POST['enabled'] ?? false),
-            'frequency' => sanitize_text_field(wp_unslash($_POST['frequency'] ?? 'daily')),
-            'retention' => (int) ($_POST['retention'] ?? 5),
+            'enabled'     => (bool) ($_POST['enabled'] ?? false),
+            'frequencies' => $frequencies,
+            // Kept in sync for anything still reading the old single-value
+            // key (and so downgrading the plugin does not lose the setting).
+            'frequency'   => $frequencies[0] ?? 'daily',
+            'retention'   => $retention,
             'include_db'      => (bool) ($_POST['include_db'] ?? true),
             'include_media'   => (bool) ($_POST['include_media'] ?? true),
             'include_plugins' => (bool) ($_POST['include_plugins'] ?? true),
@@ -444,27 +497,80 @@ final class Ajax {
 
         update_option('sitessaver_schedule', $schedule, false);
 
-        // Update WP Cron.
-        wp_clear_scheduled_hook('sitessaver_scheduled_backup');
+        // Rebuild the cron events to match the new selection exactly.
+        Schedule::sync_cron_events($frequencies, $schedule['enabled']);
 
         if ($schedule['enabled']) {
-            $valid = ['hourly', 'twicedaily', 'daily', 'weekly'];
-            $freq  = in_array($schedule['frequency'], $valid, true) ? $schedule['frequency'] : 'daily';
-
-            // Delay the first run by one full interval so saving the schedule
-            // does NOT immediately trigger a backup on the next page view.
-            $intervals = [
-                'hourly'     => HOUR_IN_SECONDS,
-                'twicedaily' => 12 * HOUR_IN_SECONDS,
-                'daily'      => DAY_IN_SECONDS,
-                'weekly'     => WEEK_IN_SECONDS,
-            ];
-            $first_run = time() + ($intervals[$freq] ?? DAY_IN_SECONDS);
-
-            wp_schedule_event($first_run, $freq, 'sitessaver_scheduled_backup');
+            // Seed the last-run markers so the external trigger endpoint
+            // agrees with WP-Cron about when the first backup is owed.
+            // Without this a server cron would fire a backup immediately
+            // after saving, since "never run before" reads as due.
+            Schedule::seed_last_runs($frequencies);
         }
 
-        wp_send_json_success(['message' => __('Schedule saved.', 'sitessaver')]);
+        wp_send_json_success([
+            'message'  => __('Schedule saved.', 'sitessaver'),
+            'next_run' => $schedule['enabled'] ? Schedule::next_scheduled_run($frequencies) : 0,
+        ]);
+    }
+
+    /**
+     * Issue a fresh external-trigger key, invalidating the old URL.
+     */
+    public function handle_regenerate_cron_key(): void {
+        sitessaver_verify_ajax();
+
+        Schedule::regenerate_trigger_key();
+
+        wp_send_json_success([
+            'message' => __('New trigger URL generated. Update your server cron with the new URL.', 'sitessaver'),
+            'url'     => Schedule::trigger_url(),
+        ]);
+    }
+
+    /**
+     * Run the scheduled backup immediately, using the saved schedule settings.
+     *
+     * Lets the user prove the schedule works without waiting for the next
+     * cron window — the most common support question about scheduled backups
+     * is "is this actually configured correctly?".
+     */
+    public function handle_run_schedule_now(): void {
+        sitessaver_verify_ajax();
+
+        @set_time_limit(0);
+        wp_raise_memory_limit('admin');
+
+        $settings = get_option('sitessaver_schedule', []);
+
+        if (empty($settings['enabled'])) {
+            wp_send_json_error([
+                'message' => __('Enable scheduled backups and save before running a test backup.', 'sitessaver'),
+            ]);
+        }
+
+        $result = Schedule::instance()->run_scheduled_backup();
+
+        if ($result === null) {
+            wp_send_json_error([
+                'message' => __('A scheduled backup is already running. Try again once it finishes.', 'sitessaver'),
+            ]);
+        }
+
+        if (empty($result['success'])) {
+            wp_send_json_error([
+                'message' => $result['message'] ?? __('Backup failed.', 'sitessaver'),
+            ]);
+        }
+
+        wp_send_json_success([
+            'message' => sprintf(
+                /* translators: 1: backup filename, 2: human-readable file size */
+                __('Test backup created: %1$s (%2$s)', 'sitessaver'),
+                (string) ($result['file'] ?? ''),
+                (string) ($result['size'] ?? '')
+            ),
+        ]);
     }
 
     /**

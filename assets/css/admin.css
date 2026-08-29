@@ -12,10 +12,20 @@
     /* Semantic Colors */
     --ss-primary: #2271b1; 
     --ss-primary-hover: #135e96;
+    --ss-primary-rgb: 34, 113, 177;
     --ss-success: #00a32a; 
     --ss-success-hover: #008a20;
+    --ss-success-rgb: 0, 163, 42;
     --ss-danger: #d63638;
     --ss-danger-hover: #b32d2e;
+    --ss-danger-rgb: 214, 54, 56;
+    --ss-warning: #dba617;
+    --ss-warning-hover: #b88900;
+    --ss-warning-rgb: 219, 166, 23;
+
+    /* Alias kept for rules written against --ss-text. The primary token is
+       --ss-text-main; both must resolve or those rules fall back to inherit. */
+    --ss-text: #1d2327;
     
     /* Shadows & Radii */
     --ss-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
@@ -260,6 +270,7 @@
 
 .badge-gray { background: #f0f0f1; color: var(--ss-text-muted); }
 .badge-blue { background: rgba(34, 113, 177, 0.1); color: var(--ss-primary); }
+.badge-red  { background: rgba(var(--ss-danger-rgb), 0.1); color: var(--ss-danger); }
 
 .action-btns {
     display: flex;
@@ -632,19 +643,12 @@
 }
 
 .ss-progress-modal-bar-wrap {
-    margin-bottom: 8px;
+    margin-bottom: 20px;
 }
 
 .ss-progress-modal-bar-wrap .sitessaver-progress {
     display: block !important;
     margin: 0;
-}
-
-.ss-progress-modal-step {
-    font-size: 13px;
-    color: var(--ss-text-muted);
-    margin-bottom: 20px;
-    min-height: 18px;
 }
 
 .ss-progress-modal-caution {
@@ -747,4 +751,497 @@
 .ss-destination-disabled {
     cursor: not-allowed;
     opacity: 0.5;
+}
+
+/* ==========================================================================
+   Notification system — toasts + dialogs
+   Replaces the native alert() / confirm() / prompt() dialogs the plugin used
+   to rely on. Those were unstyled, non-translatable, blocked the main thread,
+   and are suppressed entirely by some browsers inside iframes.
+   ========================================================================== */
+
+/* ── Toasts ───────────────────────────────────────────────── */
+
+.ss-toast-stack {
+    position: fixed;
+    top: 46px;                 /* clear the WP admin bar */
+    right: 20px;
+    z-index: 100010;           /* above .sitessaver-modal-backdrop (99999) */
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 380px;
+    max-width: calc(100vw - 40px);
+    pointer-events: none;      /* let clicks through the gaps between toasts */
+}
+
+@media screen and (max-width: 782px) {
+    .ss-toast-stack {
+        top: 66px;
+    }
+}
+
+.ss-toast {
+    pointer-events: auto;
+    position: relative;
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    background: #fff;
+    border: 1px solid var(--ss-border-light);
+    border-left: 4px solid var(--ss-primary);
+    border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(15, 23, 42, 0.14);
+    padding: 14px 16px;
+    overflow: hidden;
+    animation: ss-toast-in 0.28s cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+
+.ss-toast.is-leaving {
+    animation: ss-toast-out 0.22s ease-in forwards;
+}
+
+.ss-toast-icon {
+    flex-shrink: 0;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+}
+
+.ss-toast-body {
+    flex: 1;
+    min-width: 0;
+}
+
+.ss-toast-title {
+    display: block;
+    font-size: 13px;
+    font-weight: 700;
+    line-height: 1.35;
+    color: var(--ss-text-main);
+    margin-bottom: 2px;
+}
+
+.ss-toast-message {
+    display: block;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--ss-text-muted);
+    word-wrap: break-word;
+    overflow-wrap: anywhere;
+}
+
+.ss-toast-message a {
+    color: var(--ss-primary);
+}
+
+.ss-toast-close {
+    flex-shrink: 0;
+    background: none;
+    border: 0;
+    padding: 0;
+    margin: -2px -4px 0 0;
+    cursor: pointer;
+    color: #9aa5b1;
+    font-size: 16px;
+    line-height: 1;
+    border-radius: 4px;
+    transition: color 0.15s, background 0.15s;
+}
+
+.ss-toast-close:hover {
+    color: var(--ss-text-main);
+    background: rgba(15, 23, 42, 0.06);
+}
+
+.ss-toast-close:focus-visible {
+    outline: 2px solid var(--ss-primary);
+    outline-offset: 1px;
+}
+
+/* Auto-dismiss countdown bar. */
+.ss-toast-timer {
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    height: 3px;
+    width: 100%;
+    transform-origin: left center;
+    opacity: 0.5;
+    animation-name: ss-toast-timer;
+    animation-timing-function: linear;
+    animation-fill-mode: forwards;
+}
+
+.ss-toast.is-paused .ss-toast-timer {
+    animation-play-state: paused;
+}
+
+/* Variants */
+.ss-toast.ss-toast-success   { border-left-color: var(--ss-success); }
+.ss-toast.ss-toast-success   .ss-toast-icon  { background: rgba(var(--ss-success-rgb), 0.12); color: var(--ss-success); }
+.ss-toast.ss-toast-success   .ss-toast-timer { background: var(--ss-success); }
+
+.ss-toast.ss-toast-error     { border-left-color: var(--ss-danger); }
+.ss-toast.ss-toast-error     .ss-toast-icon  { background: rgba(var(--ss-danger-rgb), 0.12); color: var(--ss-danger); }
+.ss-toast.ss-toast-error     .ss-toast-timer { background: var(--ss-danger); }
+
+.ss-toast.ss-toast-warning   { border-left-color: var(--ss-warning); }
+.ss-toast.ss-toast-warning   .ss-toast-icon  { background: rgba(var(--ss-warning-rgb), 0.16); color: var(--ss-warning-hover); }
+.ss-toast.ss-toast-warning   .ss-toast-timer { background: var(--ss-warning); }
+
+.ss-toast.ss-toast-info      { border-left-color: var(--ss-primary); }
+.ss-toast.ss-toast-info      .ss-toast-icon  { background: rgba(var(--ss-primary-rgb), 0.12); color: var(--ss-primary); }
+.ss-toast.ss-toast-info      .ss-toast-timer { background: var(--ss-primary); }
+
+@keyframes ss-toast-in {
+    from { opacity: 0; transform: translateX(24px) scale(0.98); }
+    to   { opacity: 1; transform: translateX(0)    scale(1); }
+}
+
+@keyframes ss-toast-out {
+    from { opacity: 1; transform: translateX(0)    scale(1);    max-height: 220px; margin-bottom: 0; }
+    to   { opacity: 0; transform: translateX(24px) scale(0.98); max-height: 0;     margin-bottom: -10px; }
+}
+
+@keyframes ss-toast-timer {
+    from { transform: scaleX(1); }
+    to   { transform: scaleX(0); }
+}
+
+/* ── Dialog (confirm / prompt / alert) ────────────────────── */
+
+.ss-dialog-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.6);
+    backdrop-filter: blur(4px);
+    z-index: 100000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    animation: sitessaver-fade-in 0.18s ease-out;
+}
+
+.ss-dialog {
+    background: #fff;
+    border-radius: 12px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    width: 100%;
+    max-width: 460px;
+    padding: 28px;
+    animation: sitessaver-pop-in 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+    max-height: 90vh;
+    overflow-y: auto;
+}
+
+.ss-dialog-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    margin-bottom: 8px;
+}
+
+.ss-dialog-icon {
+    flex-shrink: 0;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 22px;
+    background: rgba(var(--ss-primary-rgb), 0.1);
+    color: var(--ss-primary);
+}
+
+.ss-dialog-danger  .ss-dialog-icon { background: rgba(var(--ss-danger-rgb), 0.12);  color: var(--ss-danger); }
+.ss-dialog-warning .ss-dialog-icon { background: rgba(var(--ss-warning-rgb), 0.16); color: var(--ss-warning-hover); }
+.ss-dialog-success .ss-dialog-icon { background: rgba(var(--ss-success-rgb), 0.12); color: var(--ss-success); }
+
+.ss-dialog-title {
+    margin: 8px 0 0;
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--ss-text-main);
+    line-height: 1.3;
+}
+
+.ss-dialog-message {
+    margin: 0 0 18px;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--ss-text-muted);
+    word-wrap: break-word;
+    overflow-wrap: anywhere;
+}
+
+.ss-dialog-field {
+    margin-bottom: 18px;
+}
+
+.ss-dialog-field label {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--ss-text-main);
+    margin-bottom: 6px;
+}
+
+.ss-dialog-field input[type="text"] {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 9px 12px;
+    border: 1px solid var(--ss-border);
+    border-radius: 6px;
+    font-size: 14px;
+    font-family: var(--ss-font);
+    color: var(--ss-text-main);
+    background: #fff;
+}
+
+.ss-dialog-field input[type="text"]:focus {
+    border-color: var(--ss-primary);
+    box-shadow: 0 0 0 1px var(--ss-primary);
+    outline: none;
+}
+
+.ss-dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.ss-dialog-actions .btn {
+    min-width: 110px;
+    justify-content: center;
+}
+
+.ss-dialog-actions .btn-danger {
+    background: var(--ss-danger);
+    border-color: var(--ss-danger);
+    color: #fff;
+}
+
+.ss-dialog-actions .btn-danger:hover {
+    background: var(--ss-danger-hover);
+    border-color: var(--ss-danger-hover);
+    color: #fff;
+}
+
+/* Prevent background scroll while a modal or dialog owns the screen. */
+body.ss-modal-open {
+    overflow: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .ss-toast,
+    .ss-toast.is-leaving,
+    .ss-dialog,
+    .ss-dialog-backdrop,
+    .sitessaver-modal,
+    .sitessaver-modal-backdrop {
+        animation: none !important;
+    }
+}
+
+/* ==========================================================================
+   Schedule page — frequency picker, notices, copy rows
+   ========================================================================== */
+
+/* ── Inline notices ───────────────────────────────────────── */
+
+.ss-notice {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    margin: 0 0 20px;
+    padding: 14px 16px;
+    border-radius: 8px;
+    border: 1px solid transparent;
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+.ss-notice i {
+    font-size: 18px;
+    flex-shrink: 0;
+    margin-top: 1px;
+}
+
+.ss-notice strong {
+    display: block;
+    margin-bottom: 2px;
+}
+
+.ss-notice-warning {
+    background: rgba(var(--ss-warning-rgb), 0.1);
+    border-color: rgba(var(--ss-warning-rgb), 0.35);
+    color: #7a5800;
+}
+
+.ss-notice-warning i { color: var(--ss-warning-hover); }
+
+.ss-notice-info {
+    background: rgba(var(--ss-primary-rgb), 0.07);
+    border-color: rgba(var(--ss-primary-rgb), 0.28);
+    color: #10456e;
+}
+
+.ss-notice-info i { color: var(--ss-primary); }
+
+/* ── Frequency picker ─────────────────────────────────────── */
+
+.ss-frequency-group {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.ss-frequency-option {
+    position: relative;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px 14px;
+    border: 2px solid var(--ss-border-light);
+    border-radius: 8px;
+    background: var(--ss-surface);
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+}
+
+.ss-frequency-option:hover {
+    border-color: var(--ss-primary);
+    background: rgba(var(--ss-primary-rgb), 0.03);
+}
+
+.ss-frequency-option.is-selected {
+    border-color: var(--ss-primary);
+    background: rgba(var(--ss-primary-rgb), 0.06);
+}
+
+.ss-frequency-option input[type="checkbox"] {
+    margin: 2px 0 0;
+    flex-shrink: 0;
+}
+
+/* Keyboard focus has to be visible on the card, not just the tiny checkbox. */
+.ss-frequency-option:focus-within {
+    box-shadow: 0 0 0 2px rgba(var(--ss-primary-rgb), 0.35);
+}
+
+.ss-frequency-body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.ss-frequency-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ss-text-main);
+}
+
+.ss-frequency-desc {
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--ss-text-muted);
+}
+
+.ss-frequency-meta {
+    font-size: 11px;
+    color: var(--ss-primary);
+    margin-top: 2px;
+}
+
+/* ── Copy rows + field groups ─────────────────────────────── */
+
+.ss-field-group {
+    margin-bottom: 22px;
+}
+
+.ss-field-label {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--ss-text-main);
+    margin-bottom: 6px;
+}
+
+.ss-copy-row {
+    display: flex;
+    gap: 8px;
+    align-items: stretch;
+    flex-wrap: wrap;
+}
+
+.ss-copy-input {
+    flex: 1 1 320px;
+    min-width: 0;
+    font-family: Consolas, Monaco, "Courier New", monospace;
+    font-size: 12px;
+    background: #f6f7f7;
+    color: var(--ss-text-main);
+}
+
+.ss-copy-row .btn {
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+
+/* ── Disclosure ───────────────────────────────────────────── */
+
+.ss-details {
+    border: 1px solid var(--ss-border-light);
+    border-radius: 8px;
+    padding: 0;
+    margin-bottom: 22px;
+    background: #fbfbfc;
+}
+
+.ss-details > summary {
+    cursor: pointer;
+    padding: 12px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ss-primary);
+    list-style-position: inside;
+}
+
+.ss-details > summary:hover {
+    color: var(--ss-primary-hover);
+}
+
+.ss-details[open] > summary {
+    border-bottom: 1px solid var(--ss-border-light);
+    margin-bottom: 14px;
+}
+
+.ss-details > *:not(summary) {
+    padding-left: 16px;
+    padding-right: 16px;
+}
+
+.ss-details > *:last-child {
+    padding-bottom: 16px;
+}
+
+.ss-details-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--ss-text-main);
+    margin: 16px 0 6px;
+}
+
+.ss-details-label:first-of-type {
+    margin-top: 0;
 }
