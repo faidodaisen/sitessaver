@@ -6,6 +6,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.1] — 2026-08-29
+
+Fixes the server-cron setup instructions, which handed out a command that could not run.
+
+### Fixed — the trigger URL was not shell-quoted
+
+The generated command embedded the URL bare. A URL carrying more than one query parameter
+contains `&`, which the shell reads as "run everything before this in the background" — so
+`...&force=1` was silently truncated and the request lost its key. Confirmed against real
+bash: the old form dropped everything from `&` onward, the new form round-trips the URL
+byte for byte.
+
+### Fixed — the setup box mixed the schedule and the command together
+
+Hosting panels (RunCloud, cPanel, Plesk, CyberPanel) ask for the schedule and the command
+in separate fields. The page only ever offered one combined crontab line, so pasting it
+into a panel's command box produced a doubled schedule such as
+`* * * * * /bin/bash 0 * * * * wget ...`, where bash then tried to execute a file named
+`0`. The job saved without complaint and never ran.
+
+The Server Cron panel now has two tabs:
+
+- **Hosting panel** — vendor binary, command, and the five schedule values as separate
+  copyable fields, matching how those forms are laid out.
+- **crontab -e** — the single combined line, for editing a crontab directly.
+
+The panel command is wrapped as `-c '...'` because a panel that runs it through
+`/bin/bash` would otherwise treat `wget` as a script filename.
+
+Verified by running the generated command through `bash -c` exactly as a panel would: it
+completed a real backup.
+
+### Fixed — schedule fields rendered full-height
+
+The five one-character boxes inherited the flex default of `stretch`, so each became as
+tall as the whole row.
+
+---
+
 ## [1.2.0] — 2026-08-29
 
 Scheduling gains a Monthly option and the ability to run several frequencies at once, plus a

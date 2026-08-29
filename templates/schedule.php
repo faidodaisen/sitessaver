@@ -46,9 +46,49 @@ $trigger_url = Schedule::trigger_url();
 // plugin still enforces each frequency itself, so pinging more often than the
 // shortest selection is safe and simply makes runs more punctual.
 $cron_expression = $shortest_interval <= HOUR_IN_SECONDS ? '*/15 * * * *' : '0 * * * *';
-$cron_line       = sprintf('%s wget -q -O - %s >/dev/null 2>&1', $cron_expression, $trigger_url);
-$curl_line       = sprintf('%s curl -s %s >/dev/null 2>&1', $cron_expression, $trigger_url);
-$wpcli_line      = sprintf('%s cd %s && wp cron event run --due-now >/dev/null 2>&1', $cron_expression, ABSPATH);
+
+// The trigger URL contains a query string, and hosting panels paste these
+// straight into a shell. Unquoted, the browser-safe `&` would background the
+// command at that point and the key would never be sent — so quote it once,
+// here, and reuse the quoted form everywhere.
+//
+// Double quotes, deliberately. The command is itself wrapped in single quotes
+// for panels that run it through `bash -c '...'`, and a single-quoted URL
+// nested inside that has to be escaped as '\'' — which is correct POSIX but
+// looks like line noise in a field the user is expected to eyeball before
+// pasting. Double quotes nest cleanly and still protect the `&`.
+// Escape the four characters the shell still expands inside double quotes.
+$trigger_url_sh = '"' . addcslashes($trigger_url, '"$`\\') . '"';
+
+// Command halves, without any schedule. Panels such as RunCloud, cPanel, and
+// Plesk supply the schedule through their own fields, so pasting a full crontab
+// line into their "command" box produces a doubled schedule that cannot run.
+$wget_command  = sprintf('wget -q -O - %s >/dev/null 2>&1', $trigger_url_sh);
+$curl_command  = sprintf('curl -s %s >/dev/null 2>&1', $trigger_url_sh);
+$wpcli_command = sprintf('cd %s && wp cron event run --due-now >/dev/null 2>&1', escapeshellarg(rtrim(ABSPATH, '/\\')));
+
+// Full crontab lines, for `crontab -e` where the schedule IS part of the line.
+$cron_line  = $cron_expression . ' ' . $wget_command;
+$curl_line  = $cron_expression . ' ' . $curl_command;
+$wpcli_line = $cron_expression . ' ' . $wpcli_command;
+
+// Some panels ask for an interpreter separately (RunCloud's "Vendor Binary").
+// Whatever follows is handed to that binary, so a bare `wget ...` is read as a
+// script filename and fails; `-c '...'` is what makes it run as a command.
+// $wget_command quotes its URL with double quotes, so it nests inside these
+// single quotes without any escaping.
+$panel_binary  = '/bin/bash';
+$panel_command = sprintf("-c '%s'", $wget_command);
+
+// Split the schedule into the per-field boxes those panels use.
+$cron_fields = explode(' ', $cron_expression);
+$field_labels = [
+    __('Minute', 'sitessaver'),
+    __('Hour', 'sitessaver'),
+    __('Day of Month', 'sitessaver'),
+    __('Month', 'sitessaver'),
+    __('Day of Week', 'sitessaver'),
+];
 ?>
 <div class="sitessaver-wrap">
     <header class="ss-header">
@@ -242,19 +282,111 @@ $wpcli_line      = sprintf('%s cd %s && wp cron event run --due-now >/dev/null 2
                 </p>
             </div>
 
-            <div class="ss-field-group">
-                <label class="ss-field-label"><?php esc_html_e('Add this line to your server crontab', 'sitessaver'); ?></label>
-                <div class="ss-copy-row">
-                    <input type="text" id="sitessaver-cron-line" class="ss-input-text ss-copy-input" readonly
-                           value="<?php echo esc_attr($cron_line); ?>" />
-                    <button type="button" class="btn btn-outline ss-copy-btn" data-copy-target="#sitessaver-cron-line">
-                        <i class="ri-file-copy-line"></i>
-                        <?php esc_html_e('Copy', 'sitessaver'); ?>
-                    </button>
-                </div>
-                <p class="description">
-                    <?php esc_html_e('Run "crontab -e" on your server and paste the line. On cPanel or Plesk, use the Cron Jobs page instead and paste only the command part.', 'sitessaver'); ?>
+            <div class="ss-setup-tabs">
+                <button type="button" class="ss-setup-tab is-active" data-setup-target="ss-setup-panel">
+                    <i class="ri-layout-grid-line"></i>
+                    <?php esc_html_e('Hosting panel', 'sitessaver'); ?>
+                </button>
+                <button type="button" class="ss-setup-tab" data-setup-target="ss-setup-crontab">
+                    <i class="ri-terminal-box-line"></i>
+                    <?php esc_html_e('crontab -e', 'sitessaver'); ?>
+                </button>
+            </div>
+
+            <?php
+            /*
+             * Panels (RunCloud, cPanel, Plesk, CyberPanel) collect the schedule
+             * in their own fields and the command in another. Pasting a whole
+             * crontab line into the command box yields a doubled schedule like
+             * `* * * * * /bin/bash 0 * * * * wget ...`, which silently never
+             * runs. Splitting the parts out is what stops that.
+             */
+            ?>
+            <div class="ss-setup-body is-active" id="ss-setup-panel">
+                <p class="description" style="margin-top: 0;">
+                    <?php esc_html_e('Copy each value into the matching field. Do not paste the schedule into the command box — the panel adds it for you.', 'sitessaver'); ?>
                 </p>
+
+                <div class="ss-field-group">
+                    <label class="ss-field-label" for="sitessaver-panel-binary">
+                        <?php esc_html_e('Command / Vendor Binary (if the panel asks for one)', 'sitessaver'); ?>
+                    </label>
+                    <div class="ss-copy-row">
+                        <input type="text" id="sitessaver-panel-binary" class="ss-input-text ss-copy-input" readonly
+                               value="<?php echo esc_attr($panel_binary); ?>" />
+                        <button type="button" class="btn btn-outline ss-copy-btn" data-copy-target="#sitessaver-panel-binary">
+                            <i class="ri-file-copy-line"></i>
+                            <?php esc_html_e('Copy', 'sitessaver'); ?>
+                        </button>
+                    </div>
+                    <p class="description">
+                        <?php esc_html_e('Leave this out if your panel has no such field, and use the crontab command below instead.', 'sitessaver'); ?>
+                    </p>
+                </div>
+
+                <div class="ss-field-group">
+                    <label class="ss-field-label" for="sitessaver-panel-command">
+                        <?php esc_html_e('Command', 'sitessaver'); ?>
+                    </label>
+                    <div class="ss-copy-row">
+                        <input type="text" id="sitessaver-panel-command" class="ss-input-text ss-copy-input" readonly
+                               value="<?php echo esc_attr($panel_command); ?>" />
+                        <button type="button" class="btn btn-outline ss-copy-btn" data-copy-target="#sitessaver-panel-command">
+                            <i class="ri-file-copy-line"></i>
+                            <?php esc_html_e('Copy', 'sitessaver'); ?>
+                        </button>
+                    </div>
+                    <p class="description">
+                        <?php esc_html_e('The -c \'...\' wrapper is required whenever the panel runs your command through /bin/bash. Without it bash treats "wget" as a script filename and the job fails.', 'sitessaver'); ?>
+                        <br />
+                        <?php esc_html_e('If the panel has no binary field, paste this instead:', 'sitessaver'); ?>
+                        <code><?php echo esc_html($wget_command); ?></code>
+                    </p>
+                </div>
+
+                <div class="ss-field-group">
+                    <label class="ss-field-label"><?php esc_html_e('Schedule fields', 'sitessaver'); ?></label>
+                    <div class="ss-cron-fields">
+                        <?php foreach ($field_labels as $i => $flabel) :
+                            $fid = 'sitessaver-cron-field-' . $i;
+                            ?>
+                            <div class="ss-cron-field">
+                                <label for="<?php echo esc_attr($fid); ?>"><?php echo esc_html($flabel); ?></label>
+                                <input type="text" id="<?php echo esc_attr($fid); ?>"
+                                       class="ss-input-text ss-copy-input ss-cron-field-input" readonly
+                                       value="<?php echo esc_attr($cron_fields[$i] ?? '*'); ?>" />
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                    <p class="description">
+                        <?php
+                        printf(
+                            /* translators: %s: cron schedule expression, e.g. 0 * * * * */
+                            esc_html__('Together these read %s. If your panel offers a preset such as "Once an hour", pick that instead.', 'sitessaver'),
+                            '<code>' . esc_html($cron_expression) . '</code>'
+                        );
+                        ?>
+                    </p>
+                </div>
+            </div>
+
+            <div class="ss-setup-body" id="ss-setup-crontab">
+                <div class="ss-field-group">
+                    <label class="ss-field-label" for="sitessaver-cron-line">
+                        <?php esc_html_e('Run "crontab -e" and paste this whole line', 'sitessaver'); ?>
+                    </label>
+                    <div class="ss-copy-row">
+                        <input type="text" id="sitessaver-cron-line" class="ss-input-text ss-copy-input" readonly
+                               value="<?php echo esc_attr($cron_line); ?>" />
+                        <button type="button" class="btn btn-outline ss-copy-btn" data-copy-target="#sitessaver-cron-line">
+                            <i class="ri-file-copy-line"></i>
+                            <?php esc_html_e('Copy', 'sitessaver'); ?>
+                        </button>
+                    </div>
+                    <p class="description">
+                        <?php esc_html_e('This form includes the schedule, so use it only where you edit the crontab directly. In a hosting panel, use the Hosting panel tab above.', 'sitessaver'); ?>
+                    </p>
+                </div>
             </div>
 
             <details class="ss-details">

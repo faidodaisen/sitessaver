@@ -1098,6 +1098,35 @@
 
     // ---------- SERVER CRON PANEL ----------
 
+    // Hosting-panel vs crontab setup tabs.
+    $(document).on('click', '.ss-setup-tab', function () {
+        var $tab = $(this);
+        var id   = $tab.data('setup-target');
+
+        $tab.addClass('is-active').siblings('.ss-setup-tab').removeClass('is-active');
+        $('.ss-setup-body').removeClass('is-active');
+        $('#' + id).addClass('is-active');
+    });
+
+    // The per-field schedule boxes have no button of their own; clicking one
+    // copies it, which is the only thing anyone wants to do with a read-only
+    // field showing a single character.
+    $(document).on('click', '.ss-cron-field-input', function () {
+        var $input = $(this);
+        $input.trigger('select');
+
+        function flash() {
+            $input.addClass('is-copied');
+            setTimeout(function () { $input.removeClass('is-copied'); }, 900);
+        }
+
+        if (navigator.clipboard && window.isSecureContext) {
+            navigator.clipboard.writeText($input.val()).then(flash, function () {});
+        } else {
+            try { document.execCommand('copy'); flash(); } catch (e) {}
+        }
+    });
+
     $(document).on('click', '.ss-copy-btn', function () {
         var $btn    = $(this);
         var $target = $($btn.data('copy-target'));
