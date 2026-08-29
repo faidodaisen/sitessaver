@@ -725,6 +725,8 @@ final class GDrive {
 
         $meta     = json_decode(wp_remote_retrieve_body($meta_response), true);
         $filename = sanitize_file_name($meta['name'] ?? 'backup.zip');
+        // Drive returns size as a string; 0 means "unknown" (rare, e.g. Docs).
+        $expected_size = isset($meta['size']) ? (int) $meta['size'] : 0;
         if ($filename === '' || strtolower((string) pathinfo($filename, PATHINFO_EXTENSION)) !== 'zip') {
             $filename = 'gdrive-' . wp_generate_password(6, false, false) . '.zip';
         }
@@ -736,16 +738,59 @@ final class GDrive {
         }
         $staged = SITESSAVER_TEMP_DIR . '/gdrive-dl-' . wp_generate_password(8, false, false) . '.zip';
 
-        $response = wp_remote_get(self::API_URL . "/files/" . rawurlencode($file_id) . "?alt=media", [
+        /*
+         * acknowledgeAbuse=true is REQUIRED here.
+         *
+         * Google runs a malware/abuse scan on Drive content. Files it cannot
+         * scan — which includes any sufficiently large archive, and virtually
+         * every full-site backup ZIP — are flagged. For a flagged file the v3
+         * API does NOT return an error for `alt=media`: it accepts the TLS
+         * connection, accepts the request, and then simply never sends a
+         * response body. cURL sits there until it hits its own timeout and
+         * reports "Operation timed out ... with 0 bytes received".
+         *
+         * Measured against a real 74.78 MB backup on a live site:
+         *   without acknowledgeAbuse -> 0 bytes after 7+ minutes, then timeout
+         *   with    acknowledgeAbuse -> full 78,417,557 bytes in 1.44s
+         *
+         * The flag only asserts that we accept the risk of downloading a file
+         * Drive could not scan. It is a no-op for unflagged files, so it is
+         * safe to send unconditionally. This is the user's own backup, which
+         * this same plugin uploaded.
+         *
+         * Also pass a stall guard: if the transfer delivers less than 1 byte/s
+         * for 30s straight, fail fast with a clear message instead of hanging
+         * for the full timeout and letting PHP-FPM kill the request first.
+         */
+        $media_url = self::API_URL . '/files/' . rawurlencode($file_id)
+            . '?alt=media&acknowledgeAbuse=true&supportsAllDrives=true';
+
+        $stall_guard = static function ($handle) {
+            curl_setopt($handle, CURLOPT_LOW_SPEED_LIMIT, 1);
+            curl_setopt($handle, CURLOPT_LOW_SPEED_TIME, 30);
+        };
+        add_action('http_api_curl', $stall_guard);
+
+        $response = wp_remote_get($media_url, [
             'headers'  => ['Authorization' => 'Bearer ' . $token],
             'timeout'  => 300,
             'stream'   => true,
             'filename' => $staged,
         ]);
 
+        remove_action('http_api_curl', $stall_guard);
+
         if (is_wp_error($response)) {
             @unlink($staged);
-            return ['success' => false, 'message' => $response->get_error_message()];
+            $err = $response->get_error_message();
+            if (stripos($err, 'timed out') !== false || stripos($err, 'timeout') !== false) {
+                $err = sprintf(
+                    /* translators: %s: the underlying transport error */
+                    __('Download from Google Drive stalled and was aborted (%s). Check the server\'s outbound connection to googleapis.com.', 'sitessaver'),
+                    $err
+                );
+            }
+            return ['success' => false, 'message' => $err];
         }
 
         $code = (int) wp_remote_retrieve_response_code($response);
@@ -759,6 +804,22 @@ final class GDrive {
         if (!file_exists($staged) || filesize($staged) === 0) {
             @unlink($staged);
             return ['success' => false, 'message' => __('Download failed: empty response from Google Drive.', 'sitessaver')];
+        }
+
+        // Truncation check — a partial ZIP will fail confusingly at restore
+        // time, so reject it here while we still know the expected size.
+        $staged_size = (int) filesize($staged);
+        if ($expected_size > 0 && $staged_size !== $expected_size) {
+            @unlink($staged);
+            return [
+                'success' => false,
+                'message' => sprintf(
+                    /* translators: 1: bytes received, 2: bytes expected */
+                    __('Download from Google Drive was incomplete (got %1$s of %2$s). Please try again.', 'sitessaver'),
+                    sitessaver_format_size($staged_size),
+                    sitessaver_format_size($expected_size)
+                ),
+            ];
         }
 
         // Content check — must actually be a ZIP.

@@ -6,6 +6,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.10] — 2026-08-29
+
+Patch release for a single high-impact bug: **restoring a backup from Google Drive hung and
+timed out** with zero bytes received, on any backup large enough that Drive declined to scan
+it — which is most full-site backups. See
+[release-notes-v1.1.10.md](release-notes-v1.1.10.md).
+
+### Fixed — Google Drive download stalled forever, then timed out
+
+Google flags any Drive file its malware scanner cannot process, and large archives always
+qualify. For a flagged file the v3 API does not return an error for `alt=media`: it accepts
+the request and then never sends a response body, so cURL waits out its own timeout and
+reports `Operation timed out ... with 0 bytes received`. Measured on a live 74.78 MB backup:
+0 bytes after 7+ minutes without the flag, versus the full 78,417,557 bytes in 1.44s with it.
+
+Downloads now send `acknowledgeAbuse=true` (a no-op for unflagged files, so it is sent
+unconditionally) plus `supportsAllDrives=true` so backups in a shared drive resolve too.
+
+### Added — stall guard and clearer timeout error
+
+The transfer aborts if it delivers under 1 byte/s for 30 seconds straight, instead of idling
+for the full 300s timeout and letting PHP-FPM kill the request with no message at all.
+Timeout errors are rewritten to point at the server's outbound connection to `googleapis.com`.
+
+### Added — truncated downloads rejected at download time
+
+The bytes received are checked against the size reported in Drive's file metadata. A short
+read now fails immediately with both sizes named, rather than being written to disk and
+surfacing later as a confusing corrupt-archive error during restore.
+
+---
+
 ## [1.1.9] — 2026-08-29
 
 Full correctness audit against **WordPress 7.1** on **PHP 8.3 and 8.5**, driven by a live
