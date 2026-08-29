@@ -6,6 +6,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.11] — 2026-08-29
+
+Fixes the post-restore finalisation step, which did neither of the two things its modal
+promised. See [release-notes-v1.1.11.md](release-notes-v1.1.11.md).
+
+### Fixed — "Finish & log out" never actually logged you out
+
+The old code cleared WordPress's auth cookies from JavaScript, assuming the pre-restore
+cookie would no longer validate against the restored DB. Both halves were wrong: WP sets
+those cookies **HttpOnly**, so `document.cookie` cannot touch them, and the cookie only stops
+validating when the backup carries different auth salts — restoring a backup of the same site
+keeps the salts, so the session stayed valid and the user was never logged out.
+
+The logout is now forced server-side via `reauth=1`, which makes `wp-login.php` call
+`wp_clear_auth_cookie()` and show the prompt regardless of session state.
+
+### Fixed — the flow landed on the Dashboard instead of Settings → Permalinks
+
+`wp-login.php` passes `redirect_to` through `wp_validate_redirect()`, which discards any URL
+whose host is not in `allowed_redirect_hosts` and falls back to `admin_url()`. The finalize
+URL was absolute, built from the restored `siteurl`, so any host difference (`127.0.0.1` vs
+`localhost`, `www` vs apex, a staging alias, or a genuine migration to a new domain) got it
+rejected — and the rewrite-rules flush the modal asked for never happened.
+
+The login URL and redirect target are now root-relative, leaving no host to disagree about.
+
+Verified end-to-end over real HTTP on WP 7.1 from a still-valid session: logout prompt shown,
+login lands on the permalinks page with the token, the two saves decrement correctly, and the
+"Restore complete" notice appears. Test suites 52/52.
+
+---
+
 ## [1.1.10] — 2026-08-29
 
 Patch release for a single high-impact bug: **restoring a backup from Google Drive hung and

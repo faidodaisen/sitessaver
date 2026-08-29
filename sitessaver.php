@@ -3,7 +3,7 @@
  * Plugin Name: SitesSaver
  * Plugin URI:  https://github.com/sitessaver
  * Description: Full site backup & migration — export, import, schedule, Google Drive. No restrictions.
- * Version:     1.1.10
+ * Version:     1.1.11
  * Author:      SitesSaver
  * Author URI:  https://github.com/sitessaver
  * License:     GPL-2.0-or-later
@@ -19,7 +19,7 @@ defined('ABSPATH') || exit;
 // This copy's version, read BEFORE any constants so the duplicate-copy
 // handler below can compare against an already-loaded instance. Folder
 // name is irrelevant — we identify SitesSaver by its VERSION constant.
-$sitessaver_this_version = '1.1.10';
+$sitessaver_this_version = '1.1.11';
 
 // Duplicate-copy handler. WordPress lets the same plugin live in multiple
 // folders (e.g. `plugins/sitessaver/` and `plugins/ss/`) and will happily

@@ -84,41 +84,27 @@
             var $btn = $(this).prop('disabled', true);
             $btn.html('<i class="ri-loader-4-line ri-spin"></i> Logging out...');
 
-            // Clear WordPress auth cookies on the client. Why: the cookies
-            // were signed by the PRE-restore auth salts and are now garbage
-            // as far as the restored DB is concerned. Clearing them client-
-            // side prevents wp-login.php from attempting to validate them
-            // and hitting any middleware that chokes on bad cookies.
-            //
-            // We expire every cookie whose name starts with
-            // `wordpress_logged_in_` or `wordpress_sec_` or `wordpress_`
-            // on both the current host and any parent domain.
-            var hostParts = window.location.hostname.split('.');
-            var domainVariants = [''];
-            for (var i = 0; i < hostParts.length - 1; i++) {
-                domainVariants.push(hostParts.slice(i).join('.'));
-            }
-            var cookies = document.cookie ? document.cookie.split('; ') : [];
-            for (var c = 0; c < cookies.length; c++) {
-                var name = cookies[c].split('=')[0];
-                if (name.indexOf('wordpress') === 0 || name.indexOf('wp-') === 0 || name.indexOf('wp_') === 0) {
-                    for (var d = 0; d < domainVariants.length; d++) {
-                        var domainAttr = domainVariants[d] ? '; domain=' + domainVariants[d] : '';
-                        document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/' + domainAttr;
-                        document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/wp-admin' + domainAttr;
-                    }
-                }
-            }
+            // NOTE: we deliberately do NOT try to clear the auth cookies from
+            // JavaScript. WordPress sets them HttpOnly (see pluggable.php,
+            // `setcookie( LOGGED_IN_COOKIE, ..., true )`), so document.cookie
+            // cannot touch the only cookies that actually matter -- the sweep
+            // that used to live here silently did nothing. The logout is
+            // forced server-side instead: the finalize URL carries `reauth=1`,
+            // which makes wp-login.php call wp_clear_auth_cookie() and show
+            // the login prompt even when the existing session is still valid
+            // (which it is whenever the backup came from this same site, since
+            // the auth salts are unchanged).
 
-            // Direct navigation — no AJAX. If for any reason the server-built
-            // URL isn't available (e.g. viewing a restore-complete modal
-            // rendered by an older plugin build), fall back to wp-login.php
-            // relative to the current host so the user can at least re-auth.
+            // Direct navigation -- no AJAX. If for any reason the server-built
+            // URL isn't available (e.g. a modal rendered by an older build),
+            // fall back to wp-login.php.
             var target = ssFinalizeUrl;
             if (!target) {
-                // Last-ditch fallback: go to the site's login page. User will
-                // then need to manually navigate to Settings > Permalinks.
-                target = window.location.protocol + '//' + window.location.host + '/wp-login.php';
+                // Root-relative on purpose: an absolute URL built from the
+                // restored siteurl can point at a different host than the one
+                // the browser is on, and WordPress's wp_validate_redirect()
+                // then discards it and sends the user to the dashboard.
+                target = '/wp-login.php?reauth=1';
             }
             window.location.href = target;
         });
