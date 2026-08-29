@@ -81,10 +81,29 @@ final class Database {
         // site (progress modal reappears, cancel button does nothing).
         $where = self::row_filter_for($wpdb, $table);
 
+        // Pagination MUST be ordered. `LIMIT/OFFSET` without `ORDER BY` gives
+        // MySQL licence to return rows in any order, and OFFSET counts
+        // positions in *that* unspecified order. WordPress writes to
+        // wp_options constantly — including this plugin's own progress
+        // transient after every export step, plus WP expiring other
+        // transients on read — so rows shift between pages mid-dump. A row
+        // that moves across a page boundary is emitted twice, and the restore
+        // then fails with "Duplicate entry for key PRIMARY" and silently
+        // drops whatever row took its place.
+        //
+        // Observed on a stock WP 7.1 install: 142 INSERTs for 120 distinct
+        // option_ids, i.e. 22 duplicated rows and 22 rows lost.
+        //
+        // Ordering by the primary key makes the sequence total and stable.
+        // Tables without a usable single-column key fall back to unordered
+        // reads, which is no worse than before.
+        $order_col = self::pagination_key($wpdb, $table);
+        $order_by  = $order_col !== null ? "ORDER BY `" . esc_sql($order_col) . "`" : '';
+
         while (true) {
             $rows = $wpdb->get_results(
                 $wpdb->prepare(
-                    "SELECT * FROM `{$escaped_table}` {$where} LIMIT %d OFFSET %d",
+                    "SELECT * FROM `{$escaped_table}` {$where} {$order_by} LIMIT %d OFFSET %d",
                     $chunk_size,
                     $offset
                 ),
@@ -142,6 +161,50 @@ final class Database {
              . " AND option_name NOT LIKE '\\_site\\_transient\\_sitessaver\\_%'"
              . " AND option_name NOT LIKE '\\_site\\_transient\\_timeout\\_sitessaver\\_%'"
              . " AND option_name <> 'sitessaver_pending_finalize'";
+    }
+
+    /**
+     * Column to order pagination by: the single-column PRIMARY KEY when there
+     * is one, otherwise the first UNIQUE NOT NULL column, otherwise null.
+     *
+     * Only a deterministic total order makes OFFSET pagination safe on a table
+     * that is being written to concurrently. Returning null degrades to the
+     * previous (unordered) behaviour rather than failing the export.
+     */
+    private static function pagination_key(\wpdb $wpdb, string $table): ?string {
+        $indexes = $wpdb->get_results("SHOW INDEX FROM `" . esc_sql($table) . "`", ARRAY_A);
+        if (!is_array($indexes) || $indexes === []) {
+            return null;
+        }
+
+        // Group by index name so we can reject composite keys, whose first
+        // column alone is not a total order.
+        $by_index = [];
+        foreach ($indexes as $row) {
+            $name = (string) ($row['Key_name'] ?? '');
+            if ($name === '') {
+                continue;
+            }
+            $by_index[$name][] = $row;
+        }
+
+        if (isset($by_index['PRIMARY']) && count($by_index['PRIMARY']) === 1) {
+            return (string) $by_index['PRIMARY'][0]['Column_name'];
+        }
+
+        foreach ($by_index as $name => $cols) {
+            if ($name === 'PRIMARY' || count($cols) !== 1) {
+                continue;
+            }
+            // Non_unique === '0' means UNIQUE; Null === '' means NOT NULL.
+            if ((string) ($cols[0]['Non_unique'] ?? '1') === '0'
+                && (string) ($cols[0]['Null'] ?? 'YES') === ''
+            ) {
+                return (string) $cols[0]['Column_name'];
+            }
+        }
+
+        return null;
     }
 
     /**
