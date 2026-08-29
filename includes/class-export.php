@@ -13,19 +13,65 @@ final class Export {
 
     /**
      * Get the defined steps for the export pipeline.
+     *
+     * The percentages are a rough map of how long each stage takes, and the
+     * LAST step must land on 100. When the backup is also going to Google
+     * Drive, the upload happens inside the finalize step and is usually the
+     * slowest part of the whole export — so finalize cannot own 100 or the
+     * bar sits full and motionless for the entire upload. In that case the
+     * local work is compressed into the first 60% and the upload is given a
+     * step of its own, which the client fills from real byte progress
+     * reported by GDrive::upload().
+     *
+     * @param string $destination local|gdrive|both
+     * @return list<array{id: string, label: string, pct: int, poll?: string}>
      */
-    public static function get_steps(): array {
+    public static function get_steps(string $destination = 'local'): array {
+        $uploads_to_drive = in_array($destination, ['gdrive', 'both'], true);
+
+        if (!$uploads_to_drive) {
+            return [
+                ['id' => 'init',      'label' => __('Initializing...', 'sitessaver'), 'pct' => 5],
+                ['id' => 'manifest',  'label' => __('Creating manifest...', 'sitessaver'), 'pct' => 10],
+                ['id' => 'db',        'label' => __('Exporting database...', 'sitessaver'), 'pct' => 25],
+                ['id' => 'uploads',   'label' => __('Copying uploads...', 'sitessaver'), 'pct' => 45],
+                ['id' => 'plugins',   'label' => __('Copying plugins...', 'sitessaver'), 'pct' => 60],
+                ['id' => 'themes',    'label' => __('Copying themes...', 'sitessaver'), 'pct' => 75],
+                ['id' => 'other',     'label' => __('Copying other files...', 'sitessaver'), 'pct' => 80],
+                ['id' => 'zip',       'label' => __('Creating ZIP archive...', 'sitessaver'), 'pct' => 95],
+                ['id' => 'finalize',  'label' => __('Finalizing...', 'sitessaver'), 'pct' => 100],
+            ];
+        }
+
         return [
-            ['id' => 'init',      'label' => __('Initializing...', 'sitessaver'), 'pct' => 5],
-            ['id' => 'manifest',  'label' => __('Creating manifest...', 'sitessaver'), 'pct' => 10],
-            ['id' => 'db',        'label' => __('Exporting database...', 'sitessaver'), 'pct' => 25],
-            ['id' => 'uploads',   'label' => __('Copying uploads...', 'sitessaver'), 'pct' => 45],
-            ['id' => 'plugins',   'label' => __('Copying plugins...', 'sitessaver'), 'pct' => 60],
-            ['id' => 'themes',    'label' => __('Copying themes...', 'sitessaver'), 'pct' => 75],
-            ['id' => 'other',     'label' => __('Copying other files...', 'sitessaver'), 'pct' => 80],
-            ['id' => 'zip',       'label' => __('Creating ZIP archive...', 'sitessaver'), 'pct' => 95],
-            ['id' => 'finalize',  'label' => __('Finalizing...', 'sitessaver'), 'pct' => 100],
+            ['id' => 'init',      'label' => __('Initializing...', 'sitessaver'), 'pct' => 3],
+            ['id' => 'manifest',  'label' => __('Creating manifest...', 'sitessaver'), 'pct' => 6],
+            ['id' => 'db',        'label' => __('Exporting database...', 'sitessaver'), 'pct' => 15],
+            ['id' => 'uploads',   'label' => __('Copying uploads...', 'sitessaver'), 'pct' => 28],
+            ['id' => 'plugins',   'label' => __('Copying plugins...', 'sitessaver'), 'pct' => 38],
+            ['id' => 'themes',    'label' => __('Copying themes...', 'sitessaver'), 'pct' => 46],
+            ['id' => 'other',     'label' => __('Copying other files...', 'sitessaver'), 'pct' => 50],
+            ['id' => 'zip',       'label' => __('Creating ZIP archive...', 'sitessaver'), 'pct' => 60],
+            [
+                'id'    => 'finalize',
+                'label' => __('Uploading to Google Drive...', 'sitessaver'),
+                'pct'   => 100,
+                // Tells the client to poll this job for real upload progress
+                // and to animate the bar from 'from' to 'pct' as bytes land.
+                'poll'  => 'gdrive',
+                'from'  => 60,
+            ],
         ];
+    }
+
+    /**
+     * The progress-job id used for the Drive upload of a given export.
+     *
+     * Shared by the server (which writes progress under this key) and the
+     * client (which polls it), so the two cannot drift apart.
+     */
+    public static function gdrive_job_id(string $uid): string {
+        return 'exp_gdrive_' . $uid;
     }
 
     /**
@@ -76,11 +122,15 @@ final class Export {
      */
     public static function run_step(string $uid, int $index): array {
         $status = self::get_status($uid);
-        $steps  = self::get_steps();
 
         if (empty($status) || $status['status'] !== 'running') {
             return ['success' => false, 'message' => __('No active export found for this ID.', 'sitessaver')];
         }
+
+        // Build the table for THIS export's destination — the Drive variant
+        // has different weights, so a default table could index a different
+        // step than the client is showing.
+        $steps = self::get_steps((string) ($status['options']['export_destination'] ?? 'local'));
 
         if (!isset($steps[$index])) {
             return ['success' => false, 'message' => __('Invalid step index.', 'sitessaver')];
@@ -177,7 +227,7 @@ final class Export {
 
                     // Upload to Google Drive if requested.
                     if (in_array($destination, ['gdrive', 'both'], true)) {
-                        $job_id       = 'exp_gdrive_' . $uid;
+                        $job_id        = self::gdrive_job_id($uid);
                         $gdrive_result = GDrive::upload($zip_path, $status['backup_name'], $job_id);
                         $result['gdrive'] = $gdrive_result;
 
@@ -230,7 +280,7 @@ final class Export {
      */
     public static function run(array $options = []): array {
         $status = self::start($options);
-        $steps  = self::get_steps();
+        $steps  = self::get_steps((string) ($options['export_destination'] ?? 'local'));
         $uid    = $status['uid'];
 
         foreach (array_keys($steps) as $i) {
