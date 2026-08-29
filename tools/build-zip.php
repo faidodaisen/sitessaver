@@ -12,22 +12,12 @@
  */
 declare(strict_types=1);
 
-$root  = dirname(__DIR__);
-$slug  = 'sitessaver';
-$out   = $root . '/SitesSaver.zip';
+$root = dirname(__DIR__);
+$slug = 'sitessaver';
 
-// Everything the distributable must NOT contain.
-$skip_dirs = [
-    '.git', '.gitnexus', '.claude', '.raw', '.idea', '.vscode', '.idx',
-    '.local-metadata', '.audit', 'node_modules', 'storage', 'tests', 'tools',
-    'css-analysis',
-];
-$skip_files = [
-    '.gitignore', 'CLAUDE.md', 'AGENTS.md', 'CHANGELOG.md', 'desktop.ini',
-    'Thumbs.db', '.DS_Store', 'SitesSaver.zip',
-];
-
-// Read the shipping version so the build is self-verifying.
+// Read the shipping version FIRST: it names the artefact and the build is
+// self-verifying, so a header/constant mismatch aborts before anything is
+// written.
 $main = (string) file_get_contents($root . '/sitessaver.php');
 preg_match('/^\s*\*\s*Version:\s*([0-9.]+)/m', $main, $hv);
 preg_match("/\\\$sitessaver_this_version\s*=\s*'([0-9.]+)'/", $main, $cv);
@@ -39,7 +29,28 @@ if ($header === '' || $header !== $constant) {
     exit(1);
 }
 
-@unlink($out);
+// Version-stamped filename. Users routinely keep several releases in a
+// downloads folder, and an unversioned `SitesSaver.zip` is impossible to tell
+// apart once it has been downloaded twice.
+$out = $root . '/SitesSaver-' . $header . '.zip';
+
+// Everything the distributable must NOT contain.
+$skip_dirs = [
+    '.git', '.gitnexus', '.claude', '.raw', '.idea', '.vscode', '.idx',
+    '.local-metadata', '.audit', 'node_modules', 'storage', 'tests', 'tools',
+    'css-analysis',
+];
+$skip_files = [
+    '.gitignore', 'CLAUDE.md', 'AGENTS.md', 'CHANGELOG.md', 'desktop.ini',
+    'Thumbs.db', '.DS_Store',
+];
+
+// Remove ZIPs from previous builds so the repo never carries two versions of
+// the artefact (any `*.zip` is skipped during packaging regardless).
+foreach (glob($root . '/SitesSaver*.zip') ?: [] as $stale) {
+    @unlink($stale);
+}
+
 $zip = new ZipArchive();
 if ($zip->open($out, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
     fwrite(STDERR, "Cannot create {$out}\n");
