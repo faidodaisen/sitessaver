@@ -39,6 +39,22 @@ identifiers, `DELIMITER` directives (triggers and procedures were shredded), or 
 conditional comments `/*!40101 ... */` (charset and sql_mode setup was silently dropped).
 All are now handled, including when the construct straddles a 64 KB read boundary.
 
+### Fixed — Backups contained duplicated and missing rows (critical)
+
+Export paginated each table with `LIMIT/OFFSET` and **no `ORDER BY`**. Without an ordering,
+MySQL may return rows in any sequence, and `OFFSET` counts positions in that unspecified
+sequence. WordPress writes to `wp_options` continuously — including this plugin's own
+progress transient after every export step — so rows shift between pages mid-dump. A row
+that moves across a page boundary is written to the dump **twice**, and the row that took
+its place is **never written at all**.
+
+Measured on a stock WordPress 7.1 install: 142 `INSERT` statements covering only 120
+distinct `option_id` values — 22 rows duplicated and 22 rows silently lost from the backup.
+On restore the duplicates fail with `Duplicate entry for key PRIMARY`, and the missing rows
+are simply gone.
+
+Pagination now orders by the table's single-column primary key (falling back to a unique
+NOT NULL column, then to the previous behaviour when neither exists).
 ### Fixed — Rows lost from tables with generated columns (critical)
 
 Export emitted `INSERT` statements listing `STORED`/`VIRTUAL` generated columns. MySQL
@@ -105,10 +121,12 @@ Two standalone suites (no WordPress, no database) covering every defect above:
 
 - `tests/test-sql-tokenizer.php` — 35 cases: tokenizer constructs, chunk-boundary splits, and
   full export → rewrite → `unserialize()` fidelity for escape-hazard payloads.
+- `tests/test-export-pagination.php` — 4 cases: proves paged export emits every row exactly
+  once when the underlying row order shifts mid-dump.
 - `tests/test-core-standalone.php` — 13 cases: import, archive create/extract, zip-slip
   rejection, and replacement-map edges.
 
-Both pass 35/35 and 13/13 on PHP 8.3 and PHP 8.5, with zero deprecations raised from plugin code.
+All pass (35/35, 4/4, 13/13) on PHP 8.3 and PHP 8.5, with zero deprecations raised from plugin code.
 
 ---
 ## [1.1.8] — 2026-04-20
