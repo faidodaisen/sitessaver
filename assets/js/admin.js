@@ -3,6 +3,323 @@
 
     var SS = SitesSaver;
 
+    // ---------- NOTIFICATIONS (toasts + dialogs) ----------
+    //
+    // Everything here replaces the native alert() / confirm() / prompt()
+    // calls this file used to make. Native dialogs were a poor fit:
+    //   - they block the JS thread, so in-flight progress modals freeze
+    //   - they can't be styled, so they break the plugin's visual language
+    //   - Chrome suppresses them outright in cross-origin iframes, which
+    //     silently swallowed confirmations for users embedding wp-admin
+    //   - the text can't be translated through WordPress's i18n pipeline
+    //
+    // The replacements are async (callback-based) rather than blocking, so
+    // every former `if (!confirm(...)) return;` guard had to become a
+    // continuation. See the call sites below.
+
+    var ssNotify = (function () {
+
+        function esc(str) {
+            return $('<div/>').text(str == null ? '' : String(str)).html();
+        }
+
+        // Body scroll-lock is shared between the progress modal, the
+        // restore-complete modal, and dialogs. Deriving it from what is
+        // actually on screen avoids the classic refcount drift where one
+        // layer closes and unlocks scrolling for a layer still open.
+        function syncScrollLock() {
+            var open = $('.sitessaver-modal-backdrop:visible, .ss-dialog-backdrop').length > 0;
+            $('body').toggleClass('ss-modal-open', open);
+        }
+
+        // ---- Toasts ----
+
+        var ICONS = {
+            success: 'ri-checkbox-circle-fill',
+            error:   'ri-error-warning-fill',
+            warning: 'ri-alert-fill',
+            info:    'ri-information-fill'
+        };
+
+        var DEFAULT_TITLES = {
+            success: 'Success',
+            error:   'Error',
+            warning: 'Warning',
+            info:    'Notice'
+        };
+
+        function stack() {
+            var $s = $('#ss-toast-stack');
+            if (!$s.length) {
+                $s = $('<div id="ss-toast-stack" class="ss-toast-stack" role="region" aria-label="Notifications" aria-live="polite"></div>');
+                $('body').append($s);
+            }
+            return $s;
+        }
+
+        function dismiss($toast) {
+            if (!$toast.length || $toast.hasClass('is-leaving')) return;
+            $toast.addClass('is-leaving');
+            setTimeout(function () { $toast.remove(); }, 240);
+        }
+
+        /**
+         * @param {Object} opts
+         *   type      success|error|warning|info   (default info)
+         *   title     heading; falls back to a per-type default
+         *   message   body text
+         *   html      set true when `message` is trusted markup (download links)
+         *   duration  ms before auto-dismiss; 0 keeps it until dismissed
+         */
+        function toast(opts) {
+            opts = opts || {};
+            var type = ICONS[opts.type] ? opts.type : 'info';
+            var title = opts.title !== undefined ? opts.title : DEFAULT_TITLES[type];
+            // Errors stay longer — they usually carry text worth reading.
+            var duration = opts.duration !== undefined
+                ? opts.duration
+                : (type === 'error' ? 9000 : 5000);
+
+            var body = opts.html ? (opts.message || '') : esc(opts.message || '');
+
+            var $toast = $(
+                '<div class="ss-toast ss-toast-' + type + '" role="' + (type === 'error' ? 'alert' : 'status') + '">' +
+                    '<span class="ss-toast-icon"><i class="' + ICONS[type] + '"></i></span>' +
+                    '<div class="ss-toast-body">' +
+                        (title ? '<strong class="ss-toast-title">' + esc(title) + '</strong>' : '') +
+                        '<span class="ss-toast-message">' + body + '</span>' +
+                    '</div>' +
+                    '<button type="button" class="ss-toast-close" aria-label="Dismiss notification">' +
+                        '<i class="ri-close-line"></i>' +
+                    '</button>' +
+                '</div>'
+            );
+
+            if (duration > 0) {
+                $toast.append(
+                    $('<span class="ss-toast-timer" aria-hidden="true"></span>')
+                        .css('animation-duration', duration + 'ms')
+                );
+            }
+
+            $toast.on('click', '.ss-toast-close', function () { dismiss($toast); });
+
+            stack().append($toast);
+
+            if (duration > 0) {
+                // Hovering pauses the countdown so a long message stays
+                // readable; the CSS bar is paused in lockstep.
+                var remaining = duration;
+                var startedAt = Date.now();
+                var timer = setTimeout(function () { dismiss($toast); }, remaining);
+
+                $toast.on('mouseenter', function () {
+                    clearTimeout(timer);
+                    remaining -= (Date.now() - startedAt);
+                    $toast.addClass('is-paused');
+                });
+
+                $toast.on('mouseleave', function () {
+                    if (remaining <= 0) { dismiss($toast); return; }
+                    startedAt = Date.now();
+                    $toast.removeClass('is-paused');
+                    timer = setTimeout(function () { dismiss($toast); }, remaining);
+                });
+            }
+
+            return $toast;
+        }
+
+        // ---- Dialogs (confirm / prompt / alert) ----
+
+        var DIALOG_ICONS = {
+            danger:  'ri-error-warning-line',
+            warning: 'ri-alert-line',
+            success: 'ri-checkbox-circle-line',
+            primary: 'ri-question-line'
+        };
+
+        /**
+         * Modal dialog. Async by design — pass onConfirm / onCancel.
+         *
+         * @param {Object} o
+         *   title, message, html
+         *   tone         danger|warning|success|primary (styles icon + button)
+         *   confirmText, cancelText  (cancelText null hides the cancel button)
+         *   input        {label, value, placeholder, required} to render a prompt
+         *   onConfirm(value), onCancel()
+         */
+        function dialog(o) {
+            o = o || {};
+            var tone = DIALOG_ICONS[o.tone] ? o.tone : 'primary';
+            var hasInput = !!o.input;
+            var showCancel = o.cancelText !== null;
+            var settled = false;
+
+            var $prev = $(document.activeElement);
+
+            var msg = o.html ? (o.message || '') : esc(o.message || '');
+
+            var html =
+                '<div class="ss-dialog-backdrop">' +
+                    '<div class="ss-dialog ss-dialog-' + tone + '" role="dialog" aria-modal="true" aria-labelledby="ss-dialog-title">' +
+                        '<div class="ss-dialog-head">' +
+                            '<div class="ss-dialog-icon"><i class="' + DIALOG_ICONS[tone] + '"></i></div>' +
+                            '<h2 class="ss-dialog-title" id="ss-dialog-title">' + esc(o.title || 'Please confirm') + '</h2>' +
+                        '</div>' +
+                        (msg ? '<p class="ss-dialog-message">' + msg + '</p>' : '') +
+                        (hasInput
+                            ? '<div class="ss-dialog-field">' +
+                                  (o.input.label ? '<label for="ss-dialog-input">' + esc(o.input.label) + '</label>' : '') +
+                                  '<input type="text" id="ss-dialog-input" value="' + esc(o.input.value || '') + '"' +
+                                      ' placeholder="' + esc(o.input.placeholder || '') + '" />' +
+                              '</div>'
+                            : '') +
+                        '<div class="ss-dialog-actions">' +
+                            (showCancel
+                                ? '<button type="button" class="btn btn-outline ss-dialog-cancel">' + esc(o.cancelText || 'Cancel') + '</button>'
+                                : '') +
+                            '<button type="button" class="btn ' +
+                                (tone === 'danger' ? 'btn-danger' : 'btn-primary') +
+                                ' ss-dialog-confirm">' + esc(o.confirmText || 'Confirm') + '</button>' +
+                        '</div>' +
+                    '</div>' +
+                '</div>';
+
+            var $el = $(html);
+            $('body').append($el);
+            syncScrollLock();
+
+            function close() {
+                $el.remove();
+                $(document).off('keydown.ssDialog');
+                syncScrollLock();
+                // Return focus to whatever opened the dialog, so keyboard
+                // users are not dumped back at the top of the document.
+                if ($prev && $prev.length && document.contains($prev[0])) {
+                    try { $prev.trigger('focus'); } catch (e) {}
+                }
+            }
+
+            function cancel() {
+                if (settled) return;
+                settled = true;
+                close();
+                if (o.onCancel) o.onCancel();
+            }
+
+            function confirm() {
+                if (settled) return;
+                var value = hasInput ? $el.find('#ss-dialog-input').val() : true;
+                if (hasInput && o.input.required && !$.trim(String(value))) {
+                    $el.find('#ss-dialog-input').trigger('focus');
+                    return;
+                }
+                settled = true;
+                close();
+                if (o.onConfirm) o.onConfirm(value);
+            }
+
+            $el.on('click', '.ss-dialog-confirm', confirm);
+            $el.on('click', '.ss-dialog-cancel', cancel);
+
+            // Click on the backdrop (never the panel) dismisses.
+            $el.on('click', function (e) {
+                if (e.target === $el[0]) cancel();
+            });
+
+            $(document).on('keydown.ssDialog', function (e) {
+                if (e.key === 'Escape') {
+                    cancel();
+                } else if (e.key === 'Enter' && hasInput && $(e.target).is('#ss-dialog-input')) {
+                    e.preventDefault();
+                    confirm();
+                } else if (e.key === 'Tab') {
+                    // Keep focus inside the dialog while it is open.
+                    var $f = $el.find('button, input').filter(':visible');
+                    if (!$f.length) return;
+                    var first = $f[0];
+                    var last  = $f[$f.length - 1];
+                    if (e.shiftKey && document.activeElement === first) {
+                        e.preventDefault();
+                        last.focus();
+                    } else if (!e.shiftKey && document.activeElement === last) {
+                        e.preventDefault();
+                        first.focus();
+                    }
+                }
+            });
+
+            // Focus the input for prompts, otherwise the safe (cancel) button
+            // for destructive dialogs so Enter never destroys anything.
+            setTimeout(function () {
+                if (hasInput) {
+                    $el.find('#ss-dialog-input').trigger('focus').trigger('select');
+                } else if (tone === 'danger' && showCancel) {
+                    $el.find('.ss-dialog-cancel').trigger('focus');
+                } else {
+                    $el.find('.ss-dialog-confirm').trigger('focus');
+                }
+            }, 50);
+
+            return { close: cancel };
+        }
+
+        return {
+            toast:   toast,
+            success: function (message, opts) { return toast($.extend({ type: 'success', message: message }, opts || {})); },
+            error:   function (message, opts) { return toast($.extend({ type: 'error',   message: message }, opts || {})); },
+            warning: function (message, opts) { return toast($.extend({ type: 'warning', message: message }, opts || {})); },
+            info:    function (message, opts) { return toast($.extend({ type: 'info',    message: message }, opts || {})); },
+            confirm: dialog,
+            prompt:  function (o) {
+                return dialog($.extend({}, o, { input: o.input || { label: o.label, value: o.value, placeholder: o.placeholder } }));
+            },
+            alert: function (o) {
+                return dialog($.extend({ cancelText: null, confirmText: 'OK' }, o));
+            },
+            syncScrollLock: syncScrollLock
+        };
+    })();
+
+    // Exposed so other SitesSaver scripts (and debugging) can reuse it.
+    window.ssNotify = ssNotify;
+
+    // Several actions (save schedule, delete backup, rename label) must reload
+    // the page so the server-rendered table and cron status stay truthful. A
+    // toast fired right before location.reload() would be destroyed with the
+    // document, so park it in sessionStorage and replay it on the way back.
+    var SS_FLASH_KEY = 'sitessaver_flash';
+
+    function ssFlash(type, message, title) {
+        try {
+            sessionStorage.setItem(SS_FLASH_KEY, JSON.stringify({
+                type: type, message: message, title: title
+            }));
+        } catch (e) {
+            // Private-mode Safari and some hardened setups throw on write.
+            // A missing confirmation toast is not worth breaking the action.
+        }
+    }
+
+    function ssReplayFlash() {
+        var raw;
+        try {
+            raw = sessionStorage.getItem(SS_FLASH_KEY);
+            if (raw) sessionStorage.removeItem(SS_FLASH_KEY);
+        } catch (e) {
+            return;
+        }
+        if (!raw) return;
+
+        try {
+            var f = JSON.parse(raw);
+            ssNotify.toast({ type: f.type, message: f.message, title: f.title });
+        } catch (e) { /* malformed entry — ignore */ }
+    }
+
+    $(ssReplayFlash);
+
     // ---------- HELPERS ----------
 
 
@@ -79,6 +396,7 @@
             + '</div>';
 
         $('body').append(html);
+        ssNotify.syncScrollLock();
 
         $('#sitessaver-finalize-btn').on('click', function () {
             var $btn = $(this).prop('disabled', true);
@@ -157,7 +475,6 @@
                         '<div class="sitessaver-progress-bar"><div class="sitessaver-progress-fill"></div></div>' +
                       '</div>' +
                     '</div>' +
-                    '<p class="ss-progress-modal-step" id="ss-pm-step"></p>' +
                     '<div class="ss-progress-modal-caution">' +
                       '<i class="ri-alert-line"></i>' +
                       '<span id="ss-pm-caution"></span>' +
@@ -202,7 +519,6 @@
             $('#ss-pm-title').text(opts.title || '');
             $('#ss-pm-subtitle').text(opts.subtitle || '');
             $('#ss-pm-caution').text(opts.caution || 'Do not close this tab or navigate away while the operation is running.');
-            $('#ss-pm-step').text('');
             $('#ss-cancel-confirm').hide();
             $('#ss-pm-cancel-btn').prop('disabled', false).toggle(!!this.cancelable);
             this.setProgress(0, '');
@@ -210,12 +526,12 @@
             $('body').addClass('ss-modal-open');
         },
 
+
         setProgress: function (pct, label) {
             var $p = this.$el.find('.sitessaver-progress');
             $p.find('.sitessaver-progress-fill').removeClass('indeterminate').css('width', pct + '%');
             $p.find('.step-label').text(label);
             $p.find('.step-pct').text(pct + '%');
-            $('#ss-pm-step').text(label);
         },
 
         setIndeterminate: function (label) {
@@ -223,7 +539,6 @@
             $p.find('.sitessaver-progress-fill').addClass('indeterminate').css('width', '100%');
             $p.find('.step-label').text(label);
             $p.find('.step-pct').text('');
-            $('#ss-pm-step').text(label);
         },
 
         disableCancel: function (reason) {
@@ -243,8 +558,13 @@
 
         close: function () {
             if (this.$el) {
-                this.$el.fadeOut(200);
-                $('body').removeClass('ss-modal-open');
+                // Recompute the lock after the fade finishes rather than
+                // dropping it unconditionally: the restore flow opens the
+                // restore-complete modal while this one is closing, and an
+                // unconditional removeClass left that modal scrollable.
+                this.$el.fadeOut(200, function () {
+                    ssNotify.syncScrollLock();
+                });
             }
         }
     };
@@ -417,14 +737,31 @@
 
     function handleImportFile(file) {
         if (!file.name.toLowerCase().endsWith('.zip')) {
-            alert('Only ZIP files are accepted.');
+            ssNotify.error('Only ZIP files are accepted. Pick the .zip archive produced by an export.', {
+                title: 'Unsupported file'
+            });
+            // Clear the picker so re-choosing the same bad file still fires
+            // a change event and the user sees the message again.
+            $('#sitessaver-import-file').val('');
             return;
         }
 
-        if (!confirm(SS.strings.confirmRestore)) {
-            return;
-        }
+        ssNotify.confirm({
+            tone: 'danger',
+            title: 'Restore this backup?',
+            message: SS.strings.confirmRestore,
+            confirmText: 'Yes, restore',
+            cancelText: 'Cancel',
+            onCancel: function () {
+                $('#sitessaver-import-file').val('');
+            },
+            onConfirm: function () {
+                startImportUpload(file);
+            }
+        });
+    }
 
+    function startImportUpload(file) {
         var $form       = $('.sitessaver-wrap');
         var chunkSize   = 2 * 1024 * 1024;
         var totalChunks = Math.ceil(file.size / chunkSize);
@@ -538,8 +875,18 @@
     $(document).on('click', '.sitessaver-restore-btn', function () {
         var file  = $(this).data('file');
         var $form = $('.sitessaver-wrap');
-        if (!confirm(SS.strings.confirmRestore)) return;
 
+        ssNotify.confirm({
+            tone: 'danger',
+            title: 'Restore this backup?',
+            message: SS.strings.confirmRestore,
+            confirmText: 'Yes, restore',
+            cancelText: 'Cancel',
+            onConfirm: function () { doRestore(file, $form); }
+        });
+    });
+
+    function doRestore(file, $form) {
         ssModal.open({
             title:      'Restoring Site',
             subtitle:   'Database and files are being restored. Please wait.',
@@ -561,20 +908,37 @@
                 showResult($form, err.message || SS.strings.error, true);
             }
         );
-    });
+    }
 
 
     // ---------- LABELS ----------
 
     $(document).on('click', '.sitessaver-label-btn', function () {
-        var file = $(this).data('file');
-        var label = prompt('Enter a label for this backup:');
-        if (label === null) return;
+        var file    = $(this).data('file');
+        var current = $.trim($(this).closest('tr').find('.cell-label').text() || '');
+        // The cell renders an em dash as the empty-state placeholder; never
+        // seed that into the input as if it were a real label.
+        if (current === '\u2014') current = '';
 
-        ajax('sitessaver_add_label', { file: file, label: label }, function () {
-            location.reload();
-        }, function (err) {
-            alert(err.message || SS.strings.error);
+        ssNotify.prompt({
+            title: 'Label this backup',
+            message: 'Give this backup a short name so it is easy to recognise later.',
+            confirmText: 'Save label',
+            input: {
+                label: 'Label',
+                value: current,
+                placeholder: 'e.g. Before theme update'
+            },
+            onConfirm: function (label) {
+                ajax('sitessaver_add_label', { file: file, label: label }, function () {
+                    // Reload so the table reflects the stored label. The toast
+                    // is shown by the post-reload flash, see ssFlash below.
+                    ssFlash('success', 'Label saved.');
+                    location.reload();
+                }, function (err) {
+                    ssNotify.error(err.message || SS.strings.error);
+                });
+            }
         });
     });
 
@@ -583,24 +947,55 @@
 
     $(document).on('click', '.sitessaver-delete-btn', function () {
         var file = $(this).data('file');
-        if (!confirm('Are you sure you want to delete this backup?')) return;
 
-        ajax('sitessaver_delete_backup', { file: file }, function () {
-            location.reload();
-        }, function (err) {
-            alert(err.message || SS.strings.error);
+        ssNotify.confirm({
+            tone: 'danger',
+            title: 'Delete this backup?',
+            message: 'The backup file "' + file + '" will be permanently removed from this server. This cannot be undone.',
+            confirmText: 'Delete backup',
+            cancelText: 'Keep it',
+            onConfirm: function () {
+                ajax('sitessaver_delete_backup', { file: file }, function () {
+                    ssFlash('success', 'Backup deleted.');
+                    location.reload();
+                }, function (err) {
+                    ssNotify.error(err.message || SS.strings.error);
+                });
+            }
         });
     });
 
 
     // ---------- SCHEDULE ----------
 
+    // Keep the card's selected styling in step with its checkbox.
+    $(document).on('change', '.ss-frequency-option input[type=checkbox]', function () {
+        $(this).closest('.ss-frequency-option').toggleClass('is-selected', this.checked);
+    });
+
     $(document).on('submit', '#sitessaver-schedule-form', function (e) {
         e.preventDefault();
         var $form = $(this);
+
+        var enabled = $form.find('[name=enabled]').is(':checked');
+
+        // Multiple frequencies may be active at once, so collect them all.
+        var frequencies = $form.find('[name="frequencies[]"]:checked').map(function () {
+            return this.value;
+        }).get();
+
+        if (enabled && frequencies.length === 0) {
+            ssNotify.warning('Choose at least one backup frequency before enabling the schedule.', {
+                title: 'No frequency selected'
+            });
+            return;
+        }
+
         var data = {
-            enabled: $form.find('[name=enabled]').is(':checked') ? 1 : 0,
-            frequency: $form.find('[name=frequency]').val(),
+            enabled: enabled ? 1 : 0,
+            // jQuery serialises an array under this key as frequencies[]=...,
+            // which is what the PHP handler reads.
+            frequencies: frequencies,
             retention: $form.find('[name=retention]').val(),
             include_db: $form.find('[name=include_db]').is(':checked') ? 1 : 0,
             include_media: $form.find('[name=include_media]').is(':checked') ? 1 : 0,
@@ -611,11 +1006,112 @@
             notify_email: $form.find('[name=notify_email]').val()
         };
 
+        var $btn = $form.find('button[type=submit]').prop('disabled', true);
+
         ajax('sitessaver_save_schedule', data, function (res) {
-            alert(res.message || SS.strings.done);
+            // Reload so "Next run in ...", the per-frequency last-run lines,
+            // and the cron health banners reflect what was just written.
+            ssFlash('success', res.message || SS.strings.done);
             location.reload();
         }, function (err) {
-            alert(err.message || SS.strings.error);
+            $btn.prop('disabled', false);
+            ssNotify.error(err.message || SS.strings.error);
+        });
+    });
+
+
+    // ---------- SERVER CRON PANEL ----------
+
+    $(document).on('click', '.ss-copy-btn', function () {
+        var $btn    = $(this);
+        var $target = $($btn.data('copy-target'));
+        if (!$target.length) return;
+
+        var text = $target.val();
+
+        function done() {
+            var original = $btn.html();
+            $btn.html('<i class="ri-checkbox-circle-line"></i> Copied');
+            setTimeout(function () { $btn.html(original); }, 1600);
+            ssNotify.success('Copied to clipboard.', { duration: 2500, title: null });
+        }
+
+        function fallback() {
+            // execCommand is deprecated but remains the only option on plain
+            // HTTP admin panels, where navigator.clipboard is undefined.
+            $target.trigger('focus');
+            $target[0].setSelectionRange(0, text.length);
+            var ok = false;
+            try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+            if (ok) {
+                done();
+            } else {
+                ssNotify.warning('Could not copy automatically. Select the text and copy it manually.');
+            }
+        }
+
+        if (navigator.clipboard && window.isSecureContext) {
+            navigator.clipboard.writeText(text).then(done, fallback);
+        } else {
+            fallback();
+        }
+    });
+
+    $(document).on('click', '#sitessaver-regenerate-cron-key', function () {
+        var $btn = $(this);
+
+        ssNotify.confirm({
+            tone: 'warning',
+            title: 'Generate a new trigger URL?',
+            message: 'The current URL stops working immediately. Any server cron or uptime monitor using it must be updated with the new URL, or your scheduled backups will stop running.',
+            confirmText: 'Generate new URL',
+            cancelText: 'Cancel',
+            onConfirm: function () {
+                $btn.prop('disabled', true);
+                ajax('sitessaver_regenerate_cron_key', {}, function (res) {
+                    ssFlash('success', res.message || 'New trigger URL generated.');
+                    location.reload();
+                }, function (err) {
+                    $btn.prop('disabled', false);
+                    ssNotify.error(err.message || SS.strings.error);
+                });
+            }
+        });
+    });
+
+    $(document).on('click', '#sitessaver-run-schedule-now', function () {
+        var $btn = $(this);
+
+        ssNotify.confirm({
+            title: 'Run a backup now?',
+            message: 'This runs the scheduled backup immediately using the settings saved above, so you can confirm the schedule works without waiting for the next run.',
+            confirmText: 'Run backup',
+            cancelText: 'Cancel',
+            onConfirm: function () {
+                $btn.prop('disabled', true);
+
+                ssModal.open({
+                    title:      'Running scheduled backup',
+                    subtitle:   'Creating a backup with your saved schedule settings.',
+                    caution:    'Do not close this tab while the backup is being created.',
+                    cancelable: false
+                });
+                ssModal.setIndeterminate('Backing up your site...');
+
+                ajax('sitessaver_run_schedule_now', {}, function (res) {
+                    ssModal.done();
+                    setTimeout(function () {
+                        ssModal.close();
+                        $btn.prop('disabled', false);
+                        ssFlash('success', res.message || SS.strings.done);
+                        location.reload();
+                    }, 800);
+                }, function (err) {
+                    ssModal.close();
+                    $btn.prop('disabled', false);
+                    ssNotify.error(err.message || SS.strings.error, { title: 'Backup failed' });
+                });
+            }
         });
     });
 
@@ -624,11 +1120,16 @@
 
     $(document).on('submit', '#sitessaver-settings-form', function (e) {
         e.preventDefault();
+        var $btn = $(this).find('button[type=submit]').prop('disabled', true);
+
         ajax('sitessaver_save_settings', { gdrive_folder_id: $(this).find('[name=gdrive_folder_id]').val() }, function (res) {
-            alert(res.message || SS.strings.done);
-            location.reload();
+            $btn.prop('disabled', false);
+            // No reload needed — nothing else on this page derives from the
+            // folder ID, so a toast is less disruptive than a full refresh.
+            ssNotify.success(res.message || SS.strings.done);
         }, function (err) {
-            alert(err.message || SS.strings.error);
+            $btn.prop('disabled', false);
+            ssNotify.error(err.message || SS.strings.error);
         });
     });
 
@@ -636,8 +1137,21 @@
     // ---------- GOOGLE DRIVE ----------
 
     $(document).on('click', '#sitessaver-gdrive-disconnect', function () {
-        if (!confirm('Disconnect Google Drive?')) return;
-        ajax('sitessaver_gdrive_disconnect', {}, function () { location.reload(); });
+        ssNotify.confirm({
+            tone: 'warning',
+            title: 'Disconnect Google Drive?',
+            message: 'SitesSaver will stop uploading backups to Drive. Backups already stored there are not deleted, and you can reconnect at any time.',
+            confirmText: 'Disconnect',
+            cancelText: 'Stay connected',
+            onConfirm: function () {
+                ajax('sitessaver_gdrive_disconnect', {}, function () {
+                    ssFlash('success', 'Google Drive disconnected.');
+                    location.reload();
+                }, function (err) {
+                    ssNotify.error(err.message || SS.strings.error);
+                });
+            }
+        });
     });
 
     $(document).on('click', '.sitessaver-gdrive-upload-btn', function () {
@@ -652,20 +1166,27 @@
         
         updateProgress($wrap, 0, 'Preparing upload...');
 
+        // Declared before the request so the completion handlers can stop the
+        // poller below. Both callbacks fire asynchronously, well after the
+        // assignment, so the reference is always live by then.
+        var pollInterval;
+
         // Start the upload process (async on server)
         ajax('sitessaver_gdrive_upload', { file: file, job_id: jobId }, function (res) {
             // This will only return when the WHOLE upload is finished
+            clearInterval(pollInterval);
             hideProgress($wrap);
-            alert(res.message || 'Uploaded!');
+            ssNotify.success(res.message || 'Backup uploaded to Google Drive.', { title: 'Upload complete' });
             $btn.prop('disabled', false).removeClass('loading');
         }, function (err) {
+            clearInterval(pollInterval);
             hideProgress($wrap);
-            alert(err.message || SS.strings.error);
+            ssNotify.error(err.message || SS.strings.error, { title: 'Upload failed' });
             $btn.prop('disabled', false).removeClass('loading');
         });
 
         // Start polling for progress
-        var pollInterval = setInterval(function() {
+        pollInterval = setInterval(function() {
             ajax('sitessaver_get_gdrive_upload_status', { job_id: jobId }, function(res) {
                 if (res.progress !== undefined) {
                     updateProgress($wrap, res.progress, 'Uploading to Drive: ' + res.progress + '%');
@@ -718,10 +1239,10 @@
         $btn.prop('disabled', true);
 
         ajax('sitessaver_gdrive_download', { file_id: id }, function (res) {
-            alert(res.message || 'Downloaded!');
+            ssFlash('success', res.message || 'Backup downloaded from Google Drive.');
             location.reload();
         }, function (err) {
-            alert(err.message || SS.strings.error);
+            ssNotify.error(err.message || SS.strings.error, { title: 'Download failed' });
             $btn.prop('disabled', false);
         });
     });
@@ -731,35 +1252,59 @@
         var id   = $btn.data('id');
         var name = $btn.data('name') || 'this backup';
 
-        if (!confirm('Restore ' + name + ' from Google Drive? Your current site will be overwritten.')) return;
+        ssNotify.confirm({
+            tone: 'danger',
+            title: 'Restore from Google Drive?',
+            message: 'SitesSaver will download "' + name + '" and overwrite your current site with it. This cannot be undone.',
+            confirmText: 'Yes, restore',
+            cancelText: 'Cancel',
+            onConfirm: function () {
+                $btn.prop('disabled', true);
 
-        $btn.prop('disabled', true);
+                // The whole operation (download + extract + DB import + file
+                // restore) runs in one request and cannot be interrupted, so
+                // use the blocking progress modal rather than the inline bar
+                // that used to sit behind other page content.
+                ssModal.open({
+                    title:      'Restoring from Google Drive',
+                    subtitle:   'Downloading the backup and restoring your site. Please wait.',
+                    caution:    'Do not close this tab. Interrupting the restore may leave your site in a broken state.',
+                    cancelable: false
+                });
+                ssModal.setIndeterminate('Downloading and restoring...');
 
-        // Show indeterminate progress — operation may take a while
-        // (download + extract + DB import + file restore).
-        var $progress = $('.sitessaver-progress').first();
-        $progress.show().find('.step-label').text('Restoring from Google Drive...');
-        $progress.find('.sitessaver-progress-fill').addClass('indeterminate');
-        $progress.find('.step-pct').text('');
-
-        ajax('sitessaver_gdrive_restore', { file_id: id }, function (res) {
-            $progress.hide().find('.sitessaver-progress-fill').removeClass('indeterminate');
-            showRestoreCompleteModal(res);
-        }, function (err) {
-            $progress.hide().find('.sitessaver-progress-fill').removeClass('indeterminate');
-            alert(err.message || SS.strings.error);
-            $btn.prop('disabled', false);
+                ajax('sitessaver_gdrive_restore', { file_id: id }, function (res) {
+                    ssModal.done();
+                    setTimeout(function () {
+                        ssModal.close();
+                        showRestoreCompleteModal(res);
+                    }, 800);
+                }, function (err) {
+                    ssModal.close();
+                    ssNotify.error(err.message || SS.strings.error, { title: 'Restore failed' });
+                    $btn.prop('disabled', false);
+                });
+            }
         });
     });
 
     $(document).on('click', '.sitessaver-gdrive-delete-btn', function () {
         var id = $(this).data('id');
-        if (!confirm('Are you sure you want to delete this backup from Google Drive?')) return;
 
-        ajax('sitessaver_gdrive_delete', { file_id: id }, function () {
-            $('#sitessaver-gdrive-refresh').trigger('click');
-        }, function (err) {
-            alert(err.message || SS.strings.error);
+        ssNotify.confirm({
+            tone: 'danger',
+            title: 'Delete from Google Drive?',
+            message: 'This backup will be permanently removed from your Google Drive. This cannot be undone.',
+            confirmText: 'Delete backup',
+            cancelText: 'Keep it',
+            onConfirm: function () {
+                ajax('sitessaver_gdrive_delete', { file_id: id }, function () {
+                    ssNotify.success('Backup deleted from Google Drive.');
+                    $('#sitessaver-gdrive-refresh').trigger('click');
+                }, function (err) {
+                    ssNotify.error(err.message || SS.strings.error);
+                });
+            }
         });
     });
 
@@ -877,12 +1422,21 @@
             });
 
             $form.on('click', '.ss-discard-btn', function () {
-                if (!confirm('Discard this export? The partial backup will be deleted.')) return;
-                ajax('sitessaver_cancel_export', { uid: uid }, function () {
-                    $('.ss-resume-banner').remove();
-                    $('#sitessaver-export-btn').prop('disabled', false);
-                }, function (err) {
-                    alert(err.message || SS.strings.error);
+                ssNotify.confirm({
+                    tone: 'danger',
+                    title: 'Discard this export?',
+                    message: 'The partially written backup will be deleted and you will need to start a new export.',
+                    confirmText: 'Discard export',
+                    cancelText: 'Keep it',
+                    onConfirm: function () {
+                        ajax('sitessaver_cancel_export', { uid: uid }, function () {
+                            $('.ss-resume-banner').remove();
+                            $('#sitessaver-export-btn').prop('disabled', false);
+                            ssNotify.info('Export discarded.');
+                        }, function (err) {
+                            ssNotify.error(err.message || SS.strings.error);
+                        });
+                    }
                 });
             });
         });
