@@ -564,7 +564,11 @@ final class Schedule {
             $up_res = GDrive::upload($result['path'], $result['file']);
             if ($up_res['success']) {
                 $file_uploaded = true;
+                $result['gdrive_uploaded']   = true;
+                $result['gdrive_folder_url'] = GDrive::get_folder_url();
             } else {
+                $result['gdrive_uploaded'] = false;
+                $result['gdrive_error']    = $up_res['message'];
                 $result['message'] .= ' (GDrive Upload Failed: ' . $up_res['message'] . ')';
             }
         }
@@ -573,8 +577,10 @@ final class Schedule {
         if (empty($settings['storage_local']) && $file_uploaded) {
             // User only wants GDrive and it succeeded — delete local file.
             @unlink($result['path']);
+            $result['local_kept'] = false;
             $result['message'] .= ' ' . __('(Local copy removed as per settings)', 'sitessaver');
         } else {
+            $result['local_kept'] = true;
             // Apply retention policy for local backups.
             $retention = (int) ($settings['retention'] ?? 5);
             if ($retention > 0) {
@@ -597,7 +603,7 @@ final class Schedule {
         // Send notification email.
         $email = $settings['notify_email'] ?? '';
         if (!empty($email) && is_email($email)) {
-            self::send_notification($email, $result);
+            self::send_notification($email, $result, $settings, $frequency);
         }
 
         // Log result.
@@ -654,27 +660,128 @@ final class Schedule {
      * Send email notification about backup result.
      *
      * @param array<string, mixed> $result
+     * @param array<string, mixed> $settings
      */
-    private static function send_notification(string $email, array $result): void {
+    private static function send_notification(
+        string $email,
+        array $result,
+        array $settings = [],
+        string $frequency = ''
+    ): void {
         $site_name = get_bloginfo('name');
+        $site_url  = home_url();
+        $now       = current_time('mysql');
 
         if ($result['success']) {
             $subject = sprintf('[%s] Scheduled backup completed', $site_name);
-            $body    = sprintf(
-                "Backup completed successfully.\n\nFile: %s\nSize: %s\nTime: %s",
-                $result['file'] ?? 'N/A',
-                $result['size'] ?? 'N/A',
-                current_time('mysql')
-            );
+            $lines   = ['Backup completed successfully.', ''];
+
+            $lines[] = 'Site: ' . $site_name . ' (' . $site_url . ')';
+            $lines[] = 'File: ' . ($result['file'] ?: __('not kept locally', 'sitessaver'));
+            $lines[] = 'Size: ' . ($result['size'] ?? 'N/A');
+            $lines[] = 'Time: ' . $now;
+
+            $label = self::frequencies()[self::normalize_frequency($frequency)]['label'] ?? '';
+            if ($frequency !== '' && $label !== '') {
+                $lines[] = 'Schedule: ' . $label;
+            }
+
+            $contents = self::contents_summary($settings);
+            if ($contents !== '') {
+                $lines[] = 'Includes: ' . $contents;
+            }
+
+            // Where the archive actually lives now.
+            $lines[] = '';
+            $lines[] = 'STORAGE';
+
+            if (!empty($result['local_kept']) && !empty($result['file'])) {
+                $lines[] = '- Server: kept in this site\'s backups folder';
+            } else {
+                $lines[] = '- Server: local copy removed after upload (per your settings)';
+            }
+
+            if (array_key_exists('gdrive_uploaded', $result)) {
+                if (!empty($result['gdrive_uploaded'])) {
+                    $lines[] = '- Google Drive: uploaded to "SitesSaver Backups (' . $site_name . ')"';
+                    if (!empty($result['gdrive_folder_url'])) {
+                        $lines[] = '  ' . $result['gdrive_folder_url'];
+                    }
+                } else {
+                    $lines[] = '- Google Drive: UPLOAD FAILED — ' . ($result['gdrive_error'] ?? 'unknown error');
+                    $lines[] = '  The archive is still on the server. Please retry the upload from the Backups page.';
+                }
+            }
+
+            $retention = (int) ($settings['retention'] ?? 0);
+            if ($retention > 0) {
+                $lines[] = '';
+                $lines[] = sprintf('Retention: the newest %d local backups are kept, older ones are deleted automatically.', $retention);
+            }
+
+            $next = self::next_scheduled_run();
+            if ($next > 0) {
+                $lines[] = 'Next scheduled backup: ' . wp_date('Y-m-d H:i', $next);
+            }
+
+            $lines[] = '';
+            $lines[] = 'MANAGE BACKUPS';
+            $lines[] = 'Download or restore: ' . admin_url('admin.php?page=sitessaver');
+            $lines[] = 'Schedule settings: ' . admin_url('admin.php?page=sitessaver-schedule');
+            $lines[] = '';
+            $lines[] = 'Keep at least one copy off this server. A backup that only lives on the same host is lost with the host.';
+            $lines[] = '';
+            $lines[] = '— SitesSaver';
+
+            $body = implode("\n", $lines);
         } else {
             $subject = sprintf('[%s] Scheduled backup FAILED', $site_name);
-            $body    = sprintf(
-                "Backup failed.\n\nError: %s\nTime: %s",
-                $result['message'] ?? 'Unknown error',
-                current_time('mysql')
-            );
+            $body    = implode("\n", [
+                'Backup failed.',
+                '',
+                'Site: ' . $site_name . ' (' . $site_url . ')',
+                'Error: ' . ($result['message'] ?? 'Unknown error'),
+                'Time: ' . $now,
+                '',
+                'What to check:',
+                '- Free disk space on the server',
+                '- PHP memory limit and max execution time',
+                '- Google Drive connection (if used) on the Settings page',
+                '',
+                'Run a test backup: ' . admin_url('admin.php?page=sitessaver-schedule'),
+                '',
+                '— SitesSaver',
+            ]);
         }
 
         wp_mail($email, $subject, $body);
+    }
+
+    /**
+     * Human-readable list of what the archive contains.
+     *
+     * @param array<string, mixed> $settings
+     */
+    private static function contents_summary(array $settings): string {
+        if ($settings === []) {
+            return '';
+        }
+
+        $map = [
+            'include_db'      => __('database', 'sitessaver'),
+            'include_media'   => __('media', 'sitessaver'),
+            'include_plugins' => __('plugins', 'sitessaver'),
+            'include_themes'  => __('themes', 'sitessaver'),
+        ];
+
+        $parts = [];
+        foreach ($map as $key => $label) {
+            // Defaults match perform_backup(): absent means included.
+            if (!array_key_exists($key, $settings) || !empty($settings[$key])) {
+                $parts[] = $label;
+            }
+        }
+
+        return implode(', ', $parts);
     }
 }
