@@ -20,3 +20,11 @@ CLAUDE.md
 Thumbs.db
 desktop.ini
 node_modules/
+
+# Development-only, kept out of the public repo.
+# Present on the maintainer's machine, never shipped and never published.
+tests/
+release-notes-v1.1.*.md
+release-notes-v1.2.*.md
+release-notes-v1.3.0.md
+.impeccable/
