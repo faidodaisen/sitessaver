@@ -1241,63 +1241,26 @@
 
     // ---------- PLUGIN UPDATES ----------
 
-    $(document).on('click', '#sitessaver-clear-token', function (e) {
-        e.preventDefault();
-        // The sentinel is what tells the server to wipe rather than keep the
-        // stored token, since an empty field means "leave it alone".
-        $('#sitessaver-update-source-form [name=token]').val('__clear__');
-        ssNotify.info('Token will be removed when you save.');
-    });
-
-    function ssUpdateSourceData() {
-        var $form = $('#sitessaver-update-source-form');
-        return {
-            enabled: $form.find('[name=enabled]').is(':checked') ? 1 : 0,
-            repo: $form.find('[name=repo]').val(),
-            prereleases: $form.find('[name=prereleases]').is(':checked') ? 1 : 0,
-            token: $form.find('[name=token]').val()
-        };
-    }
-
-    $(document).on('submit', '#sitessaver-update-source-form', function (e) {
-        e.preventDefault();
-        var $btn = $(this).find('button[type=submit]').prop('disabled', true);
-
-        ajax('sitessaver_save_update_source', ssUpdateSourceData(), function (res) {
-            $btn.prop('disabled', false);
-            ssFlash('success', res.message || SS.strings.done);
-            // Reload: the panel header badge and the availability banner are
-            // both rendered server-side from the newly saved source.
-            location.reload();
-        }, function (err) {
-            $btn.prop('disabled', false);
-            ssNotify.error(err.message || SS.strings.error);
-        });
-    });
-
-    // Save before checking, so the check uses the repo currently on screen
-    // rather than whatever was saved earlier.
+    // The update source is fixed at build time, so this only forces a fresh
+    // lookup rather than saving anything.
     $(document).on('click', '#sitessaver-check-update', function () {
         var $btn = $(this).prop('disabled', true).addClass('loading');
 
-        ajax('sitessaver_save_update_source', ssUpdateSourceData(), function () {
-            ajax('sitessaver_check_update', {}, function (res) {
-                $btn.prop('disabled', false).removeClass('loading');
+        ajax('sitessaver_check_update', {}, function (res) {
+            $btn.prop('disabled', false).removeClass('loading');
 
-                if (res.update) {
-                    ssFlash('success', res.message);
-                    location.reload();
-                    return;
-                }
+            if (res.update) {
+                // Reload so the panel switches to the "update available"
+                // state, which is rendered server-side.
+                ssFlash('success', res.message);
+                location.reload();
+                return;
+            }
 
-                ssNotify.success(res.message, { title: 'Up to date' });
-            }, function (err) {
-                $btn.prop('disabled', false).removeClass('loading');
-                ssNotify.error(err.message || SS.strings.error, { title: 'Update check failed' });
-            });
+            ssNotify.success(res.message, { title: 'Up to date' });
         }, function (err) {
             $btn.prop('disabled', false).removeClass('loading');
-            ssNotify.error(err.message || SS.strings.error);
+            ssNotify.error(err.message || SS.strings.error, { title: 'Update check failed' });
         });
     });
 
