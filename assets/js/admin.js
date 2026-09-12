@@ -1239,6 +1239,77 @@
     });
 
 
+    // ---------- PLUGIN UPDATES ----------
+
+    $(document).on('click', '#sitessaver-clear-token', function (e) {
+        e.preventDefault();
+        // The sentinel is what tells the server to wipe rather than keep the
+        // stored token, since an empty field means "leave it alone".
+        $('#sitessaver-update-source-form [name=token]').val('__clear__');
+        ssNotify.info('Token will be removed when you save.');
+    });
+
+    function ssUpdateSourceData() {
+        var $form = $('#sitessaver-update-source-form');
+        return {
+            enabled: $form.find('[name=enabled]').is(':checked') ? 1 : 0,
+            repo: $form.find('[name=repo]').val(),
+            prereleases: $form.find('[name=prereleases]').is(':checked') ? 1 : 0,
+            token: $form.find('[name=token]').val()
+        };
+    }
+
+    $(document).on('submit', '#sitessaver-update-source-form', function (e) {
+        e.preventDefault();
+        var $btn = $(this).find('button[type=submit]').prop('disabled', true);
+
+        ajax('sitessaver_save_update_source', ssUpdateSourceData(), function (res) {
+            $btn.prop('disabled', false);
+            ssFlash('success', res.message || SS.strings.done);
+            // Reload: the panel header badge and the availability banner are
+            // both rendered server-side from the newly saved source.
+            location.reload();
+        }, function (err) {
+            $btn.prop('disabled', false);
+            ssNotify.error(err.message || SS.strings.error);
+        });
+    });
+
+    // Save before checking, so the check uses the repo currently on screen
+    // rather than whatever was saved earlier.
+    $(document).on('click', '#sitessaver-check-update', function () {
+        var $btn = $(this).prop('disabled', true).addClass('loading');
+
+        ajax('sitessaver_save_update_source', ssUpdateSourceData(), function () {
+            ajax('sitessaver_check_update', {}, function (res) {
+                $btn.prop('disabled', false).removeClass('loading');
+
+                if (res.update) {
+                    ssFlash('success', res.message);
+                    location.reload();
+                    return;
+                }
+
+                ssNotify.success(res.message, { title: 'Up to date' });
+            }, function (err) {
+                $btn.prop('disabled', false).removeClass('loading');
+                ssNotify.error(err.message || SS.strings.error, { title: 'Update check failed' });
+            });
+        }, function (err) {
+            $btn.prop('disabled', false).removeClass('loading');
+            ssNotify.error(err.message || SS.strings.error);
+        });
+    });
+
+    // Persist dismissal of the dashboard banner. WordPress only hides it for
+    // the current page load, so without this it returns on every screen.
+    $(document).on('click', '.sitessaver-update-notice .notice-dismiss', function () {
+        var version = $(this).closest('.sitessaver-update-notice').data('version');
+        ajax('sitessaver_dismiss_update_notice', { version: version }, function () {}, function () {});
+    });
+
+
+
     // ---------- EMAIL BRANDING ----------
 
     // Media picker for the notification email logo. wp.media is only enqueued

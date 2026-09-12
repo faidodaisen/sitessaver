@@ -46,6 +46,11 @@ final class Plugin {
 
         // Scheduled backups (cron may fire outside admin).
         Schedule::instance()->init();
+
+        // Self-hosted updates from GitHub releases. Registered outside the
+        // is_admin() guard because WP-Cron runs the update check in a
+        // front-end context on many hosts.
+        Updater::instance()->init();
     }
 
     /**

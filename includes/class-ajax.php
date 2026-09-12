@@ -34,6 +34,9 @@ final class Ajax {
             'sitessaver_save_settings'  => 'handle_save_settings',
             'sitessaver_save_email_brand' => 'handle_save_email_brand',
             'sitessaver_send_test_email'  => 'handle_send_test_email',
+            'sitessaver_check_update'     => 'handle_check_update',
+            'sitessaver_save_update_source' => 'handle_save_update_source',
+            'sitessaver_dismiss_update_notice' => 'handle_dismiss_update_notice',
             'sitessaver_gdrive_disconnect' => 'handle_gdrive_disconnect',
             'sitessaver_gdrive_upload'  => 'handle_gdrive_upload',
             'sitessaver_get_gdrive_upload_status' => 'handle_get_gdrive_upload_status',
@@ -736,6 +739,125 @@ final class Ajax {
         GDrive::disconnect();
 
         wp_send_json_success(['message' => __('Google Drive disconnected.', 'sitessaver')]);
+    }
+
+    /**
+     * Force a fresh GitHub release lookup and report the outcome.
+     */
+    public function handle_check_update(): void {
+        sitessaver_verify_ajax();
+
+        if (!current_user_can('update_plugins')) {
+            wp_send_json_error(['message' => __('You do not have permission to check for updates.', 'sitessaver')]);
+        }
+
+        Updater::instance()->clear_cache();
+        $release = Updater::latest_release(true);
+
+        if ($release === null) {
+            $error = Updater::last_error();
+            wp_send_json_error([
+                'message' => $error !== ''
+                    ? $error
+                    : __('No releases found in that repository.', 'sitessaver'),
+            ]);
+        }
+
+        if (!Updater::is_newer($release['version'])) {
+            wp_send_json_success([
+                'update'  => false,
+                'version' => $release['version'],
+                'message' => sprintf(
+                    /* translators: %s: version number */
+                    __('You are running the latest version (%s).', 'sitessaver'),
+                    SITESSAVER_VERSION
+                ),
+            ]);
+        }
+
+        // Make WordPress re-evaluate so the Plugins screen row appears without
+        // waiting for its own twice-daily cron.
+        delete_site_transient('update_plugins');
+
+        wp_send_json_success([
+            'update'  => true,
+            'version' => $release['version'],
+            'url'     => $release['url'],
+            'message' => sprintf(
+                /* translators: 1: new version, 2: installed version */
+                __('Version %1$s is available. You are running %2$s.', 'sitessaver'),
+                $release['version'],
+                SITESSAVER_VERSION
+            ),
+        ]);
+    }
+
+    /**
+     * Save the update source (repo, channel, optional token).
+     */
+    public function handle_save_update_source(): void {
+        sitessaver_verify_ajax();
+
+        if (!current_user_can('update_plugins')) {
+            wp_send_json_error(['message' => __('You do not have permission to change update settings.', 'sitessaver')]);
+        }
+
+        $repo = sanitize_text_field(wp_unslash($_POST['repo'] ?? ''));
+        $repo = trim($repo);
+
+        // Accept a full URL and reduce it to owner/repo, since that is what
+        // people actually have on their clipboard.
+        if (preg_match('#github\.com/([^/\s]+/[^/\s?#]+)#i', $repo, $m)) {
+            $repo = $m[1];
+        }
+        $repo = rtrim($repo, '/');
+        $repo = preg_replace('/\.git$/i', '', $repo) ?? $repo;
+
+        if ($repo !== '' && !preg_match('#^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$#', $repo)) {
+            wp_send_json_error([
+                'message' => __('Repository must be in owner/name form, for example faidodaisen/sitessaver.', 'sitessaver'),
+            ]);
+        }
+
+        $existing = get_option(Updater::OPTION, []);
+        $existing = is_array($existing) ? $existing : [];
+
+        // An empty token field means "leave the stored token alone", so a user
+        // editing the repo does not silently wipe their credentials.
+        $token = trim((string) wp_unslash($_POST['token'] ?? ''));
+        if ($token === '') {
+            $token = (string) ($existing['token'] ?? '');
+        } elseif ($token === '__clear__') {
+            $token = '';
+        } else {
+            $token = sanitize_text_field($token);
+        }
+
+        update_option(Updater::OPTION, [
+            'repo'        => $repo,
+            'token'       => $token,
+            'prereleases' => !empty($_POST['prereleases']),
+            'enabled'     => !empty($_POST['enabled']),
+        ], false);
+
+        // The old cache belongs to the old source.
+        Updater::instance()->clear_cache();
+        delete_site_transient('update_plugins');
+
+        wp_send_json_success(['message' => __('Update source saved.', 'sitessaver')]);
+    }
+
+    /**
+     * Remember that this user dismissed the update banner for this version.
+     */
+    public function handle_dismiss_update_notice(): void {
+        sitessaver_verify_ajax();
+
+        $version = sanitize_text_field(wp_unslash($_POST['version'] ?? ''));
+
+        update_user_meta(get_current_user_id(), 'sitessaver_dismissed_update', $version);
+
+        wp_send_json_success();
     }
 
     /**
