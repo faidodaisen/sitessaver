@@ -1239,6 +1239,98 @@
     });
 
 
+    // ---------- EMAIL BRANDING ----------
+
+    // Media picker for the notification email logo. wp.media is only enqueued
+    // on the settings screen, so guard rather than assume it exists.
+    var ssLogoFrame;
+    $(document).on('click', '#sitessaver-pick-logo', function () {
+        var $input = $('#sitessaver-email-brand-form [name=logo_url]');
+
+        if (typeof wp === 'undefined' || !wp.media) {
+            ssNotify.warning('The WordPress media library is not available on this screen. Paste the image URL instead.');
+            return;
+        }
+
+        // Reuse one frame: reopening a fresh frame each click leaks listeners
+        // and loses the previous selection.
+        if (ssLogoFrame) {
+            ssLogoFrame.open();
+            return;
+        }
+
+        ssLogoFrame = wp.media({
+            title: 'Select email logo',
+            button: { text: 'Use this image' },
+            library: { type: 'image' },
+            multiple: false
+        });
+
+        ssLogoFrame.on('select', function () {
+            var att = ssLogoFrame.state().get('selection').first().toJSON();
+            // Prefer a mid-size file: a 4000px original would be downscaled by
+            // the client anyway and only bloats the message.
+            var url = (att.sizes && att.sizes.medium && att.sizes.medium.url) || att.url;
+            $input.val(url).trigger('change');
+        });
+
+        ssLogoFrame.open();
+    });
+
+    function ssBrandFormData($form) {
+        return {
+            enabled: $form.find('[name=enabled]').is(':checked') ? 1 : 0,
+            logo_url: $form.find('[name=logo_url]').val(),
+            accent: $form.find('[name=accent]').val(),
+            from_name: $form.find('[name=from_name]').val(),
+            from_email: $form.find('[name=from_email]').val(),
+            support_url: $form.find('[name=support_url]').val(),
+            footer_note: $form.find('[name=footer_note]').val()
+        };
+    }
+
+    $(document).on('submit', '#sitessaver-email-brand-form', function (e) {
+        e.preventDefault();
+        var $form = $(this);
+        var $btn = $form.find('button[type=submit]').prop('disabled', true);
+
+        ajax('sitessaver_save_email_brand', ssBrandFormData($form), function (res) {
+            $btn.prop('disabled', false);
+            ssNotify.success(res.message || SS.strings.done);
+            // The header badge reflects the HTML on/off state, so keep it honest.
+            var on = $form.find('[name=enabled]').is(':checked');
+            $form.closest('.ss-section').find('.ss-section-header .badge')
+                .toggleClass('badge-blue', on)
+                .text(on ? 'HTML email on' : 'Plain text');
+        }, function (err) {
+            $btn.prop('disabled', false);
+            ssNotify.error(err.message || SS.strings.error);
+        });
+    });
+
+    // Save first, then send: otherwise the test shows the previously saved
+    // branding and the user thinks their edits did nothing.
+    $(document).on('click', '#sitessaver-send-test-email', function () {
+        var $btn = $(this).prop('disabled', true).addClass('loading');
+        var $form = $('#sitessaver-email-brand-form');
+        var email = $btn.data('email');
+
+        ajax('sitessaver_save_email_brand', ssBrandFormData($form), function () {
+            ajax('sitessaver_send_test_email', { email: email }, function (res) {
+                $btn.prop('disabled', false).removeClass('loading');
+                ssNotify.success(res.message || 'Test email sent.', { title: 'Check your inbox' });
+            }, function (err) {
+                $btn.prop('disabled', false).removeClass('loading');
+                ssNotify.error(err.message || SS.strings.error, { title: 'Could not send' });
+            });
+        }, function (err) {
+            $btn.prop('disabled', false).removeClass('loading');
+            ssNotify.error(err.message || SS.strings.error);
+        });
+    });
+
+
+
     // ---------- GOOGLE DRIVE ----------
 
     $(document).on('click', '#sitessaver-gdrive-disconnect', function () {

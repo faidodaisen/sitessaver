@@ -657,7 +657,11 @@ final class Schedule {
     }
 
     /**
-     * Send email notification about backup result.
+     * Send a branded notification email about the backup result.
+     *
+     * The body is assembled as data (rows, storage cards, actions) and then
+     * rendered twice: once as branded HTML and once as plain text. Both come
+     * from the same array so they can never drift apart.
      *
      * @param array<string, mixed> $result
      * @param array<string, mixed> $settings
@@ -669,92 +673,161 @@ final class Schedule {
         string $frequency = ''
     ): void {
         $site_name = get_bloginfo('name');
-        $site_url  = home_url();
         $now       = current_time('mysql');
 
-        if ($result['success']) {
-            $subject = sprintf('[%s] Scheduled backup completed', $site_name);
-            $lines   = ['Backup completed successfully.', ''];
+        $rows    = [];
+        $storage = [];
+        $notes   = [];
+        $actions = [];
 
-            $lines[] = 'Site: ' . $site_name . ' (' . $site_url . ')';
-            $lines[] = 'File: ' . ($result['file'] ?: __('not kept locally', 'sitessaver'));
-            $lines[] = 'Size: ' . ($result['size'] ?? 'N/A');
-            $lines[] = 'Time: ' . $now;
+        if ($result['success']) {
+            $subject = sprintf(
+                /* translators: %s: site name */
+                __('[%s] Scheduled backup completed', 'sitessaver'),
+                $site_name
+            );
+            $title = __('Backup completed', 'sitessaver');
+            $intro = sprintf(
+                /* translators: %s: site name */
+                __('A scheduled backup of %s finished successfully. Details are below.', 'sitessaver'),
+                $site_name
+            );
+
+            $rows[] = [__('Site', 'sitessaver'), $site_name];
+            $rows[] = [
+                __('File', 'sitessaver'),
+                $result['file'] !== '' ? (string) $result['file'] : __('Not kept on this server', 'sitessaver'),
+            ];
+            $rows[] = [__('Size', 'sitessaver'), (string) ($result['size'] ?? 'N/A')];
+            $rows[] = [__('Completed', 'sitessaver'), $now];
 
             $label = self::frequencies()[self::normalize_frequency($frequency)]['label'] ?? '';
             if ($frequency !== '' && $label !== '') {
-                $lines[] = 'Schedule: ' . $label;
+                $rows[] = [__('Schedule', 'sitessaver'), $label];
             }
 
             $contents = self::contents_summary($settings);
             if ($contents !== '') {
-                $lines[] = 'Includes: ' . $contents;
+                $rows[] = [__('Includes', 'sitessaver'), $contents];
             }
 
-            // Where the archive actually lives now.
-            $lines[] = '';
-            $lines[] = 'STORAGE';
+            $next = self::next_scheduled_run();
+            if ($next > 0) {
+                $rows[] = [__('Next backup', 'sitessaver'), wp_date('j M Y, g:i a', $next)];
+            }
 
+            // --- Storage cards: where the archive actually is right now.
             if (!empty($result['local_kept']) && !empty($result['file'])) {
-                $lines[] = '- Server: kept in this site\'s backups folder';
+                $storage[] = [
+                    'state'  => 'ok',
+                    'label'  => __('This server', 'sitessaver'),
+                    'detail' => __('Stored in the SitesSaver backups folder on your hosting account.', 'sitessaver'),
+                ];
             } else {
-                $lines[] = '- Server: local copy removed after upload (per your settings)';
+                $storage[] = [
+                    'state'  => 'muted',
+                    'label'  => __('This server', 'sitessaver'),
+                    'detail' => __('Local copy removed after upload, as configured in your schedule settings.', 'sitessaver'),
+                ];
             }
 
             if (array_key_exists('gdrive_uploaded', $result)) {
                 if (!empty($result['gdrive_uploaded'])) {
-                    $lines[] = '- Google Drive: uploaded to "SitesSaver Backups (' . $site_name . ')"';
-                    if (!empty($result['gdrive_folder_url'])) {
-                        $lines[] = '  ' . $result['gdrive_folder_url'];
-                    }
+                    $storage[] = [
+                        'state'  => 'ok',
+                        'label'  => __('Google Drive', 'sitessaver'),
+                        'detail' => sprintf(
+                            /* translators: %s: site name */
+                            __('Uploaded to the "SitesSaver Backups (%s)" folder in your Drive.', 'sitessaver'),
+                            $site_name
+                        ),
+                        'url'    => (string) ($result['gdrive_folder_url'] ?? ''),
+                    ];
                 } else {
-                    $lines[] = '- Google Drive: UPLOAD FAILED — ' . ($result['gdrive_error'] ?? 'unknown error');
-                    $lines[] = '  The archive is still on the server. Please retry the upload from the Backups page.';
+                    $storage[] = [
+                        'state'  => 'warn',
+                        'label'  => __('Google Drive — upload failed', 'sitessaver'),
+                        'detail' => sprintf(
+                            /* translators: %s: error message from Google Drive */
+                            __('%s The archive is still on the server. Retry the upload from the Backups page.', 'sitessaver'),
+                            (string) ($result['gdrive_error'] ?? __('Unknown error.', 'sitessaver'))
+                        ),
+                    ];
                 }
             }
 
             $retention = (int) ($settings['retention'] ?? 0);
             if ($retention > 0) {
-                $lines[] = '';
-                $lines[] = sprintf('Retention: the newest %d local backups are kept, older ones are deleted automatically.', $retention);
+                $notes[] = sprintf(
+                    /* translators: %d: number of backups retained */
+                    _n(
+                        'Retention: only the newest %d local backup is kept. Older ones are deleted automatically.',
+                        'Retention: only the newest %d local backups are kept. Older ones are deleted automatically.',
+                        $retention,
+                        'sitessaver'
+                    ),
+                    $retention
+                );
             }
 
-            $next = self::next_scheduled_run();
-            if ($next > 0) {
-                $lines[] = 'Next scheduled backup: ' . wp_date('Y-m-d H:i', $next);
-            }
+            $notes[] = __('Keep at least one copy away from this server. A backup that only lives on the same host is lost with the host.', 'sitessaver');
 
-            $lines[] = '';
-            $lines[] = 'MANAGE BACKUPS';
-            $lines[] = 'Download or restore: ' . admin_url('admin.php?page=sitessaver');
-            $lines[] = 'Schedule settings: ' . admin_url('admin.php?page=sitessaver-schedule');
-            $lines[] = '';
-            $lines[] = 'Keep at least one copy off this server. A backup that only lives on the same host is lost with the host.';
-            $lines[] = '';
-            $lines[] = '— SitesSaver';
-
-            $body = implode("\n", $lines);
+            $actions[] = [
+                'label'   => __('View backups', 'sitessaver'),
+                'url'     => admin_url('admin.php?page=sitessaver'),
+                'primary' => true,
+            ];
+            $actions[] = [
+                'label' => __('Schedule settings', 'sitessaver'),
+                'url'   => admin_url('admin.php?page=sitessaver-schedule'),
+            ];
         } else {
-            $subject = sprintf('[%s] Scheduled backup FAILED', $site_name);
-            $body    = implode("\n", [
-                'Backup failed.',
-                '',
-                'Site: ' . $site_name . ' (' . $site_url . ')',
-                'Error: ' . ($result['message'] ?? 'Unknown error'),
-                'Time: ' . $now,
-                '',
-                'What to check:',
-                '- Free disk space on the server',
-                '- PHP memory limit and max execution time',
-                '- Google Drive connection (if used) on the Settings page',
-                '',
-                'Run a test backup: ' . admin_url('admin.php?page=sitessaver-schedule'),
-                '',
-                '— SitesSaver',
-            ]);
+            $subject = sprintf(
+                /* translators: %s: site name */
+                __('[%s] Scheduled backup FAILED', 'sitessaver'),
+                $site_name
+            );
+            $title = __('Backup failed', 'sitessaver');
+            $intro = sprintf(
+                /* translators: %s: site name */
+                __('The scheduled backup of %s did not complete. No new restore point was created.', 'sitessaver'),
+                $site_name
+            );
+
+            $rows[] = [__('Site', 'sitessaver'), $site_name];
+            $rows[] = [__('Error', 'sitessaver'), (string) ($result['message'] ?? __('Unknown error', 'sitessaver'))];
+            $rows[] = [__('Time', 'sitessaver'), $now];
+
+            $notes[] = __('Common causes: the server ran out of disk space, the PHP memory limit or execution time was too low, or the Google Drive connection expired.', 'sitessaver');
+            $notes[] = __('Your previous backups are untouched and can still be restored.', 'sitessaver');
+
+            $actions[] = [
+                'label'   => __('Run a test backup', 'sitessaver'),
+                'url'     => admin_url('admin.php?page=sitessaver-schedule'),
+                'primary' => true,
+            ];
+            $actions[] = [
+                'label' => __('View backups', 'sitessaver'),
+                'url'   => admin_url('admin.php?page=sitessaver'),
+            ];
         }
 
-        wp_mail($email, $subject, $body);
+        $data = [
+            'success' => (bool) $result['success'],
+            'title'   => $title,
+            'intro'   => $intro,
+            'rows'    => $rows,
+            'storage' => $storage,
+            'notes'   => $notes,
+            'actions' => $actions,
+        ];
+
+        Mailer::send(
+            $email,
+            $subject,
+            Mailer::render_html($data),
+            Mailer::render_text($data)
+        );
     }
 
     /**
