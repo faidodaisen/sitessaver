@@ -32,6 +32,8 @@ final class Ajax {
             'sitessaver_regenerate_cron_key' => 'handle_regenerate_cron_key',
             'sitessaver_run_schedule_now'    => 'handle_run_schedule_now',
             'sitessaver_save_settings'  => 'handle_save_settings',
+            'sitessaver_save_email_brand' => 'handle_save_email_brand',
+            'sitessaver_send_test_email'  => 'handle_send_test_email',
             'sitessaver_gdrive_disconnect' => 'handle_gdrive_disconnect',
             'sitessaver_gdrive_upload'  => 'handle_gdrive_upload',
             'sitessaver_get_gdrive_upload_status' => 'handle_get_gdrive_upload_status',
@@ -594,6 +596,135 @@ final class Ajax {
         update_option('sitessaver_settings', $settings, false);
 
         wp_send_json_success(['message' => __('Settings saved.', 'sitessaver')]);
+    }
+
+    /**
+     * Save the email branding fields used by notification emails.
+     */
+    public function handle_save_email_brand(): void {
+        sitessaver_verify_ajax();
+
+        $accent = strtoupper(sanitize_text_field(wp_unslash($_POST['accent'] ?? '')));
+        if (!preg_match('/^#(?:[0-9A-F]{3}|[0-9A-F]{6})$/', $accent)) {
+            // An invalid colour would leak into every inline style in the
+            // template, so refuse rather than render a broken email.
+            $accent = '#2271B1';
+        }
+
+        $from_email = sanitize_email(wp_unslash($_POST['from_email'] ?? ''));
+        if ($from_email !== '' && !is_email($from_email)) {
+            wp_send_json_error(['message' => __('That From address is not a valid email.', 'sitessaver')]);
+        }
+
+        $brand = [
+            'enabled'     => empty($_POST['enabled']) ? '0' : '1',
+            'logo_url'    => esc_url_raw(wp_unslash($_POST['logo_url'] ?? '')),
+            'accent'      => $accent,
+            'from_name'   => sanitize_text_field(wp_unslash($_POST['from_name'] ?? '')),
+            'from_email'  => $from_email,
+            'footer_note' => sanitize_textarea_field(wp_unslash($_POST['footer_note'] ?? '')),
+            'support_url' => esc_url_raw(wp_unslash($_POST['support_url'] ?? '')),
+        ];
+
+        update_option(Mailer::BRAND_OPTION, $brand, false);
+
+        wp_send_json_success(['message' => __('Email branding saved.', 'sitessaver')]);
+    }
+
+    /**
+     * Send a sample notification so the user can see their branding for real.
+     *
+     * Uses the same renderer as a live report with representative data, so
+     * what lands in the inbox is exactly what a real backup would produce.
+     */
+    public function handle_send_test_email(): void {
+        sitessaver_verify_ajax();
+
+        $to = sanitize_email(wp_unslash($_POST['email'] ?? ''));
+        if ($to === '' || !is_email($to)) {
+            $to = (string) get_option('admin_email');
+        }
+
+        if (!is_email($to)) {
+            wp_send_json_error(['message' => __('No valid recipient address available.', 'sitessaver')]);
+        }
+
+        $site_name = get_bloginfo('name');
+        $next      = Schedule::next_scheduled_run();
+
+        $data = [
+            'success' => true,
+            'title'   => __('Backup completed', 'sitessaver'),
+            'intro'   => sprintf(
+                /* translators: %s: site name */
+                __('This is a preview of the backup report for %s. No backup was actually run.', 'sitessaver'),
+                $site_name
+            ),
+            'rows' => array_values(array_filter([
+                [__('Site', 'sitessaver'), $site_name],
+                [__('File', 'sitessaver'), sitessaver_backup_filename()],
+                [__('Size', 'sitessaver'), '351.15 MB'],
+                [__('Completed', 'sitessaver'), current_time('mysql')],
+                [__('Includes', 'sitessaver'), __('database, media, plugins, themes', 'sitessaver')],
+                $next > 0 ? [__('Next backup', 'sitessaver'), wp_date('j M Y, g:i a', $next)] : null,
+            ])),
+            'storage' => [
+                [
+                    'state'  => 'ok',
+                    'label'  => __('This server', 'sitessaver'),
+                    'detail' => __('Stored in the SitesSaver backups folder on your hosting account.', 'sitessaver'),
+                ],
+                [
+                    'state'  => GDrive::is_connected() ? 'ok' : 'muted',
+                    'label'  => __('Google Drive', 'sitessaver'),
+                    'detail' => GDrive::is_connected()
+                        ? sprintf(
+                            /* translators: %s: site name */
+                            __('Uploaded to the "SitesSaver Backups (%s)" folder in your Drive.', 'sitessaver'),
+                            $site_name
+                        )
+                        : __('Not connected. Connect Google Drive to keep a copy off this server.', 'sitessaver'),
+                    'url' => GDrive::is_connected() ? GDrive::get_folder_url() : '',
+                ],
+            ],
+            'notes' => [
+                __('This is a test message sent from the SitesSaver settings page.', 'sitessaver'),
+                __('Keep at least one copy away from this server. A backup that only lives on the same host is lost with the host.', 'sitessaver'),
+            ],
+            'actions' => [
+                [
+                    'label'   => __('View backups', 'sitessaver'),
+                    'url'     => admin_url('admin.php?page=sitessaver'),
+                    'primary' => true,
+                ],
+                [
+                    'label' => __('Schedule settings', 'sitessaver'),
+                    'url'   => admin_url('admin.php?page=sitessaver-schedule'),
+                ],
+            ],
+        ];
+
+        $sent = Mailer::send(
+            $to,
+            sprintf(
+                /* translators: %s: site name */
+                __('[%s] Test backup notification', 'sitessaver'),
+                $site_name
+            ),
+            Mailer::render_html($data),
+            Mailer::render_text($data)
+        );
+
+        if (!$sent) {
+            wp_send_json_error([
+                'message' => __('WordPress could not send the email. Check your SMTP or mail plugin configuration.', 'sitessaver'),
+            ]);
+        }
+
+        wp_send_json_success([
+            /* translators: %s: recipient email address */
+            'message' => sprintf(__('Test email sent to %s.', 'sitessaver'), $to),
+        ]);
     }
 
     /**

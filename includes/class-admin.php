@@ -169,6 +169,12 @@ final class Admin {
             return;
         }
 
+        // The Settings page offers a media picker for the email logo. Loading
+        // wp.media only there keeps its ~200KB off every other plugin screen.
+        if (str_contains($hook, 'sitessaver-settings')) {
+            wp_enqueue_media();
+        }
+
         // Icons are bundled locally (a subset of RemixIcon containing only the
         // glyphs this plugin uses). Previously this pulled the full stylesheet
         // from jsdelivr, which left the admin UI unstyled on offline/intranet
