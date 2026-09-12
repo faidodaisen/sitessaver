@@ -18,7 +18,6 @@ if ($notify_email === '') {
     $notify_email = (string) get_option('admin_email');
 }
 
-$update_config    = \SitesSaver\Updater::config();
 $latest           = \SitesSaver\Updater::latest_release();
 $update_available = $latest !== null && \SitesSaver\Updater::is_newer($latest['version']);
 $update_error     = \SitesSaver\Updater::last_error();
@@ -218,7 +217,7 @@ $update_error     = \SitesSaver\Updater::last_error();
 
         <div class="ss-section-content">
             <?php if ($update_available) : ?>
-                <div style="background: rgba(214, 54, 56, 0.05); border: 1px solid rgba(214, 54, 56, 0.2); padding: 18px 20px; border-radius: var(--ss-radius-card); margin-bottom: 24px;">
+                <div style="background: rgba(214, 54, 56, 0.05); border: 1px solid rgba(214, 54, 56, 0.2); padding: 18px 20px; border-radius: var(--ss-radius-card);">
                     <h3 style="margin: 0 0 6px 0; font-size: 15px; color: var(--ss-text-main);">
                         <?php
                         printf(
@@ -230,7 +229,7 @@ $update_error     = \SitesSaver\Updater::last_error();
                         ?>
                     </h3>
                     <p style="margin: 0 0 14px 0; color: var(--ss-text-muted); font-size: 13px;">
-                        <?php esc_html_e('Update from the Plugins screen. Your backups, schedule, and Google Drive connection are preserved.', 'sitessaver'); ?>
+                        <?php esc_html_e('Your backups, schedule, and Google Drive connection are preserved when you update.', 'sitessaver'); ?>
                     </p>
                     <a href="<?php echo esc_url(admin_url('plugins.php?s=sitessaver&plugin_status=all')); ?>" class="btn btn-primary">
                         <i class="ri-download-2-line"></i>
@@ -238,78 +237,45 @@ $update_error     = \SitesSaver\Updater::last_error();
                     </a>
                     <?php if (!empty($latest['url'])) : ?>
                         <a href="<?php echo esc_url($latest['url']); ?>" target="_blank" rel="noopener" class="btn btn-outline">
-                            <i class="ri-github-fill"></i>
-                            <?php esc_html_e('Release notes', 'sitessaver'); ?>
+                            <i class="ri-file-list-3-line"></i>
+                            <?php esc_html_e('What\'s new', 'sitessaver'); ?>
                         </a>
                     <?php endif; ?>
                 </div>
-            <?php elseif ($update_error !== '') : ?>
-                <div style="background: rgba(219, 166, 23, 0.06); border: 1px solid rgba(219, 166, 23, 0.25); padding: 14px 16px; border-radius: var(--ss-radius-card); margin-bottom: 24px; font-size: 13px; color: var(--ss-text-muted);">
-                    <strong style="color: var(--ss-text-main);"><?php esc_html_e('Last check failed:', 'sitessaver'); ?></strong>
-                    <?php echo esc_html($update_error); ?>
-                </div>
-            <?php endif; ?>
-
-            <p class="description" style="margin-top: 0;">
-                <?php esc_html_e('SitesSaver is installed manually, so updates come from GitHub releases instead of the WordPress plugin directory. When a newer release is tagged, it appears on your Plugins screen like any other update.', 'sitessaver'); ?>
-            </p>
-
-            <form id="sitessaver-update-source-form">
-                <table class="form-table">
-                    <tr>
-                        <th><?php esc_html_e('Automatic Checks', 'sitessaver'); ?></th>
-                        <td>
-                            <label>
-                                <input type="checkbox" name="enabled" value="1" <?php checked($update_config['enabled']); ?> />
-                                <?php esc_html_e('Check GitHub for new releases', 'sitessaver'); ?>
-                            </label>
-                            <p class="description"><?php esc_html_e('Checked roughly every six hours, alongside the normal WordPress update check.', 'sitessaver'); ?></p>
-                        </td>
-                    </tr>
-                    <tr>
-                        <th><?php esc_html_e('Repository', 'sitessaver'); ?></th>
-                        <td>
-                            <input type="text" name="repo" value="<?php echo esc_attr($update_config['repo']); ?>" class="ss-input-text" style="min-width: 320px;" placeholder="owner/repository" />
-                            <p class="description"><?php esc_html_e('In owner/name form. A full GitHub URL is accepted and trimmed automatically.', 'sitessaver'); ?></p>
-                        </td>
-                    </tr>
-                    <tr>
-                        <th><?php esc_html_e('Release Channel', 'sitessaver'); ?></th>
-                        <td>
-                            <label>
-                                <input type="checkbox" name="prereleases" value="1" <?php checked($update_config['prereleases']); ?> />
-                                <?php esc_html_e('Include pre-releases (beta versions)', 'sitessaver'); ?>
-                            </label>
-                            <p class="description"><?php esc_html_e('Leave off on production sites. Stable releases only.', 'sitessaver'); ?></p>
-                        </td>
-                    </tr>
-                    <tr>
-                        <th><?php esc_html_e('Access Token', 'sitessaver'); ?></th>
-                        <td>
-                            <input type="password" name="token" value="" class="ss-input-text" style="min-width: 320px;" autocomplete="new-password" placeholder="<?php echo $update_config['token'] !== ''
-                                ? esc_attr__('Saved — leave blank to keep', 'sitessaver')
-                                : esc_attr__('Only needed for a private repository', 'sitessaver'); ?>" />
-                            <p class="description">
-                                <?php esc_html_e('Public repositories need no token. For a private one, use a fine-grained token with Contents: read access.', 'sitessaver'); ?>
-                                <?php if ($update_config['token'] !== '') : ?>
-                                    <br /><a href="#" id="sitessaver-clear-token"><?php esc_html_e('Remove the saved token', 'sitessaver'); ?></a>
-                                <?php endif; ?>
+            <?php else : ?>
+                <div style="display: flex; gap: 14px; align-items: center; flex-wrap: wrap;">
+                    <div style="flex: 1; min-width: 260px;">
+                        <h3 style="margin: 0 0 4px 0; font-size: 15px; color: var(--ss-text-main);">
+                            <?php esc_html_e('SitesSaver is up to date', 'sitessaver'); ?>
+                        </h3>
+                        <p style="margin: 0; color: var(--ss-text-muted); font-size: 13px;">
+                            <?php
+                            printf(
+                                /* translators: %s: version number */
+                                esc_html__('Running version %s. New versions are detected automatically and appear on your Plugins screen.', 'sitessaver'),
+                                esc_html(SITESSAVER_VERSION)
+                            );
+                            ?>
+                        </p>
+                        <?php if ($update_error !== '') : ?>
+                            <p style="margin: 8px 0 0 0; color: var(--ss-warning-hover); font-size: 12px;">
+                                <i class="ri-alert-line"></i>
+                                <?php
+                                printf(
+                                    /* translators: %s: reason the check failed */
+                                    esc_html__('Last check could not reach GitHub: %s', 'sitessaver'),
+                                    esc_html($update_error)
+                                );
+                                ?>
                             </p>
-                        </td>
-                    </tr>
-                </table>
-
-                <p class="submit" style="margin-top: 24px; padding: 0; display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
-                    <button type="submit" class="btn btn-primary">
-                        <i class="ri-save-line"></i>
-                        <?php esc_html_e('Save Update Source', 'sitessaver'); ?>
-                    </button>
+                        <?php endif; ?>
+                    </div>
                     <button type="button" class="btn btn-outline" id="sitessaver-check-update">
                         <i class="ri-refresh-line"></i>
-                        <?php esc_html_e('Check for updates now', 'sitessaver'); ?>
+                        <?php esc_html_e('Check for updates', 'sitessaver'); ?>
                     </button>
-                </p>
-            </form>
+                </div>
+            <?php endif; ?>
         </div>
     </div>
 </div>

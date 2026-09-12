@@ -6,6 +6,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.1] — 2026-09-12
+
+Removes a settings panel that should never have been a setting, and syncs the Help page with
+what the plugin actually does.
+
+### Changed — the update source is no longer a user setting
+
+1.3.0 exposed the repository, release channel, and an access token as fields on the Settings
+page. Wrong call: which repo a build updates from is a property of the build, not a user
+preference, and those fields only invited someone to point a production install somewhere
+arbitrary or enable pre-releases without understanding them.
+
+`Updater::REPO` is now the single source of truth. `Updater::config()` reads it, then lets the
+`sitessaver_update_source` option and a new `sitessaver_update_config` filter override — so
+forks and private mirrors are still supported, in code rather than in the UI. A filter that
+returns a non-array falls back to defaults instead of breaking update checks entirely.
+
+What is left in Settings is a status block: the version you are running, and a button to check
+now. When an update exists it becomes a prompt linking to the Plugins screen and the notes.
+The `sitessaver_save_update_source` AJAX endpoint was removed with the form it served.
+
+### Fixed — two UI descriptions that were false
+
+The Schedule page described retention as keeping "scheduled backups... counted across all
+frequencies". `apply_retention()` operates on `sitessaver_get_backups()`, which is every
+archive in the storage directory — so a manual backup could be deleted by a low retention
+value, contradicting the text. The wording now matches the behaviour.
+
+The Email Notification field said only that an email would be sent. It now states what the
+report contains and links to the branding panel.
+
+### Changed — Help page rewritten
+
+The manual still documented a five-feature plugin. It now covers nine topics: restoring from
+Google Drive, why a cross-domain restore signs you out, what retention really deletes, testing
+a schedule with "Run backup now", what the notification email reports (including the
+successful-backup-but-failed-upload case), email branding and sender-domain advice, how
+updates reach a manually installed plugin and what survives one, and where backups live on
+disk including the Nginx caveat.
+
+### Tests
+
+`tests/test-updater.php` is up to 72 assertions, adding coverage for the hardcoded default,
+the option override, the filter override, and a malformed filter return. Suite total is now
+172 assertions across five files.
+
+---
 ## [1.3.0] — 2026-09-12
 
 Branded backup emails, and automatic updates straight from GitHub.

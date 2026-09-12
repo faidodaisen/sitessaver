@@ -75,6 +75,13 @@ function update_user_meta($u, $k, $v) { global $USERMETA; $USERMETA[$k] = $v; re
 function add_filter($t, $f, $p = 10, $a = 1) { global $FILTERS; $FILTERS[$t][] = $f; }
 function add_action($t, $f, $p = 10, $a = 1) { global $ACTIONS; $ACTIONS[$t][] = $f; }
 
+/** Runs whatever add_filter() registered, so filter overrides are testable. */
+function apply_filters($tag, $value, ...$rest) {
+    global $FILTERS;
+    foreach ($FILTERS[$tag] ?? [] as $cb) { $value = $cb($value, ...$rest); }
+    return $value;
+}
+
 function wp_remote_get($url, $args = []) {
     global $HTTP;
     $HTTP['requests'][] = ['url' => $url, 'args' => $args];
@@ -366,13 +373,36 @@ ok('a non-information action is ignored', $na === false);
 
 section('CONFIG DEFAULTS');
 
-global $OPTIONS;
+global $OPTIONS, $FILTERS;
 unset($OPTIONS[Updater::OPTION]);
+$FILTERS = [];
 $c = Updater::config();
-ok('ships pointing at the canonical repo', $c['repo'] === 'faidodaisen/sitessaver');
+ok('repo is hardcoded, not a user setting', $c['repo'] === Updater::REPO);
+ok('the constant names the real repo', Updater::REPO === 'faidodaisen/sitessaver');
 ok('checks are on by default', $c['enabled'] === true);
 ok('pre-releases are off by default', $c['prereleases'] === false);
 ok('no token by default', $c['token'] === '');
+
+// The UI no longer writes this option, but a fork or WP-CLI still can.
+$OPTIONS[Updater::OPTION] = ['repo' => 'someone/fork', 'prereleases' => true];
+$c = Updater::config();
+ok('the option can still override the repo in code', $c['repo'] === 'someone/fork');
+ok('the option can still opt into pre-releases', $c['prereleases'] === true);
+unset($OPTIONS[Updater::OPTION]);
+
+add_filter('sitessaver_update_config', static function (array $cfg): array {
+    $cfg['repo'] = 'filtered/repo';
+    return $cfg;
+});
+$c = Updater::config();
+ok('a filter can redirect the update source', $c['repo'] === 'filtered/repo');
+ok('unfiltered keys keep their defaults', $c['enabled'] === true && $c['token'] === '');
+
+$FILTERS = [];
+add_filter('sitessaver_update_config', static fn() => 'not an array');
+$c = Updater::config();
+ok('a malformed filter return cannot break updates', $c['repo'] === Updater::REPO);
+$FILTERS = [];
 
 section('PLUGIN DIAGNOSTICS');
 ok('no warnings/notices/deprecations from plugin code', $PLUGIN_DIAGS === []);

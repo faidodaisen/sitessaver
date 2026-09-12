@@ -35,7 +35,6 @@ final class Ajax {
             'sitessaver_save_email_brand' => 'handle_save_email_brand',
             'sitessaver_send_test_email'  => 'handle_send_test_email',
             'sitessaver_check_update'     => 'handle_check_update',
-            'sitessaver_save_update_source' => 'handle_save_update_source',
             'sitessaver_dismiss_update_notice' => 'handle_dismiss_update_notice',
             'sitessaver_gdrive_disconnect' => 'handle_gdrive_disconnect',
             'sitessaver_gdrive_upload'  => 'handle_gdrive_upload',
@@ -790,61 +789,6 @@ final class Ajax {
                 SITESSAVER_VERSION
             ),
         ]);
-    }
-
-    /**
-     * Save the update source (repo, channel, optional token).
-     */
-    public function handle_save_update_source(): void {
-        sitessaver_verify_ajax();
-
-        if (!current_user_can('update_plugins')) {
-            wp_send_json_error(['message' => __('You do not have permission to change update settings.', 'sitessaver')]);
-        }
-
-        $repo = sanitize_text_field(wp_unslash($_POST['repo'] ?? ''));
-        $repo = trim($repo);
-
-        // Accept a full URL and reduce it to owner/repo, since that is what
-        // people actually have on their clipboard.
-        if (preg_match('#github\.com/([^/\s]+/[^/\s?#]+)#i', $repo, $m)) {
-            $repo = $m[1];
-        }
-        $repo = rtrim($repo, '/');
-        $repo = preg_replace('/\.git$/i', '', $repo) ?? $repo;
-
-        if ($repo !== '' && !preg_match('#^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$#', $repo)) {
-            wp_send_json_error([
-                'message' => __('Repository must be in owner/name form, for example faidodaisen/sitessaver.', 'sitessaver'),
-            ]);
-        }
-
-        $existing = get_option(Updater::OPTION, []);
-        $existing = is_array($existing) ? $existing : [];
-
-        // An empty token field means "leave the stored token alone", so a user
-        // editing the repo does not silently wipe their credentials.
-        $token = trim((string) wp_unslash($_POST['token'] ?? ''));
-        if ($token === '') {
-            $token = (string) ($existing['token'] ?? '');
-        } elseif ($token === '__clear__') {
-            $token = '';
-        } else {
-            $token = sanitize_text_field($token);
-        }
-
-        update_option(Updater::OPTION, [
-            'repo'        => $repo,
-            'token'       => $token,
-            'prereleases' => !empty($_POST['prereleases']),
-            'enabled'     => !empty($_POST['enabled']),
-        ], false);
-
-        // The old cache belongs to the old source.
-        Updater::instance()->clear_cache();
-        delete_site_transient('update_plugins');
-
-        wp_send_json_success(['message' => __('Update source saved.', 'sitessaver')]);
     }
 
     /**

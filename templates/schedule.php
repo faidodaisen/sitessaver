@@ -220,14 +220,17 @@ $field_labels = [
                         <th><?php esc_html_e('Retention', 'sitessaver'); ?></th>
                         <td>
                             <input type="number" name="retention" value="<?php echo (int) $schedule['retention']; ?>" min="1" max="100" class="ss-input-text" style="width: 80px;" />
-                            <p class="description"><?php esc_html_e('Number of scheduled backups to keep locally, counted across all frequencies.', 'sitessaver'); ?></p>
+                            <p class="description"><?php esc_html_e('How many backups to keep on this server. Applied after each scheduled run, oldest deleted first. This counts every backup in the folder, including manual ones.', 'sitessaver'); ?></p>
                         </td>
                     </tr>
                     <tr>
                         <th><?php esc_html_e('Email Notification', 'sitessaver'); ?></th>
                         <td>
                             <input type="email" name="notify_email" value="<?php echo esc_attr($schedule['notify_email']); ?>" class="ss-input-text" placeholder="admin@example.com" />
-                            <p class="description"><?php esc_html_e('Receive an email after each scheduled backup completion.', 'sitessaver'); ?></p>
+                            <p class="description">
+                                <?php esc_html_e('Get a report after every scheduled backup, including where the archive was stored and whether the Google Drive upload succeeded.', 'sitessaver'); ?>
+                                <a href="<?php echo esc_url(admin_url('admin.php?page=sitessaver-settings')); ?>"><?php esc_html_e('Customise its branding', 'sitessaver'); ?></a>
+                            </p>
                         </td>
                     </tr>
                 </table>

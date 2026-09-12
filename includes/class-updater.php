@@ -35,7 +35,10 @@ defined('ABSPATH') || exit;
  */
 final class Updater {
 
-    /** Stores repo, token, and channel. */
+    /** Where releases are published. Hardcoded on purpose — see config(). */
+    public const REPO = 'faidodaisen/sitessaver';
+
+    /** Filter-only overrides, for a fork or a private mirror. */
     public const OPTION = 'sitessaver_update_source';
 
     /** Cached API response. */
@@ -76,19 +79,49 @@ final class Updater {
     // ------------------------------------------------------------------
 
     /**
+     * Where to look for releases, and how.
+     *
+     * Deliberately NOT a user-facing setting. Which repository the plugin
+     * updates from is a property of the build, not a preference: exposing it
+     * only invites a site owner to point their production install somewhere
+     * arbitrary, or to switch on pre-releases without knowing what that means.
+     *
+     * Developers forking or mirroring the plugin have two escape hatches that
+     * do not clutter the UI:
+     *   - the `sitessaver_update_source` option, set in code or WP-CLI
+     *   - the `sitessaver_update_config` filter, for a wp-config/mu-plugin override
+     *
      * @return array{repo: string, token: string, prereleases: bool, enabled: bool}
      */
     public static function config(): array {
         $saved = get_option(self::OPTION, []);
         $saved = is_array($saved) ? $saved : [];
 
-        return [
-            // Ships pointing at the canonical repo so a manually installed
-            // copy updates itself with no configuration at all.
-            'repo'        => (string) ($saved['repo'] ?? 'faidodaisen/sitessaver'),
+        $config = [
+            'repo'        => (string) ($saved['repo'] ?? self::REPO),
             'token'       => (string) ($saved['token'] ?? ''),
             'prereleases' => !empty($saved['prereleases']),
             'enabled'     => !isset($saved['enabled']) || !empty($saved['enabled']),
+        ];
+
+        /**
+         * Filter the update source.
+         *
+         * @param array{repo: string, token: string, prereleases: bool, enabled: bool} $config
+         */
+        $filtered = apply_filters('sitessaver_update_config', $config);
+
+        // A filter returning something malformed must not break update checks
+        // entirely, so fall back to the unfiltered values key by key.
+        if (!is_array($filtered)) {
+            return $config;
+        }
+
+        return [
+            'repo'        => (string) ($filtered['repo'] ?? $config['repo']),
+            'token'       => (string) ($filtered['token'] ?? $config['token']),
+            'prereleases' => !empty($filtered['prereleases']),
+            'enabled'     => !isset($filtered['enabled']) || !empty($filtered['enabled']),
         ];
     }
 
