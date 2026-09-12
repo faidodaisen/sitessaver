@@ -6,6 +6,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.0] — 2026-09-12
+
+Branded backup emails, and automatic updates straight from GitHub.
+
+### Added — automatic updates from GitHub releases
+
+SitesSaver is installed manually, not from wordpress.org, so WordPress had no update source
+for it and a new version could sit on GitHub unnoticed indefinitely.
+
+The plugin now declares an `Update URI` and answers for itself. It polls its GitHub releases
+(cached six hours) and, when a newer tag exists, the update appears on the Plugins screen like
+any other plugin, with a working "View details" modal built from the release notes. A
+dismissible dashboard banner covers the case where the owner rarely opens that screen;
+dismissal is recorded per version, so the next release surfaces again rather than being
+silenced forever by one click.
+
+Settings → Plugin Updates exposes the repository, a stable/pre-release channel toggle, an
+optional token for a private repo, and a "Check for updates now" button that bypasses the
+cache.
+
+Implementation notes that matter:
+
+- The hook is `update_plugins_github.com`, scoped to our own host, rather than a blanket
+  `pre_set_site_transient` filter that could answer for someone else's plugin. The transient
+  read is also filtered, because the 5.8 hook alone does not populate the row on every path.
+- A release's built `.zip` asset is preferred over GitHub's generated zipball: the asset has
+  the correct root folder and excludes `tests/` and `tools/`.
+- When only a zipball is available its `owner-repo-sha` folder is renamed to `sitessaver`
+  during install. Left alone, WordPress installs into a folder of that name and deactivates
+  the existing copy.
+- A configured token is attached only to requests whose URL targets the configured repo, so a
+  private-repo credential cannot leak into another plugin's GitHub traffic.
+- Failures cache for 30 minutes instead of 6 hours, so a brief outage does not mask an update
+  for the rest of the day.
+
+### Added — branded HTML notification emails
+
+Backup reports were four lines of plain text. They are now a table-based HTML email (the only
+thing Outlook's Word renderer and Gmail's style-stripping both tolerate) carrying a logo,
+accent colour, status badge, per-destination storage cards, and action buttons.
+
+Settings → Email Branding controls logo, colour, sender name and address, support link, and
+footer note, with a "Send test email" button that saves first and then delivers a real sample
+through the same renderer a live report uses.
+
+A plain-text alternative is always generated from the same data structure, so the two formats
+cannot drift, and HTML can be switched off entirely.
+
+### Added — the reports actually say something now
+
+Both formats gained: which schedule fired, what the archive contains, whether the local copy
+was kept or removed per storage settings, Google Drive upload status with a folder link, an
+explicit failure notice with the reason when an upload fails, the retention policy, and the
+next scheduled run. Failure emails list the usual causes and confirm that existing backups are
+untouched.
+
+### Security
+
+- Sender name is stripped of CR/LF before it reaches a mail header, closing header injection.
+- An invalid accent colour falls back to the default rather than being interpolated into every
+  inline style in the template.
+- `wp_mail_content_type` is added and removed around a single send inside a `finally` block,
+  so a throwing `wp_mail` cannot leave every later message on the request formatted as HTML.
+- Release notes are escaped before limited Markdown is reintroduced, so a malformed or hostile
+  release body cannot inject markup into wp-admin.
+
+### Tests
+
+New `tests/test-updater.php` (66 assertions) covers release selection, draft and pre-release
+filtering, package preference, version comparison, caching and error TTLs, transient
+injection, token scoping, the source-folder rename, and release-note escaping. The suite is
+now 166 assertions across five files. `tests/live-check-github.php` is a manual smoke test
+that resolves the real repo and verifies the downloaded package would install.
+
+---
 ## [1.2.1] — 2026-08-29
 
 Fixes the server-cron setup instructions, which handed out a command that could not run.
