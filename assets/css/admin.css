@@ -335,6 +335,38 @@
     cursor: pointer;
 }
 
+.ss-radio-group {
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+}
+
+.ss-radio-group label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+}
+
+/* Settings that only apply while a parent option is selected. Indented and
+   ruled so the dependency is visible rather than implied by proximity. */
+.ss-subfield {
+    margin-top: 14px;
+    padding-left: 14px;
+    border-left: 2px solid var(--ss-border-light);
+}
+
+.ss-subfield > p {
+    margin: 0 0 6px;
+}
+
+.ss-subfield label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
 /* Progress Section */
 .sitessaver-progress {
     background: var(--ss-surface);

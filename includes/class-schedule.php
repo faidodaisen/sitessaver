@@ -545,11 +545,19 @@ final class Schedule {
      */
     private function perform_backup(array $settings, string $frequency): array {
         // 1. Run Export.
+        //
+        // `track_chain` is what separates a scheduled backup from a manual
+        // one. Only scheduled runs build a file index and join a chain;
+        // the Export screen still produces standalone full backups.
         $result = Export::run([
             'include_db'      => $settings['include_db'] ?? true,
             'include_media'   => $settings['include_media'] ?? true,
             'include_plugins' => $settings['include_plugins'] ?? true,
             'include_themes'  => $settings['include_themes'] ?? true,
+            'track_chain'     => true,
+            'backup_mode'     => ($settings['backup_mode'] ?? 'full') === 'incremental' ? 'incremental' : 'full',
+            'full_every'      => (int) ($settings['full_every'] ?? Index::DEFAULT_FULL_EVERY),
+            'change_detection'=> ($settings['change_detection'] ?? 'fast') === 'thorough' ? 'thorough' : 'fast',
         ]);
 
         if (!$result['success']) {
@@ -626,24 +634,51 @@ final class Schedule {
 
     /**
      * Delete old backups beyond retention count.
+     *
+     * Retention counts RESTORE POINTS, not files. With incremental backups a
+     * chain of `full + inc1..inc6` is seven files but only one thing you can
+     * restore to — and deleting newest-first by file count would take out the
+     * full at the head and leave six incrementals that restore to nothing,
+     * while the Backups list still showed seven healthy-looking entries.
+     * Chains are therefore aged out whole.
      */
     private static function apply_retention(int $keep): void {
         $backups = sitessaver_get_backups();
+        $points  = Index::restore_points($backups);
 
-        if (count($backups) <= $keep) {
+        if (count($points) <= $keep) {
             return;
         }
 
-        $to_delete = array_slice($backups, $keep);
+        // Every file belonging to a restore point past the limit.
+        $doomed = [];
+        foreach (array_slice($points, $keep) as $point) {
+            foreach ($point['files'] as $file) {
+                $doomed[$file] = true;
+            }
+        }
+
+        if ($doomed === []) {
+            return;
+        }
 
         // Hoist label option outside loop; single read, single write.
         $labels          = get_option('sitessaver_backup_labels', []);
         $labels_changed  = false;
 
-        foreach ($to_delete as $backup) {
+        foreach ($backups as $backup) {
+            if (!isset($doomed[$backup['file']])) {
+                continue;
+            }
+
             if (file_exists($backup['path'])) {
                 @unlink($backup['path']);
             }
+
+            // Drop the chain record and the index cache alongside the ZIP,
+            // or the cache directory grows forever and plan() keeps trying
+            // to extend a chain whose files are gone.
+            Index::drop($backup['file']);
 
             if (isset($labels[$backup['file']])) {
                 unset($labels[$backup['file']]);

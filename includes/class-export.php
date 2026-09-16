@@ -85,6 +85,15 @@ final class Export {
         // Ensure isolated temp directory exists.
         wp_mkdir_p($temp_dir);
 
+        // Chain tracking is opt-in, and only the scheduler opts in. A manual
+        // export from the Export screen therefore behaves EXACTLY as it did
+        // before incremental backups existed: full contents, no index built,
+        // no chain touched. Someone reaching for the Export button wants a
+        // file they can restore on its own.
+        $plan = !empty($options['track_chain'])
+            ? Index::plan($options)
+            : ['type' => 'full', 'chain_id' => '', 'seq' => 0, 'parent' => '', 'full' => '', 'reason' => 'untracked'];
+
         $status = [
             'uid'         => $uid,
             'status'      => 'running',
@@ -92,6 +101,7 @@ final class Export {
             'backup_name' => $backup_name,
             'temp_dir'    => $temp_dir,
             'options'     => $options,
+            'plan'        => $plan,
             'start_time'  => time(),
             'last_update' => time(),
         ];
@@ -139,6 +149,7 @@ final class Export {
         $step     = $steps[$index];
         $options  = $status['options'];
         $temp_dir = $status['temp_dir'];
+        $plan     = is_array($status['plan'] ?? null) ? $status['plan'] : ['type' => 'full'];
 
         try {
             switch ($step['id']) {
@@ -147,7 +158,7 @@ final class Export {
                     break;
 
                 case 'manifest':
-                    self::write_manifest($temp_dir, $options);
+                    self::write_manifest($temp_dir, $options, $plan, [], []);
                     break;
 
                 case 'db':
@@ -161,7 +172,31 @@ final class Export {
 
                 case 'uploads':
                     if (!empty($options['include_media'])) {
-                        self::copy_directory(WP_CONTENT_DIR . '/uploads', $temp_dir . '/wp-content/uploads');
+                        // wp_upload_dir()['basedir'], not a hardcoded
+                        // WP_CONTENT_DIR . '/uploads'. On single-site the two
+                        // are identical. On MULTISITE they are NOT: WordPress
+                        // core keeps every subsite's media under a shared
+                        // parent (uploads/sites/{blog_id}/...), so copying
+                        // the bare uploads root would pull every OTHER
+                        // subsite's media into THIS site's backup — a
+                        // content-layer version of the same leak A2 fixed
+                        // for the database. wp_upload_dir() resolves to the
+                        // current site's own subtree automatically (WP core
+                        // switches the basedir per blog) for every subsite —
+                        // but the MAIN site (blog ID 1) is the one case
+                        // where basedir is NOT scoped: it IS the literal
+                        // parent of uploads/sites/, so a plain copy still
+                        // vacuums up every subsite's media. Exclude that
+                        // subfolder explicitly when this is the main site
+                        // on a multisite network. Verified against a real
+                        // WP multisite install (see PLAN-multisite-
+                        // premium-addon.md §7 A3 test notes) — this is not
+                        // a documented wp_upload_dir() edge case, it was
+                        // found by testing, not by reading core source.
+                        $uploads_exclude = (is_multisite() && get_current_blog_id() === 1)
+                            ? ['sites', 'sites/*']
+                            : [];
+                        self::copy_area('uploads', wp_upload_dir()['basedir'], $temp_dir, $uploads_exclude, $plan);
                     }
                     break;
 
@@ -175,28 +210,37 @@ final class Export {
                         // silently reverting whatever bugfixes the running plugin had.
                         // We now pass an explicit path-prefix pattern AND rely on the
                         // prefix-aware check added to copy_directory() below.
-                        self::copy_directory(
+                        self::copy_area(
+                            'plugins',
                             WP_PLUGIN_DIR,
-                            $temp_dir . '/wp-content/plugins',
-                            ['sitessaver', 'sitessaver/*']
+                            $temp_dir,
+                            ['sitessaver', 'sitessaver/*'],
+                            $plan
                         );
                     }
                     break;
 
                 case 'themes':
                     if (!empty($options['include_themes'])) {
-                        self::copy_directory(get_theme_root(), $temp_dir . '/wp-content/themes');
+                        self::copy_area('themes', get_theme_root(), $temp_dir, [], $plan);
                     }
                     break;
 
                 case 'other':
                     if (is_dir(WPMU_PLUGIN_DIR)) {
-                        self::copy_directory(WPMU_PLUGIN_DIR, $temp_dir . '/wp-content/mu-plugins');
+                        self::copy_area('mu-plugins', WPMU_PLUGIN_DIR, $temp_dir, [], $plan);
                     }
                     break;
 
                 case 'zip':
-                    $zip_path = SITESSAVER_STORAGE_DIR . '/' . $status['backup_name'];
+                    // Seal the index: merge the per-area shards, work out what
+                    // was deleted since the parent, and rewrite the manifest
+                    // now that both are known. Must happen BEFORE the archive
+                    // is built so manifest.json and fileindex.json.gz go into
+                    // the ZIP.
+                    self::seal_index($temp_dir, (string) $status['backup_name'], $options, $plan);
+
+                    $zip_path = sitessaver_storage_dir() . '/' . $status['backup_name'];
                     $exclude  = [
                         'sitessaver-backups',
                         'cache',
@@ -211,18 +255,39 @@ final class Export {
                     break;
 
                 case 'finalize':
+                    $zip_path    = sitessaver_storage_dir() . '/' . $status['backup_name'];
+                    $destination = $options['export_destination'] ?? 'local';
+                    $zip_size    = (int) @filesize($zip_path);
+
+                    // Promote this run's index from temp into the local cache
+                    // BEFORE the temp dir is removed, and register the backup
+                    // as a chain member. The cache copy deliberately stays on
+                    // local disk even for a gdrive-only destination: it is
+                    // kilobytes, and without it the next run has no baseline
+                    // to diff against and silently degrades to a full backup.
+                    if (!empty($options['track_chain'])) {
+                        $sealed = $temp_dir . '/' . Index::ARCHIVE_ENTRY;
+                        if (is_readable($sealed)) {
+                            $payload = file_get_contents($sealed);
+                            $index   = is_string($payload) ? Index::decode($payload) : null;
+                            if (is_array($index)) {
+                                Index::save($status['backup_name'], $index);
+                            }
+                        }
+                        Index::record($plan, $status['backup_name'], $zip_size);
+                    }
+
                     // Isolated cleanup — ONLY delete this export's temp dir.
                     self::remove_directory($temp_dir);
-
-                    $zip_path    = SITESSAVER_STORAGE_DIR . '/' . $status['backup_name'];
-                    $destination = $options['export_destination'] ?? 'local';
 
                     $result = [
                         'success'     => true,
                         'file'        => $status['backup_name'],
                         'path'        => $zip_path,
-                        'size'        => sitessaver_format_size((int) filesize($zip_path)),
+                        'size'        => sitessaver_format_size($zip_size),
                         'destination' => $destination,
+                        'backup_type' => (string) ($plan['type'] ?? 'full'),
+                        'chain_seq'   => (int) ($plan['seq'] ?? 0),
                     ];
 
                     // Upload to Google Drive if requested.
@@ -297,8 +362,15 @@ final class Export {
 
     /**
      * Write package manifest with site metadata.
+     *
+     * Called twice: once early (so a crashed run still leaves something
+     * readable) and once from seal_index() with the chain facts filled in.
+     *
+     * @param array<string, mixed> $plan
+     * @param list<string>         $deleted
+     * @param list<string>         $members
      */
-    private static function write_manifest(string $dir, array $options): void {
+    private static function write_manifest(string $dir, array $options, array $plan = [], array $deleted = [], array $members = []): void {
         $manifest = [
             'plugin'        => 'SitesSaver',
             'version'       => SITESSAVER_VERSION,
@@ -315,6 +387,28 @@ final class Export {
             'options'       => $options,
         ];
 
+        // Chain facts are added ONLY for a chain-tracked run. A manual export
+        // therefore writes byte-for-byte the manifest it always did, and an
+        // older SitesSaver reading it sees nothing new. Readers default
+        // backup_type to 'full', so an absent block means "restores alone".
+        if (!empty($options['track_chain'])) {
+            $manifest['backup_type']  = (string) ($plan['type'] ?? 'full');
+            $manifest['chain_id']     = (string) ($plan['chain_id'] ?? '');
+            $manifest['chain_seq']    = (int) ($plan['seq'] ?? 0);
+            $manifest['chain_parent'] = (string) ($plan['parent'] ?? '');
+            $manifest['chain_full']   = (string) ($plan['full'] ?? '');
+
+            // The ordered restore set, written INTO the archive so an
+            // incremental is self-describing. Restore must not depend on a
+            // local option that a reinstall, a migration, or a database
+            // restore could have wiped.
+            $manifest['chain_members'] = $members;
+
+            // Paths that existed in the parent backup and are gone now. A
+            // ZIP cannot represent absence, so deletions travel here.
+            $manifest['deleted'] = $deleted;
+        }
+
         file_put_contents(
             $dir . '/manifest.json',
             wp_json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)
@@ -322,9 +416,162 @@ final class Export {
     }
 
     /**
-     * Recursively copy a directory, respecting exclude patterns.
+     * Copy one backup area, indexing it and — for an incremental run —
+     * skipping files that have not changed since the parent backup.
+     *
+     * Each area writes its own index shard to temp rather than accumulating
+     * into a static or an option. Steps run as separate HTTP requests, so
+     * anything held in memory between them is gone; and a shard per area
+     * means a failed run leaves no half-merged global state behind.
+     *
+     * @param array<string, mixed> $plan
      */
-    private static function copy_directory(string $source, string $dest, array $exclude = []): void {
+    private static function copy_area(string $area, string $source, string $temp_dir, array $exclude, array $plan): void {
+        $prefixes = Index::area_prefixes();
+        $prefix   = $prefixes[$area] ?? ('wp-content/' . $area . '/');
+        $dest     = $temp_dir . '/' . rtrim($prefix, '/');
+
+        $incremental = ($plan['type'] ?? 'full') === 'incremental';
+        $detection   = ($plan['detection'] ?? 'fast') === 'thorough' ? 'thorough' : 'fast';
+
+        $parent_index = [];
+        if ($incremental) {
+            $loaded = Index::load((string) ($plan['parent'] ?? ''));
+            if (!is_array($loaded)) {
+                // plan() already verified the parent index exists. If it has
+                // vanished between then and now, copying everything is the
+                // safe answer: a bigger backup, not a broken one.
+                $incremental = false;
+            } else {
+                $parent_index = $loaded;
+            }
+        }
+
+        $index = [];
+
+        self::copy_directory(
+            $source,
+            $dest,
+            $exclude,
+            static function (string $relative, string $abs_path) use ($prefix, $incremental, $parent_index, $detection, &$index): bool {
+                $key         = $prefix . $relative;
+                $entry       = Index::entry_for($abs_path, $detection);
+                $index[$key] = $entry;
+
+                if (!$incremental) {
+                    return true;
+                }
+
+                return Index::is_changed($key, $entry, $parent_index, $detection);
+            },
+            !$incremental
+        );
+
+        self::write_index_shard($temp_dir, $area, $index);
+    }
+
+    /**
+     * Persist one area's index shard into the export temp directory.
+     *
+     * @param array<string, mixed> $index
+     */
+    private static function write_index_shard(string $temp_dir, string $area, array $index): void {
+        $dir = $temp_dir . '/.ssindex';
+
+        if (!is_dir($dir)) {
+            wp_mkdir_p($dir);
+        }
+
+        $json = wp_json_encode($index, JSON_UNESCAPED_SLASHES);
+
+        if (is_string($json)) {
+            file_put_contents($dir . '/' . $area . '.json', $json);
+        }
+    }
+
+    /**
+     * Merge the per-area shards into the final index, compute deletions,
+     * and rewrite the manifest with the complete chain picture.
+     *
+     * @param array<string, mixed> $plan
+     */
+    private static function seal_index(string $temp_dir, string $backup_name, array $options, array $plan): void {
+        if (empty($options['track_chain'])) {
+            // No chain tracking: leave the shards out of the archive and keep
+            // the manifest exactly as a pre-1.4.0 full backup's.
+            self::remove_directory($temp_dir . '/.ssindex');
+            return;
+        }
+
+        $index    = [];
+        $prefixes = [];
+        $areas    = Index::area_prefixes();
+
+        foreach ($areas as $area => $prefix) {
+            $shard = $temp_dir . '/.ssindex/' . $area . '.json';
+
+            if (!is_readable($shard)) {
+                // Area was switched off this run. It contributes no index
+                // entries AND no deletions — an area nobody looked at cannot
+                // have lost files.
+                continue;
+            }
+
+            $raw    = file_get_contents($shard);
+            $parsed = is_string($raw) ? json_decode($raw, true) : null;
+
+            if (is_array($parsed)) {
+                $index      = $index + $parsed;
+                $prefixes[] = $prefix;
+            }
+        }
+
+        $deleted = [];
+        if (($plan['type'] ?? 'full') === 'incremental') {
+            $parent = Index::load((string) ($plan['parent'] ?? ''));
+            if (is_array($parent)) {
+                $deleted = Index::deleted_paths($parent, $index, $prefixes);
+            }
+        }
+
+        // The restore set as it will stand once this backup is recorded:
+        // the chain so far, plus this backup at the end.
+        $members = [];
+        if (($plan['type'] ?? 'full') === 'incremental') {
+            $chain   = Index::chain((string) ($plan['chain_id'] ?? ''));
+            $members = is_array($chain['members'] ?? null) ? array_values($chain['members']) : [];
+        }
+        $members[] = $backup_name;
+
+        self::write_manifest($temp_dir, $options, $plan, $deleted, $members);
+
+        // The index also travels inside the archive, so a backup carried to
+        // another server can still serve as a baseline there.
+        $json = wp_json_encode($index, JSON_UNESCAPED_SLASHES);
+        if (is_string($json)) {
+            $gz = gzencode($json, 6);
+            if ($gz !== false) {
+                file_put_contents($temp_dir . '/' . Index::ARCHIVE_ENTRY, $gz);
+            }
+        }
+
+        // Shards are scaffolding, not payload.
+        self::remove_directory($temp_dir . '/.ssindex');
+    }
+
+    /**
+     * Recursively copy a directory, respecting exclude patterns.
+     *
+     * @param callable(string, string): bool|null $filter Receives the path
+     *        relative to $source and its absolute path; returns false to skip
+     *        copying the file. Called for every non-excluded FILE, including
+     *        ones it then skips, so an incremental run still indexes the
+     *        files it chose not to archive.
+     * @param bool $mirror_dirs Recreate every source directory in the
+     *        destination, empty ones included. False for incremental runs,
+     *        where only the folders holding archived files are wanted.
+     */
+    private static function copy_directory(string $source, string $dest, array $exclude = [], ?callable $filter = null, bool $mirror_dirs = true): void {
         if (!is_dir($source)) {
             return;
         }
@@ -387,8 +634,25 @@ final class Export {
             }
 
             if ($file->isDir()) {
-                wp_mkdir_p($dest_path);
+                // On an incremental run the destination tree is built on
+                // demand around the files actually archived. Mirroring every
+                // directory up front would write a full skeleton of empty
+                // folders into a ZIP that is meant to hold only what changed.
+                // A full backup still mirrors them, so an intentionally empty
+                // directory survives a restore exactly as it always has.
+                if ($mirror_dirs) {
+                    wp_mkdir_p($dest_path);
+                }
             } else {
+                // The filter both indexes the file and decides whether it
+                // needs archiving. It is called for every file that survived
+                // the exclude list, INCLUDING ones it then declines — an
+                // incremental backup must still index a file it skipped, or
+                // the next run would see it as deleted.
+                if ($filter !== null && !$filter($relative, $file->getPathname())) {
+                    continue;
+                }
+
                 $parent = dirname($dest_path);
                 if (!is_dir($parent)) {
                     wp_mkdir_p($parent);

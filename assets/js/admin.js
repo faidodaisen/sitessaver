@@ -1022,12 +1022,24 @@
     // ---------- DELETE ----------
 
     $(document).on('click', '.sitessaver-delete-btn', function () {
-        var file = $(this).data('file');
+        var file       = $(this).data('file');
+        var dependents = parseInt($(this).data('dependents'), 10) || 0;
+
+        // Deleting a full backup that incrementals were built on top of does
+        // not just remove one file — it makes every one of those incrementals
+        // unrestorable. Say so plainly instead of discovering it at restore.
+        var message = 'The backup file "' + file + '" will be permanently removed from this server. This cannot be undone.';
+        if (dependents > 0) {
+            message = 'The backup file "' + file + '" is the full backup that ' + dependents +
+                ' incremental backup' + (dependents === 1 ? '' : 's') + ' build' + (dependents === 1 ? 's' : '') +
+                ' on. Deleting it leaves ' + (dependents === 1 ? 'that backup' : 'those backups') +
+                ' impossible to restore. This cannot be undone.';
+        }
 
         ssNotify.confirm({
             tone: 'danger',
-            title: 'Delete this backup?',
-            message: 'The backup file "' + file + '" will be permanently removed from this server. This cannot be undone.',
+            title: dependents > 0 ? 'Delete this backup and break its chain?' : 'Delete this backup?',
+            message: message,
             confirmText: 'Delete backup',
             cancelText: 'Keep it',
             onConfirm: function () {
@@ -1048,6 +1060,28 @@
     $(document).on('change', '.ss-frequency-option input[type=checkbox]', function () {
         $(this).closest('.ss-frequency-option').toggleClass('is-selected', this.checked);
     });
+
+    // Reveal a dependent block only while its controlling radio is chosen.
+    // Declared on the element as data-ss-when="field=value" so the markup
+    // stays the single source of truth for what depends on what.
+    function ssSyncConditionals($scope) {
+        $scope.find('[data-ss-when]').each(function () {
+            var parts = String($(this).data('ss-when')).split('=');
+            var field = parts[0];
+            var want  = parts.slice(1).join('=');
+            var have  = $scope.find('[name="' + field + '"]:checked').val();
+
+            $(this).toggle(have === want);
+        });
+    }
+
+    var $scheduleForm = $('#sitessaver-schedule-form');
+    if ($scheduleForm.length) {
+        ssSyncConditionals($scheduleForm);
+        $scheduleForm.on('change', 'input[type=radio]', function () {
+            ssSyncConditionals($scheduleForm);
+        });
+    }
 
     $(document).on('submit', '#sitessaver-schedule-form', function (e) {
         e.preventDefault();
@@ -1073,6 +1107,9 @@
             // which is what the PHP handler reads.
             frequencies: frequencies,
             retention: $form.find('[name=retention]').val(),
+            backup_mode: $form.find('[name=backup_mode]:checked').val() || 'full',
+            full_every: $form.find('[name=full_every]').val(),
+            change_detection: $form.find('[name=change_detection]').val(),
             include_db: $form.find('[name=include_db]').is(':checked') ? 1 : 0,
             include_media: $form.find('[name=include_media]').is(':checked') ? 1 : 0,
             include_plugins: $form.find('[name=include_plugins]').is(':checked') ? 1 : 0,
