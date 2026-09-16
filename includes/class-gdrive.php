@@ -836,11 +836,11 @@ final class GDrive {
         // Publish under a non-clashing name so an existing local backup with
         // the same filename is preserved.
         $dest_name = $filename;
-        if (file_exists(SITESSAVER_STORAGE_DIR . '/' . $dest_name)) {
+        if (file_exists(sitessaver_storage_dir() . '/' . $dest_name)) {
             $dest_name = pathinfo($filename, PATHINFO_FILENAME)
                 . '-' . wp_generate_password(4, false, false) . '.zip';
         }
-        $dest = SITESSAVER_STORAGE_DIR . '/' . $dest_name;
+        $dest = sitessaver_storage_dir() . '/' . $dest_name;
 
         if (!@rename($staged, $dest)) {
             if (!@copy($staged, $dest)) {

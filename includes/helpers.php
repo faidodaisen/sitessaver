@@ -42,10 +42,68 @@ function sitessaver_backup_filename(string $ext = 'zip'): string {
 }
 
 /**
+ * Absolute path to the backup storage directory for the CURRENT site.
+ *
+ * On a single-site install this is identical to SITESSAVER_STORAGE_DIR, so
+ * existing installs are byte-for-byte unaffected.
+ *
+ * On multisite, SITESSAVER_STORAGE_DIR used to be one network-wide folder
+ * with no per-site scoping: sitessaver_get_backups() globbed it directly,
+ * so any subsite admin could see, download, and DELETE another subsite's
+ * backups. This namespaces storage by blog ID so each site only ever sees
+ * its own archives. The directory is created (and protected with the same
+ * .htaccess/index.php guard the activation hook uses) lazily on first call,
+ * since WordPress only runs register_activation_hook() for sites that
+ * existed at activation time — a subsite created afterwards would otherwise
+ * never get a protected folder.
+ */
+function sitessaver_storage_dir(): string {
+    if (!is_multisite()) {
+        return SITESSAVER_STORAGE_DIR;
+    }
+
+    $dir = SITESSAVER_STORAGE_DIR . '/site-' . get_current_blog_id();
+
+    if (!is_dir($dir)) {
+        wp_mkdir_p($dir);
+        sitessaver_protect_directory($dir);
+    }
+
+    return $dir;
+}
+
+/**
+ * Write the dual-syntax .htaccess + index.php guard into a directory, if not
+ * already present. Idempotent. Shared by the activation hook (network-wide
+ * SITESSAVER_STORAGE_DIR) and sitessaver_storage_dir() (per-site subfolders
+ * on multisite), so the two never drift out of sync.
+ */
+function sitessaver_protect_directory(string $dir): void {
+    $htaccess = $dir . '/.htaccess';
+    if (!file_exists($htaccess)) {
+        file_put_contents(
+            $htaccess,
+            "<IfModule mod_authz_core.c>\n"
+            . "    Require all denied\n"
+            . "</IfModule>\n"
+            . "<IfModule !mod_authz_core.c>\n"
+            . "    Order Deny,Allow\n"
+            . "    Deny from all\n"
+            . "</IfModule>\n"
+        );
+    }
+
+    $index = $dir . '/index.php';
+    if (!file_exists($index)) {
+        file_put_contents($index, '<?php // Silence is golden.');
+    }
+}
+
+/**
  * Get all backup files sorted by date (newest first).
  */
 function sitessaver_get_backups(): array {
-    $dir = SITESSAVER_STORAGE_DIR;
+    $dir = sitessaver_storage_dir();
 
     if (!is_dir($dir)) {
         return [];
@@ -205,13 +263,13 @@ function sitessaver_resolve_backup_path(string $file): ?string {
         return null;
     }
 
-    $path = SITESSAVER_STORAGE_DIR . '/' . $file;
+    $path = sitessaver_storage_dir() . '/' . $file;
     if (!file_exists($path)) {
         return null;
     }
 
     $real_path = realpath($path);
-    $real_dir  = realpath(SITESSAVER_STORAGE_DIR);
+    $real_dir  = realpath(sitessaver_storage_dir());
 
     if ($real_path === false || $real_dir === false) {
         return null;

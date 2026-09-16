@@ -33,9 +33,23 @@ final class Database {
 
         // Get all tables with the WP prefix (escaped LIKE to avoid `_` wildcard
         // accidentally matching neighbouring-prefix tables).
-        $tables = $wpdb->get_col(
-            $wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($wpdb->prefix) . '%')
-        );
+        //
+        // MULTISITE WARNING (do not revert without re-reading this): a plain
+        // `LIKE {$wpdb->prefix}%` is only safe on a single-site install. On
+        // multisite the network's MAIN site (blog ID 1) uses the bare base
+        // prefix (e.g. `wp_`) with NO numeric suffix — and every subsite's
+        // tables (`wp_2_posts`, `wp_3_options`, ...) also start with that
+        // same literal string, because the subsite prefix is
+        // `{base_prefix}{blog_id}_`. A LIKE match on `wp_%` therefore also
+        // matches `wp_2_%`, `wp_3_%`, etc. Exporting the main site with the
+        // old query silently vacuumed every OTHER subsite's content and DB
+        // credentials-adjacent tables into one archive, and also pulled in
+        // the ms-global tables (wp_users, wp_usermeta, wp_blogs, wp_site,
+        // wp_sitemeta, wp_signups, wp_blogmeta) — which then got a blind
+        // `DROP TABLE IF EXISTS` + reinsert on restore, silently wiping every
+        // OTHER site's users/blogs list too. tables_for_current_site() scopes
+        // this correctly for both the main site and any subsite.
+        $tables = self::tables_for_current_site($wpdb);
 
         foreach ($tables as $table) {
             self::export_table($wpdb, $handle, $table);
@@ -45,6 +59,155 @@ final class Database {
         fclose($handle);
 
         return true;
+    }
+
+    /**
+     * Resolve exactly the tables that belong to the CURRENT site, and no
+     * others. Single-site installs get the pre-existing behaviour (every
+     * table under $wpdb->prefix — there's nothing else in the DB to
+     * confuse it with). Multisite requires real disambiguation — see the
+     * warning in export() for why a bare LIKE match is unsafe there.
+     *
+     * @return list<string>
+     */
+    private static function tables_for_current_site(\wpdb $wpdb): array {
+        if (!is_multisite()) {
+            return $wpdb->get_col(
+                $wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($wpdb->prefix) . '%')
+            );
+        }
+
+        // ms_global_tables PLUS global_tables (wp_users, wp_usermeta,
+        // wp_blogs, wp_site, wp_sitemeta, wp_signups, wp_blogmeta,
+        // wp_registration_log, ...) are network-wide and deliberately never
+        // included in a per-site export/import — they aren't "this site's"
+        // data, and DROP+reinsert on restore would clobber every other
+        // site on the network.
+        //
+        // IMPORTANT: $wpdb->ms_global_tables alone is NOT enough — real WP
+        // core keeps `users`/`usermeta` in a SEPARATE `$wpdb->global_tables`
+        // property (it exists on single-site too, just unused there), while
+        // `ms_global_tables` only holds `blogs`/`blogmeta`/`site`/
+        // `sitemeta`/`signups`/`registration_log`. Checking only
+        // ms_global_tables misses users/usermeta entirely and lets a
+        // "per-site" backup silently capture every account on the network.
+        // wpdb::tables('global', false) returns the correct UNION of both,
+        // unprefixed — that's what must be used here, not either property
+        // read in isolation. A future network-scoped backup mode (out of
+        // scope here) would need to opt into them explicitly instead of
+        // inheriting this exclusion.
+        $global_tables = array_map(
+            static fn(string $t): string => $wpdb->base_prefix . $t,
+            $wpdb->tables('global', false)
+        );
+
+        $blog_id = get_current_blog_id();
+
+        if ($blog_id === 1) {
+            // Main site: its own tables sit under the bare base prefix with
+            // no numeric suffix. Every OTHER subsite's tables also start
+            // with that literal string (`{base_prefix}{blog_id}_...`), so
+            // they must be explicitly excluded by pattern, not just by a
+            // LIKE match on the prefix.
+            $all = $wpdb->get_col(
+                $wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($wpdb->base_prefix) . '%')
+            );
+
+            $subsite_pattern = '/^' . preg_quote($wpdb->base_prefix, '/') . '\d+_/';
+
+            return array_values(array_filter($all, static function (string $table) use ($global_tables, $subsite_pattern): bool {
+                if (in_array($table, $global_tables, true)) {
+                    return false;
+                }
+                return preg_match($subsite_pattern, $table) !== 1;
+            }));
+        }
+
+        // Any other subsite: $wpdb->prefix is already blog-scoped
+        // (`{base_prefix}{blog_id}_`), which cannot collide with the main
+        // site's tables or another subsite's tables, and never matches the
+        // (unsuffixed) global tables either.
+        return $wpdb->get_col(
+            $wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($wpdb->prefix) . '%')
+        );
+    }
+
+    /**
+     * Guard against restoring a dump onto multisite that carries tables
+     * outside this site's own scope (another subsite's tables, or the
+     * ms-global tables). Without this, a DROP TABLE IF EXISTS in the dump
+     * silently destroys another site's data on the same network the moment
+     * an admin imports what looks like an ordinary single-site backup —
+     * e.g. a backup taken before this scoping fix existed, or one copied
+     * from a different subsite's Backups list.
+     *
+     * Cheap line scan, not the full tokenizer: the dump format is generated
+     * by export_table() above and always emits `-- Table: {name}` directly
+     * before each table's statements, so a plain fgets() loop is enough to
+     * build the table list without paying tokenizer cost on a multi-GB file.
+     *
+     * @throws \RuntimeException
+     */
+    private static function assert_import_scope_is_safe(string $sql_file, \wpdb $wpdb): void {
+        $allowed = array_flip(self::tables_for_current_site($wpdb));
+
+        $global_tables = array_flip(array_map(
+            static fn(string $t): string => $wpdb->base_prefix . $t,
+            $wpdb->tables('global', false)
+        ));
+
+        $handle = fopen($sql_file, 'rb');
+        if ($handle === false) {
+            // Can't scan it; import() will fail moments later on the same
+            // fopen() anyway, so let that path report the real error.
+            return;
+        }
+
+        $offending = [];
+
+        while (($line = fgets($handle)) !== false) {
+            if (!str_starts_with($line, '-- Table: ')) {
+                continue;
+            }
+
+            $table = trim(substr($line, strlen('-- Table: ')));
+            if ($table === '' || isset($allowed[$table])) {
+                continue;
+            }
+
+            $offending[] = $table;
+
+            // Cap how much we collect for the error message — the guard's
+            // job is to refuse the import, not enumerate every table in a
+            // rogue network-wide dump.
+            if (count($offending) >= 10) {
+                break;
+            }
+        }
+
+        fclose($handle);
+
+        if ($offending === []) {
+            return;
+        }
+
+        $blog_id = get_current_blog_id();
+        $kind    = array_intersect_key($global_tables, array_flip($offending)) !== []
+            ? 'network-wide'
+            : 'another site\'s';
+
+        throw new \RuntimeException(sprintf(
+            /* Not user-facing __() text — Import::from_backup() catches this
+               and wraps it in a translated, non-technical message. Keeping
+               table names here only for debug.log / support diagnosis. */
+            'SitesSaver refused to import this backup into site #%d: it contains %s tables (%s). ' .
+            'This usually means the backup predates per-site scoping, or was taken on a different ' .
+            'subsite. Restoring it here would overwrite that other data. Re-export from the correct ' .
+            'site and try again.',
+            $blog_id,
+            $kind,
+            implode(', ', $offending)
+        ));
     }
 
     /**
@@ -265,12 +428,19 @@ final class Database {
      *
      * @throws \RuntimeException If the dump contains serialized PHP objects
      *                           (security guardrail against object injection).
+     * @throws \RuntimeException If, on multisite, the dump's tables reach
+     *                           outside this site's own scope — see
+     *                           assert_import_scope_is_safe().
      */
     public static function import(string $sql_file, string $old_url = '', string $new_url = ''): bool {
         global $wpdb;
 
         if (!file_exists($sql_file)) {
             return false;
+        }
+
+        if (is_multisite()) {
+            self::assert_import_scope_is_safe($sql_file, $wpdb);
         }
 
         $handle = fopen($sql_file, 'rb');
