@@ -302,6 +302,11 @@ final class Ajax {
 
         wp_delete_file($path);
 
+        // Forget the chain membership and cached index too. Leaving them
+        // behind would let plan() pick a parent whose ZIP no longer exists,
+        // producing an incremental that can never be restored.
+        \SitesSaver\Index::drop($file);
+
         // Remove label if exists.
         $labels = get_option('sitessaver_backup_labels', []);
         unset($labels[$file]);
@@ -499,6 +504,12 @@ final class Ajax {
             // key (and so downgrading the plugin does not lose the setting).
             'frequency'   => $frequencies[0] ?? 'daily',
             'retention'   => $retention,
+            // Backup mode. Anything that isn't an explicit 'incremental'
+            // means full — an unrecognised value must never silently put a
+            // site onto chained backups it did not ask for.
+            'backup_mode'      => ($_POST['backup_mode'] ?? 'full') === 'incremental' ? 'incremental' : 'full',
+            'full_every'       => max(2, min(60, (int) ($_POST['full_every'] ?? \SitesSaver\Index::DEFAULT_FULL_EVERY))),
+            'change_detection' => ($_POST['change_detection'] ?? 'fast') === 'thorough' ? 'thorough' : 'fast',
             'include_db'      => (bool) ($_POST['include_db'] ?? true),
             'include_media'   => (bool) ($_POST['include_media'] ?? true),
             'include_plugins' => (bool) ($_POST['include_plugins'] ?? true),
@@ -1014,12 +1025,12 @@ final class Ajax {
      * @return string|null Full path to assembled file, or null on failure.
      */
     private function assemble_chunks(string $chunk_dir, int $total_chunks, string $filename): ?string {
-        $dest = SITESSAVER_STORAGE_DIR . '/' . sanitize_file_name($filename);
+        $dest = sitessaver_storage_dir() . '/' . sanitize_file_name($filename);
 
         // Avoid overwriting — add suffix if file exists.
         if (file_exists($dest)) {
             $base = pathinfo($filename, PATHINFO_FILENAME);
-            $dest = SITESSAVER_STORAGE_DIR . '/' . $base . '-' . wp_generate_password(4, false) . '.zip';
+            $dest = sitessaver_storage_dir() . '/' . $base . '-' . wp_generate_password(4, false) . '.zip';
         }
 
         $out = fopen($dest, 'wb');

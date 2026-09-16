@@ -96,13 +96,55 @@ $stats   = [
                     </tr>
                 </thead>
                 <tbody>
-                    <?php foreach ($backups as $b) : ?>
-                        <tr>
+                    <?php foreach ($backups as $b) :
+                        $chain_info = \SitesSaver\Index::describe($b['file']);
+                        $is_inc     = $chain_info['type'] === 'incremental';
+                    ?>
+                        <tr<?php echo $is_inc ? ' class="is-chain-child"' : ''; ?>>
                             <td>
                                 <div class="cell-filename">
-                                    <i class="ri-file-zip-line"></i>
+                                    <i class="<?php echo $is_inc ? 'ri-git-commit-line' : 'ri-file-zip-line'; ?>"></i>
                                     <?php echo esc_html($b['file']); ?>
                                 </div>
+                                <?php if ($chain_info['type'] !== 'standalone') : ?>
+                                    <div class="cell-chain">
+                                        <?php if ($is_inc) : ?>
+                                            <span class="badge badge-blue"><?php esc_html_e('Incremental', 'sitessaver'); ?></span>
+                                            <span class="cell-meta">
+                                                <?php
+                                                printf(
+                                                    /* translators: %d: number of backup files needed to restore. */
+                                                    esc_html(_n(
+                                                        'Restores with %d file',
+                                                        'Restores with %d files',
+                                                        (int) $chain_info['restore_count'],
+                                                        'sitessaver'
+                                                    )),
+                                                    (int) $chain_info['restore_count']
+                                                );
+                                                ?>
+                                            </span>
+                                        <?php else : ?>
+                                            <span class="badge badge-gray"><?php esc_html_e('Full', 'sitessaver'); ?></span>
+                                            <?php if ($chain_info['followers'] > 0) : ?>
+                                                <span class="cell-meta">
+                                                    <?php
+                                                    printf(
+                                                        /* translators: %d: number of incremental backups built on this one. */
+                                                        esc_html(_n(
+                                                            'Base for %d incremental backup',
+                                                            'Base for %d incremental backups',
+                                                            (int) $chain_info['followers'],
+                                                            'sitessaver'
+                                                        )),
+                                                        (int) $chain_info['followers']
+                                                    );
+                                                    ?>
+                                                </span>
+                                            <?php endif; ?>
+                                        <?php endif; ?>
+                                    </div>
+                                <?php endif; ?>
                             </td>
                             <td>
                                 <div class="cell-label"><?php echo esc_html($b['label'] ?: '—'); ?></div>
@@ -125,7 +167,10 @@ $stats   = [
                                         <i class="ri-drive-fill"></i>
                                     </button>
 
-                                    <button class="btn-icon danger sitessaver-delete-btn" data-file="<?php echo esc_attr($b['file']); ?>" title="<?php esc_attr_e('Delete', 'sitessaver'); ?>">
+                                    <button class="btn-icon danger sitessaver-delete-btn"
+                                            data-file="<?php echo esc_attr($b['file']); ?>"
+                                            data-dependents="<?php echo (int) $chain_info['followers']; ?>"
+                                            title="<?php esc_attr_e('Delete', 'sitessaver'); ?>">
                                         <i class="ri-delete-bin-line"></i>
                                     </button>
                                 </div>

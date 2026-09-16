@@ -3,7 +3,7 @@
  * Plugin Name: SitesSaver
  * Plugin URI:  https://github.com/faidodaisen/sitessaver
  * Description: Full site backup & migration — export, import, schedule, Google Drive. No restrictions.
- * Version:     1.3.1
+ * Version:     1.4.0
  * Author:      SitesSaver
  * Author URI:  https://github.com/faidodaisen
  * License:     GPL-2.0-or-later
@@ -20,7 +20,7 @@ defined('ABSPATH') || exit;
 // This copy's version, read BEFORE any constants so the duplicate-copy
 // handler below can compare against an already-loaded instance. Folder
 // name is irrelevant — we identify SitesSaver by its VERSION constant.
-$sitessaver_this_version = '1.3.1';
+$sitessaver_this_version = '1.4.0';
 
 // Duplicate-copy handler. WordPress lets the same plugin live in multiple
 // folders (e.g. `plugins/sitessaver/` and `plugins/ss/`) and will happily
@@ -176,25 +176,10 @@ register_activation_hook(__FILE__, static function (): void {
     }
 
     // Protect backup directory from direct access (Apache 2.4 and 2.2 syntax;
-    // Nginx hosts must add a location block manually — see README).
-    $htaccess = SITESSAVER_STORAGE_DIR . '/.htaccess';
-    if (!file_exists($htaccess)) {
-        file_put_contents(
-            $htaccess,
-            "<IfModule mod_authz_core.c>\n"
-            . "    Require all denied\n"
-            . "</IfModule>\n"
-            . "<IfModule !mod_authz_core.c>\n"
-            . "    Order Deny,Allow\n"
-            . "    Deny from all\n"
-            . "</IfModule>\n"
-        );
-    }
-
-    $index = SITESSAVER_STORAGE_DIR . '/index.php';
-    if (!file_exists($index)) {
-        file_put_contents($index, '<?php // Silence is golden.');
-    }
+    // Nginx hosts must add a location block manually — see README). Shared
+    // with sitessaver_storage_dir()'s per-site subfolders on multisite so
+    // the guard logic lives in exactly one place.
+    sitessaver_protect_directory(SITESSAVER_STORAGE_DIR);
 
     // Re-arm scheduled backups. Deactivation clears the cron events, so a
     // deactivate/reactivate cycle (which is what a plugin update does) would

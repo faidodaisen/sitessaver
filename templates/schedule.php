@@ -6,6 +6,9 @@ $schedule = get_option('sitessaver_schedule', []);
 $schedule = array_merge([
     'enabled'   => false,
     'retention' => 5,
+    'backup_mode'      => 'full',
+    'full_every'       => \SitesSaver\Index::DEFAULT_FULL_EVERY,
+    'change_detection' => 'fast',
     'include_db'      => true,
     'include_media'   => true,
     'include_plugins' => true,
@@ -202,6 +205,54 @@ $field_labels = [
                         </td>
                     </tr>
                     <tr>
+                        <th><?php esc_html_e('Backup Mode', 'sitessaver'); ?></th>
+                        <td>
+                            <div class="ss-radio-group">
+                                <label>
+                                    <input type="radio" name="backup_mode" value="full" <?php checked($schedule['backup_mode'], 'full'); ?> />
+                                    <?php esc_html_e('Full every time', 'sitessaver'); ?>
+                                </label>
+                                <label>
+                                    <input type="radio" name="backup_mode" value="incremental" <?php checked($schedule['backup_mode'], 'incremental'); ?> />
+                                    <?php esc_html_e('Incremental', 'sitessaver'); ?>
+                                </label>
+                            </div>
+                            <p class="description">
+                                <?php esc_html_e('Incremental backups archive only the files that changed since the previous run, so a daily backup of a large media library takes minutes instead of hours and a fraction of the disk. The database is always included in full, so there is no replaying of database changes on restore.', 'sitessaver'); ?>
+                            </p>
+                            <p class="description">
+                                <strong><?php esc_html_e('Worth knowing:', 'sitessaver'); ?></strong>
+                                <?php esc_html_e('an incremental backup is restored together with the full backup it follows. SitesSaver does that for you and keeps the whole chain together when deleting old backups, but it means you cannot copy a single incremental ZIP to another site on its own. Backups made by hand from the Export screen are always full and stand alone.', 'sitessaver'); ?>
+                            </p>
+
+                            <div class="ss-subfield" data-ss-when="backup_mode=incremental">
+                                <p>
+                                    <label>
+                                        <?php esc_html_e('Start a new full backup every', 'sitessaver'); ?>
+                                        <input type="number" name="full_every" value="<?php echo (int) $schedule['full_every']; ?>" min="2" max="60" class="ss-input-text" style="width: 70px;" />
+                                        <?php esc_html_e('runs', 'sitessaver'); ?>
+                                    </label>
+                                </p>
+                                <p class="description">
+                                    <?php esc_html_e('Caps how long a chain grows. A shorter chain restores faster and limits how much a single damaged file can cost you; a longer one saves more disk. SitesSaver also starts a fresh full backup early if the changes have added up to more than half the size of the full backup, or if the previous backup has gone missing.', 'sitessaver'); ?>
+                                </p>
+
+                                <p>
+                                    <label>
+                                        <?php esc_html_e('Change detection', 'sitessaver'); ?>
+                                        <select name="change_detection" class="ss-input-text">
+                                            <option value="fast" <?php selected($schedule['change_detection'], 'fast'); ?>><?php esc_html_e('Fast — size and modified date', 'sitessaver'); ?></option>
+                                            <option value="thorough" <?php selected($schedule['change_detection'], 'thorough'); ?>><?php esc_html_e('Thorough — verify contents with a checksum', 'sitessaver'); ?></option>
+                                        </select>
+                                    </label>
+                                </p>
+                                <p class="description">
+                                    <?php esc_html_e('Fast is right for almost every site. Choose Thorough if your host or deployment process rewrites file timestamps, which would otherwise make unchanged files look changed and inflate every backup.', 'sitessaver'); ?>
+                                </p>
+                            </div>
+                        </td>
+                    </tr>
+                    <tr>
                         <th><?php esc_html_e('Storage Destination', 'sitessaver'); ?></th>
                         <td>
                             <div class="ss-checkbox-group">
@@ -220,7 +271,7 @@ $field_labels = [
                         <th><?php esc_html_e('Retention', 'sitessaver'); ?></th>
                         <td>
                             <input type="number" name="retention" value="<?php echo (int) $schedule['retention']; ?>" min="1" max="100" class="ss-input-text" style="width: 80px;" />
-                            <p class="description"><?php esc_html_e('How many backups to keep on this server. Applied after each scheduled run, oldest deleted first. This counts every backup in the folder, including manual ones.', 'sitessaver'); ?></p>
+                            <p class="description"><?php esc_html_e('How many restore points to keep on this server. Applied after each scheduled run, oldest deleted first. With incremental backups a restore point is a full backup plus everything that followed it, and those are removed together — so keeping 5 restore points can mean more than 5 files in the folder. Manual backups count as one restore point each.', 'sitessaver'); ?></p>
                         </td>
                     </tr>
                     <tr>

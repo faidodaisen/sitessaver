@@ -18,13 +18,212 @@ final class Import {
      * @return array{success: bool, message: string}
      */
     public static function from_backup(string $backup_file): array {
-        $zip_path = SITESSAVER_STORAGE_DIR . '/' . sanitize_file_name($backup_file);
+        $zip_path = sitessaver_storage_dir() . '/' . sanitize_file_name($backup_file);
 
         if (!file_exists($zip_path)) {
             return ['success' => false, 'message' => __('Backup file not found.', 'sitessaver')];
         }
 
+        // An incremental backup on its own is not a site — it is the delta
+        // since its parent. Restoring one means replaying its whole chain,
+        // oldest first, into a single merged tree.
+        $set = self::chain_restore_set($zip_path, sanitize_file_name($backup_file));
+
+        if (count($set) > 1) {
+            return self::run_chain($set);
+        }
+
         return self::run($zip_path);
+    }
+
+    /**
+     * Work out the ordered restore set for a backup in storage.
+     *
+     * The ZIP's own manifest is the primary source: an incremental is
+     * self-describing, so a restore still works after a reinstall, a
+     * migration, or a database restore that wiped the chain option. The
+     * local chain record is only a fallback for an archive written before
+     * the manifest carried members.
+     *
+     * @return list<string> Filenames, oldest first. Single entry = plain full.
+     */
+    private static function chain_restore_set(string $zip_path, string $backup_file): array {
+        $manifest = self::peek_manifest($zip_path);
+        $type     = (string) ($manifest['backup_type'] ?? 'full');
+
+        if ($type !== 'incremental') {
+            return [$backup_file];
+        }
+
+        $members = $manifest['chain_members'] ?? null;
+
+        if (!is_array($members) || $members === []) {
+            $members = Index::restore_set($backup_file);
+        }
+
+        $set = [];
+        foreach ($members as $member) {
+            $name = sanitize_file_name((string) $member);
+            if ($name !== '') {
+                $set[] = $name;
+            }
+            // Stop at the backup being restored: a later member is a NEWER
+            // state the user did not ask for.
+            if ($name === $backup_file) {
+                break;
+            }
+        }
+
+        return $set === [] ? [$backup_file] : $set;
+    }
+
+    /**
+     * Read manifest.json out of a ZIP without extracting the archive.
+     *
+     * @return array<string, mixed>|null
+     */
+    private static function peek_manifest(string $zip_path): ?array {
+        if (!class_exists('ZipArchive')) {
+            return null;
+        }
+
+        $zip = new \ZipArchive();
+        if ($zip->open($zip_path) !== true) {
+            return null;
+        }
+
+        $raw = $zip->getFromName('manifest.json');
+        $zip->close();
+
+        if (!is_string($raw) || $raw === '') {
+            return null;
+        }
+
+        $data = json_decode($raw, true);
+
+        return is_array($data) ? $data : null;
+    }
+
+    /**
+     * Restore a chain: extract every member oldest-first into one merged
+     * tree, applying each member's deletions as it goes, then hand the
+     * result to the normal restore path.
+     *
+     * Extracting newest-last means the final tree holds the newest version
+     * of every file, and the newest `database.sql` and `manifest.json` —
+     * which is exactly the state the chosen backup represents.
+     *
+     * @param list<string> $set Filenames, oldest first.
+     * @return array{success: bool, message: string}
+     */
+    private static function run_chain(array $set): array {
+        $storage = sitessaver_storage_dir();
+
+        // Verify the whole chain BEFORE touching the live site. A restore
+        // that discovers a missing member halfway through has already
+        // overwritten files with a partial state.
+        $missing = [];
+        foreach ($set as $member) {
+            if (!is_readable($storage . '/' . $member)) {
+                $missing[] = $member;
+            }
+        }
+
+        if ($missing !== []) {
+            return [
+                'success' => false,
+                'message' => sprintf(
+                    /* translators: %s: comma-separated list of backup filenames. */
+                    __('This incremental backup cannot be restored on its own — these earlier backups in its chain are missing: %s', 'sitessaver'),
+                    implode(', ', $missing)
+                ),
+            ];
+        }
+
+        $merged = SITESSAVER_TEMP_DIR . '/chain-' . wp_generate_password(8, false);
+
+        try {
+            sitessaver_cleanup_temp();
+            wp_mkdir_p($merged);
+
+            foreach ($set as $member) {
+                if (!Archive::extract($storage . '/' . $member, $merged)) {
+                    throw new \RuntimeException(sprintf(
+                        /* translators: %s: backup filename. */
+                        __('Failed to extract %s while rebuilding the backup chain.', 'sitessaver'),
+                        $member
+                    ));
+                }
+
+                // Apply this member's deletions immediately, not at the end:
+                // a path deleted in member 2 and recreated in member 3 must
+                // survive, and only in-order application gets that right.
+                $manifest = self::read_manifest($merged);
+                if (is_array($manifest)) {
+                    self::apply_deletions($merged, $manifest['deleted'] ?? []);
+                }
+            }
+
+            // The merged tree is now byte-for-byte what a full backup of that
+            // moment would have contained, so the ordinary restore applies.
+            return self::run_from_dir($merged, basename((string) end($set)));
+
+        } catch (\Throwable $e) {
+            sitessaver_cleanup_temp($merged);
+
+            return ['success' => false, 'message' => $e->getMessage()];
+        }
+    }
+
+    /**
+     * Remove chain-deleted paths from the merged tree.
+     *
+     * Paths are relative to the archive root and are validated against it:
+     * a manifest is data from a file the user supplied, so it is not
+     * permitted to reach outside the directory being assembled.
+     *
+     * @param mixed $paths
+     */
+    private static function apply_deletions(string $root, $paths): void {
+        if (!is_array($paths)) {
+            return;
+        }
+
+        $real_root = realpath($root);
+        if ($real_root === false) {
+            return;
+        }
+
+        foreach ($paths as $relative) {
+            if (!is_string($relative) || $relative === '') {
+                continue;
+            }
+
+            $relative = str_replace('\\', '/', $relative);
+
+            if (str_contains($relative, '..') || str_starts_with($relative, '/')) {
+                continue;
+            }
+
+            $target = $real_root . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $relative);
+
+            if (!file_exists($target)) {
+                continue;
+            }
+
+            $real_target = realpath($target);
+            if ($real_target === false
+                || !str_starts_with($real_target, $real_root . DIRECTORY_SEPARATOR)
+            ) {
+                continue;
+            }
+
+            if (is_dir($real_target)) {
+                sitessaver_rm_recursive($real_target);
+            } else {
+                @unlink($real_target);
+            }
+        }
     }
 
     /**
@@ -67,7 +266,7 @@ final class Import {
             // BEFORE cleanup so the staged file still exists.
             if (!empty($result['success'])) {
                 $final_name = self::unique_backup_filename(sanitize_file_name($file['name']));
-                $final_path = SITESSAVER_STORAGE_DIR . '/' . $final_name;
+                $final_path = sitessaver_storage_dir() . '/' . $final_name;
                 @copy($staged, $final_path);
             }
         } finally {
@@ -87,7 +286,7 @@ final class Import {
             $filename = 'imported-' . wp_generate_password(6, false, false) . '.zip';
         }
 
-        $dest = SITESSAVER_STORAGE_DIR . '/' . $filename;
+        $dest = sitessaver_storage_dir() . '/' . $filename;
         if (!file_exists($dest)) {
             return $filename;
         }
@@ -127,6 +326,30 @@ final class Import {
                 throw new \RuntimeException(__('Failed to extract backup archive.', 'sitessaver'));
             }
 
+            return self::run_from_dir($temp_dir, basename($zip_path));
+
+        } catch (\Throwable $e) {
+            sitessaver_cleanup_temp($temp_dir);
+
+            return [
+                'success' => false,
+                'message' => $e->getMessage(),
+            ];
+        }
+    }
+
+    /**
+     * Restore from an already-extracted backup tree.
+     *
+     * Split out of run() so a rebuilt chain and a plain single archive go
+     * through byte-for-byte the same restore, rather than two code paths
+     * that can drift apart.
+     *
+     * @param string $source_label Filename to report to the completion hook.
+     * @return array{success: bool, message: string}
+     */
+    private static function run_from_dir(string $temp_dir, string $source_label): array {
+        try {
             // 2. Read and validate manifest.
             $manifest = self::read_manifest($temp_dir);
             if ($manifest === null) {
@@ -161,7 +384,7 @@ final class Import {
             // 6. Cleanup — scoped to THIS import only.
             sitessaver_cleanup_temp($temp_dir);
 
-            do_action('sitessaver_import_complete', basename($zip_path));
+            do_action('sitessaver_import_complete', $source_label);
 
             return [
                 'success' => true,
@@ -234,8 +457,24 @@ final class Import {
         // URL) and keep it OFF for uploads (binary images, PDFs; replacing
         // bytes inside those would corrupt them).
         $running_plugin_dir = basename(dirname(SITESSAVER_FILE));
+        // On restore into a MAIN site on multisite, the backup's uploads/
+        // tree is scoped to just that site (A3 export-side fix excludes
+        // uploads/sites/ from a main-site export) — but skip it here too
+        // as defence in depth against restoring an OLDER backup taken
+        // before that fix existed, which would still carry every
+        // subsite's uploads/sites/N folder and silently overwrite them.
+        $uploads_skip = (is_multisite() && get_current_blog_id() === 1)
+            ? ['sites']
+            : [];
         $dirs = [
-            'uploads'    => ['dest' => WP_CONTENT_DIR . '/uploads', 'skip' => [], 'rewrite' => false],
+            // wp_upload_dir()['basedir'], not a hardcoded WP_CONTENT_DIR .
+            // '/uploads' — mirrors the export-side fix (see the 'uploads'
+            // case in Export::run_step()). On multisite this resolves to
+            // THIS site's own uploads/sites/{blog_id} subtree, so a restore
+            // writes media back into the site it belongs to instead of the
+            // network's shared uploads root (which would both leak into,
+            // and get overwritten alongside, every other subsite's media).
+            'uploads'    => ['dest' => wp_upload_dir()['basedir'],   'skip' => $uploads_skip, 'rewrite' => false],
             'plugins'    => ['dest' => WP_PLUGIN_DIR,               'skip' => [$running_plugin_dir], 'rewrite' => true],
             'themes'     => ['dest' => get_theme_root(),            'skip' => [], 'rewrite' => true],
             'mu-plugins' => ['dest' => WPMU_PLUGIN_DIR,             'skip' => [], 'rewrite' => true],

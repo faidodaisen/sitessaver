@@ -6,6 +6,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.4.0] — 2026-09-16
+
+Scheduled backups can now archive only what changed since the previous run. On a site with a
+large media library that turns a nightly backup from hours and gigabytes into minutes and
+megabytes. It is off by default, free, and the manual Export button is untouched.
+
+### Added — incremental scheduled backups
+
+Schedule now has a **Backup Mode** choice: *Full every time* (what every install does today, and
+still the default) or *Incremental*. In incremental mode each scheduled run archives only the
+files whose size or modification time differs from the previous backup. The database is always
+dumped in full, so a restore never replays database changes — it imports one SQL file, as it
+always has.
+
+Every backup carries a complete index of the site's files at the moment it ran — not just the
+files inside that ZIP — so the baseline for the next run is a single file read rather than a
+merge of every delta since the last full backup.
+
+Two settings sit under the mode:
+
+- **Start a new full backup every N runs** (default 7). A shorter chain restores faster and
+  limits the blast radius of one damaged archive; a longer one saves more disk.
+- **Change detection**: *Fast* (size and modified date, right for almost every site) or
+  *Thorough* (verifies contents with a checksum, for hosts or deploy processes that rewrite
+  file timestamps and would otherwise make every file look changed).
+
+SitesSaver also starts a fresh full backup on its own when the incrementals have added up to
+more than half the size of the full backup, when the previous backup has gone missing, or when
+its index cannot be read. Every one of those degrades to a *larger* backup, never a failed one.
+
+### Added — restoring a chain
+
+Restoring an incremental backup replays its chain automatically: each member is extracted
+oldest-first into one merged tree, deletions recorded along the way are applied in order, and
+the result is handed to exactly the same restore path a full backup uses. Restore to an earlier
+point in a chain and files deleted after it come back, as they should.
+
+A ZIP cannot represent a file that no longer exists, so deletions travel in the manifest. The
+manifest also names the full ordered restore set, which means an incremental archive is
+self-describing: it still restores after a reinstall, a migration, or a database restore that
+wiped the plugin's own options.
+
+If a chain member is missing, the restore is refused **before** anything on the live site is
+touched, naming the files it needs. A half-applied restore is worse than no restore.
+
+### Changed — retention now counts restore points, not files
+
+This is the part that would have quietly destroyed backups, so it is worth being plain about.
+Retention used to delete the oldest ZIPs by count. With chains that rule would eventually delete
+the full backup at the head of a chain and leave a pile of incrementals that restore to nothing,
+while the Backups list still showed the promised number of healthy-looking entries.
+
+Retention now counts *restore points*. A restore point is a full backup plus every incremental
+descended from it, and those age out together. A chain is treated as being as recent as its
+newest member, so a chain still in active use never ages out from underneath you. Keeping 5
+restore points can therefore mean more than 5 files in the folder — that is the intended
+behaviour, and the Schedule screen now says so.
+
+Deleting a backup by hand removes its cached index and its chain record too, and deleting a full
+backup that incrementals depend on now warns exactly how many backups it would strand.
+
+### Changed — the Backups list shows chains
+
+Chain members are labelled *Full* or *Incremental*. An incremental says how many files a restore
+needs; a full says how many incremental backups are built on it. Backups that belong to no chain
+— every manual export, and everything created before this release — are shown exactly as before.
+
+### Unchanged on purpose
+
+- The **Export** button always produces a full, standalone backup. It builds no index and joins
+  no chain, so a backup you take by hand is always a file you can carry anywhere.
+- Manifests for untracked backups are byte-for-byte what they were, so an older SitesSaver
+  reading one sees nothing new.
+- Backups made before 1.4.0 restore through the unchanged full-backup path.
+
+---
+
 ## [1.3.1] — 2026-09-12
 
 Removes a settings panel that should never have been a setting, and syncs the Help page with
