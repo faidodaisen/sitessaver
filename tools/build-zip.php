@@ -34,15 +34,14 @@ if ($header === '' || $header !== $constant) {
 // apart once it has been downloaded twice.
 $out = $root . '/SitesSaver-' . $header . '.zip';
 
-// Everything the distributable must NOT contain.
+// Everything the distributable must NOT contain. Matched by CLASS, not by
+// today's tool list: naming individual editors or utilities means the next
+// one needs another build change, and leaks its name into a public artefact.
 $skip_dirs = [
-    '.git', '.raw', '.idea', '.vscode', '.idx',
-    '.local-metadata', '', 'node_modules', 'storage', 'tests', 'tools',
-    'css-analysis',
+    '.git', 'node_modules', 'storage', 'tests', 'tools', 'css-analysis',
 ];
 $skip_files = [
-    '.gitignore', 'CHANGELOG.md', 'desktop.ini',
-    'Thumbs.db', '.DS_Store',
+    'CHANGELOG.md', 'desktop.ini', 'Thumbs.db',
 ];
 
 // Remove ZIPs from previous builds so the repo never carries two versions of
@@ -72,7 +71,23 @@ foreach ($iter as $path => $info) {
 
     $base = basename($rel);
     if (in_array($base, $skip_files, true)) { continue; }
-    if (str_starts_with($base, 'release-notes-') && str_ends_with($base, '.md')) { continue; }
+
+    // Dotfiles and dot-directories are tooling and local state by definition:
+    // config, caches, editor and local metadata. None of it belongs in a
+    // distributed plugin, and matching the class means new tools need no
+    // build change and never leak their names into a public artefact.
+    //
+    // Tested on EVERY path segment, not just the leaf: basename() of a nested
+    // path under a dot-directory returns the child's name, so a leaf-only
+    // test silently packaged the whole tree.
+    $dotted = false;
+    foreach (explode('/', $rel) as $segment) {
+        if ($segment !== '' && str_starts_with($segment, '.')) { $dotted = true; break; }
+    }
+    if ($dotted) { continue; }
+
+    // Markdown is documentation for the repo, not payload for the install.
+    if (str_ends_with(strtolower($base), '.md')) { continue; }
     if (str_ends_with($base, '.zip')) { continue; }
 
     // Entry names MUST use forward slashes.
@@ -109,6 +124,18 @@ for ($i = 0; $i < $verify->numFiles; $i++) {
     if (str_contains($name, '\\')) { $problems[] = "backslash in entry: {$name}"; }
     if (!str_starts_with($name, $slug . '/')) { $problems[] = "entry outside plugin dir: {$name}"; }
     if ($name === $slug . '/sitessaver.php') { $has_main = true; }
+
+    // Nothing in a public artefact may name the maintainer's local tooling,
+    // and no dev docs ride along. Asserted on the BUILT archive, because the
+    // skip rules above are intent and this is the fact. Every segment is
+    // checked: a leaf-only test passes a nested dot-directory's children.
+    foreach (explode('/', rtrim($name, '/')) as $segment) {
+        if ($segment !== '' && str_starts_with($segment, '.')) {
+            $problems[] = "dotfile in archive: {$name}";
+            break;
+        }
+    }
+    if (str_ends_with(strtolower($name), '.md')) { $problems[] = "markdown in archive: {$name}"; }
 }
 if (!$has_main) { $problems[] = 'main plugin file missing'; }
 $verify->close();

@@ -6,6 +6,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.4.1] — 2026-09-21
+
+Large backups to Google Drive could fail with nothing but *"An error occurred"*. The cause was
+that every export step ran inside a single HTTP request, so on hosts that kill requests after
+60–90 seconds the ZIP or the Drive upload was cut off mid-flight. The gateway answered with an
+HTML error page, the browser could not parse it as a reply, and the export screen reported a
+generic failure — while PHP usually kept running and left a finished multi-gigabyte ZIP on disk
+that was never uploaded.
+
+### Changed — exports run in a background worker
+
+Starting an export now dispatches the work to a detached loopback request on the server and
+returns immediately. The browser only polls short status requests, so no gateway timeout can
+interrupt a backup regardless of site size or transfer duration.
+
+The worker endpoint is authorized by a single-use key stored server-side and deleted on first
+use, not by the session: a detached loopback request carries no auth cookie, so it is registered
+for logged-out AJAX and cannot be replayed.
+
+If the host blocks loopback requests, the export screen falls back to the previous
+browser-driven step runner, which still works for sites small enough to finish inside a request.
+
+### Changed — Google Drive uploads are resumable across requests
+
+The upload is now cut into slices bounded by a wall-clock deadline. Each slice returns the
+resumable session URL and the byte offset Google has confirmed; the caller persists that state
+and continues in a fresh request. An interrupted upload resumes from the confirmed offset
+instead of restarting, and no byte range is ever sent twice.
+
+Google's resumable session URL is pre-authorized, so a long upload can safely outlive the access
+token that started it. A session is opened once per backup, not once per slice.
+
+### Added — liveness reporting and stall detection
+
+Long-running stages report progress as they work, so the progress bar keeps moving through a
+large ZIP or a long upload. Export status now exposes how long it has been since the worker last
+reported in, and the screen reports a process that genuinely died instead of spinning
+indefinitely.
+
+### Fixed — error reporting
+
+- A gateway timeout (502/504), a dropped connection and a genuine failure now produce distinct
+  messages, and when work continues in the background the message says so rather than claiming
+  the backup failed.
+- The result panel no longer displays the hardcoded "Success!" heading above a failure; it reads
+  "Failed" when the operation failed.
+- The Drive upload's progress indicator is no longer discarded when a slice reaches its deadline,
+  so the bar no longer freezes between requests.
+- Re-entering the finalize stage during a resumed upload no longer re-registers the backup in an
+  incremental chain or re-runs temp cleanup.
+
+### Unchanged
+
+Scheduled backups run under WP-Cron, which has no gateway timeout, and were never affected by
+this bug. Their behaviour, and all existing settings, schedules and destinations, are unchanged.
+
+---
+
 ## [1.4.0] — 2026-09-16
 
 Scheduled backups can now archive only what changed since the previous run. On a site with a
