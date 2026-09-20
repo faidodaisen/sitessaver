@@ -343,7 +343,26 @@
                 }
             },
             error: function (xhr, status, error) {
-                if (onError) onError({ message: status === 'timeout' ? 'Server timed out. Processes may still be running in background.' : SS.strings.error });
+                if (!onError) return;
+
+                // A gateway that killed the request answers with an HTML error
+                // page, so jQuery reports a JSON parse failure. Saying "an
+                // error occurred" there is actively misleading: PHP is usually
+                // still working, and the user needs to know the job survived.
+                var msg;
+                if (status === 'timeout') {
+                    msg = 'Server timed out. The process may still be running in the background — reload this page to check.';
+                } else if (xhr.status === 504 || xhr.status === 502 || xhr.status === 524) {
+                    msg = 'The server cut the request short (HTTP ' + xhr.status + '). The backup may still be running in the background — reload this page to check.';
+                } else if (status === 'parsererror') {
+                    msg = 'The server returned an unexpected response. Check the site\'s error log for details.';
+                } else if (xhr.status === 0) {
+                    msg = 'Lost connection to the server. The process may still be running in the background.';
+                } else {
+                    msg = SS.strings.error + (xhr.status ? ' (HTTP ' + xhr.status + ')' : '');
+                }
+
+                onError({ message: msg });
             },
             timeout: 300000 // 5 minutes
         });
@@ -451,6 +470,10 @@
         var $card = $r.find('.ss-result-card');
         $card.removeClass('success error').addClass(isError ? 'error' : 'success');
         $card.find('i').attr('class', isError ? 'ri-error-warning-fill' : 'ri-checkbox-circle-fill');
+        // The heading is markup, not part of the message: leaving it on
+        // "Success!" while showing a failure produced the nonsensical
+        // "Success! / An error occurred." card.
+        $card.find('.sitessaver-result-title').text(isError ? 'Failed' : 'Success!');
         $r.find('.sitessaver-result-text').html(msg);
     }
 
@@ -615,6 +638,30 @@
             var gdriveJob   = res.gdrive_job_id;
             var currentStep = 0;
 
+            // The server spawned a background worker: the browser must NOT
+            // run the steps itself, it just watches. This is what stops a
+            // big backup from dying on a gateway 504 — no request the browser
+            // makes now lasts longer than a status poll.
+            if (res.background) {
+                watchExportProgress({
+                    $form:     $form,
+                    $btn:      $btn,
+                    uid:       uid,
+                    gdriveJob: gdriveJob,
+                    isCancelled: function () { return cancelled; }
+                });
+                return;
+            }
+
+            function finishExport(result) {
+                ssModal.done();
+                setTimeout(function () {
+                    ssModal.close();
+                    showResult($form, buildExportMessage(result), false);
+                    $btn.prop('disabled', false);
+                }, 800);
+            }
+
             function runNextStep() {
                 if (cancelled) {
                     ajax('sitessaver_cancel_export', { uid: uid }, function () {
@@ -627,35 +674,7 @@
 
                 if (currentStep >= steps.length) {
                     ajax('sitessaver_get_export_status', { uid: uid }, function (finalRes) {
-                        ssModal.done();
-                        setTimeout(function () {
-                            ssModal.close();
-                            var result = finalRes.status.result;
-                            var dest   = result.destination || 'local';
-                            var msg    = '';
-
-                            if ((dest === 'local' || dest === 'both') && result.file) {
-                                var dlUrl = SS.ajaxUrl + '?action=sitessaver_download_backup&file=' + encodeURIComponent(result.file) + '&nonce=' + SS.downloadNonce;
-                                msg += SS.strings.done + ' — ' + result.file + ' (' + result.size + ')<br><br>';
-                                msg += '<a href="' + dlUrl + '" class="ss-download-link" target="_blank"><i class="ri-download-2-line"></i> Download backup</a>';
-                            }
-
-                            if ((dest === 'gdrive' || dest === 'both') && result.gdrive) {
-                                if (msg) msg += '<br><br>';
-                                if (result.gdrive.success) {
-                                    msg += '<i class="ri-google-line"></i> ' + (result.gdrive.message || 'Uploaded to Google Drive.');
-                                    if (result.gdrive_folder_url) {
-                                        msg += ' <a href="' + result.gdrive_folder_url + '" target="_blank" rel="noopener"><i class="ri-external-link-line"></i> Open Drive folder</a>';
-                                    }
-                                } else {
-                                    msg += '<span style="color:var(--ss-danger)"><i class="ri-error-warning-line"></i> Google Drive upload failed: ' + (result.gdrive.message || 'Unknown error') + '</span>';
-                                }
-                            }
-
-                            if (!msg) msg = SS.strings.done;
-                            showResult($form, msg, false);
-                            $btn.prop('disabled', false);
-                        }, 800);
+                        finishExport(finalRes.status.result);
                     });
                     return;
                 }
@@ -678,6 +697,13 @@
                     function (stepRes) {
                         stopGdrivePolling();
                         if (stepRes.success) {
+                            // A Drive upload that hit the request deadline is
+                            // NOT finished: re-run the SAME step, which resumes
+                            // from the byte offset the server persisted.
+                            if (stepRes.pending) {
+                                runNextStep();
+                                return;
+                            }
                             currentStep++;
                             runNextStep();
                         } else {
@@ -766,6 +792,132 @@
     function stopPoll(handle) {
         if (handle) clearInterval(handle);
         return null;
+    }
+
+    // Watch a server-side export that is running in a background worker.
+    //
+    // The browser's only job here is to poll: every request it makes is short,
+    // so nothing it does can be killed by a gateway timeout no matter how big
+    // the site is. All progress comes from the status transient the worker
+    // refreshes as it goes.
+    function watchExportProgress(opts) {
+        var $form       = opts.$form;
+        var $btn        = opts.$btn;
+        var uid         = opts.uid;
+        var gdriveJob   = opts.gdriveJob;
+        var isCancelled = opts.isCancelled || function () { return false; };
+        var onDone      = opts.onDone || function () {};
+
+        var poll = setInterval(function () {
+            if (isCancelled()) {
+                clearInterval(poll);
+                ajax('sitessaver_cancel_export', { uid: uid }, function () {
+                    ssModal.close();
+                    showResult($form, 'Export cancelled.', true);
+                    $btn.prop('disabled', false);
+                    onDone();
+                });
+                return;
+            }
+
+            ajax('sitessaver_get_export_status', { uid: uid }, function (s) {
+                var state = (s.status && s.status.status) || '';
+
+                if (state === 'error') {
+                    clearInterval(poll);
+                    ssModal.close();
+                    showResult($form, (s.status && s.status.message) || SS.strings.error, true);
+                    $btn.prop('disabled', false);
+                    onDone();
+                    return;
+                }
+
+                if (state === 'completed') {
+                    clearInterval(poll);
+                    ssModal.done();
+                    setTimeout(function () {
+                        ssModal.close();
+                        showResult($form, buildExportMessage(s.status.result), false);
+                        $btn.prop('disabled', false);
+                        onDone();
+                    }, 800);
+                    return;
+                }
+
+                // The worker refreshes its heartbeat at least every 10s, even
+                // mid-zip. A long silence means the process is gone — report
+                // it instead of spinning a progress bar forever.
+                if (s.stalled) {
+                    clearInterval(poll);
+                    ssModal.close();
+                    showResult($form,
+                        'The backup process stopped unexpectedly (no progress for ' +
+                        s.seconds_since_update + 's). Please try again.', true);
+                    $btn.prop('disabled', false);
+                    onDone();
+                    return;
+                }
+
+                // During the Drive upload the byte-level job transient is a
+                // far better progress signal than the coarse step table.
+                if (s.poll === 'gdrive') {
+                    ssModal.disableCancel('Uploading to Drive…');
+                    ajax('sitessaver_get_gdrive_upload_status', { job_id: gdriveJob }, function (jobRes) {
+                        var uploaded = Number(jobRes.progress);
+                        var from     = s.step_from || 0;
+                        var span     = Math.max(0, s.step_pct - from);
+                        var overall  = isFinite(uploaded) ? Math.round(from + span * (uploaded / 100)) : from;
+                        var label    = (isFinite(uploaded) && uploaded > 0 && uploaded < 100)
+                            ? 'Uploading to Google Drive... (' + uploaded + '%)'
+                            : s.step_label;
+                        ssModal.setProgress(Math.min(overall, s.step_pct), label);
+                    }, function () {
+                        ssModal.setProgress(s.step_from || 0, s.step_label);
+                    });
+                    return;
+                }
+
+                var label = s.step_label;
+                if (s.detail && s.detail.done) {
+                    label += ' (' + s.detail.done + ' files)';
+                }
+                ssModal.setProgress(s.step_pct, label);
+            }, function () {
+                // One failed poll is not fatal — the worker keeps running
+                // regardless. Try again on the next tick.
+            });
+        }, 2000);
+
+        return poll;
+    }
+
+    // Result text for a finished export. Shared by the watcher, the legacy
+    // step-runner and the resume flow so all three report identically.
+    function buildExportMessage(result) {
+        if (!result) return SS.strings.done;
+
+        var dest = result.destination || 'local';
+        var msg  = '';
+
+        if ((dest === 'local' || dest === 'both') && result.file) {
+            var dlUrl = SS.ajaxUrl + '?action=sitessaver_download_backup&file=' + encodeURIComponent(result.file) + '&nonce=' + SS.downloadNonce;
+            msg += SS.strings.done + ' — ' + result.file + ' (' + result.size + ')<br><br>';
+            msg += '<a href="' + dlUrl + '" class="ss-download-link" target="_blank"><i class="ri-download-2-line"></i> Download backup</a>';
+        }
+
+        if ((dest === 'gdrive' || dest === 'both') && result.gdrive) {
+            if (msg) msg += '<br><br>';
+            if (result.gdrive.success) {
+                msg += '<i class="ri-google-line"></i> ' + (result.gdrive.message || 'Uploaded to Google Drive.');
+                if (result.gdrive_folder_url) {
+                    msg += ' <a href="' + result.gdrive_folder_url + '" target="_blank" rel="noopener"><i class="ri-external-link-line"></i> Open Drive folder</a>';
+                }
+            } else {
+                msg += '<span style="color:var(--ss-danger)"><i class="ri-error-warning-line"></i> Google Drive upload failed: ' + (result.gdrive.message || 'Unknown error') + '</span>';
+            }
+        }
+
+        return msg || SS.strings.done;
     }
 
 
@@ -1598,6 +1750,29 @@
             }
         });
 
+        // Restart the server-side worker and go back to watching. Driving the
+        // remaining steps from the browser is exactly what fails on a large
+        // site: the 'zip' or Drive-upload step outlives the gateway timeout
+        // and the resume dies the same way the original export did.
+        ajax('sitessaver_resume_export', { uid: uid }, function (res) {
+            if (res.background) {
+                watchExportProgress({
+                    $form:       $form,
+                    $btn:        $btn,
+                    uid:         uid,
+                    gdriveJob:   gdriveJob,
+                    isCancelled: function () { return cancelled; },
+                    onDone:      function () { $('.ss-resume-banner').remove(); }
+                });
+                return;
+            }
+
+            // Host blocks loopback requests — fall back to the step runner.
+            runNextStep();
+        }, function () {
+            runNextStep();
+        });
+
         function runNextStep() {
             if (cancelled) {
                 ajax('sitessaver_cancel_export', { uid: uid }, function () {
@@ -1614,16 +1789,7 @@
                     ssModal.done();
                     setTimeout(function () {
                         ssModal.close();
-                        var result = (finalRes.status && finalRes.status.result) || {};
-                        var msg = '';
-                        if (result.file) {
-                            var dlUrl = SS.ajaxUrl + '?action=sitessaver_download_backup&file=' + encodeURIComponent(result.file) + '&nonce=' + SS.downloadNonce;
-                            msg = SS.strings.done + ' — ' + result.file + ' (' + result.size + ') <br><br>';
-                            msg += '<a href="' + dlUrl + '" class="ss-download-link" target="_blank"><i class="ri-download-2-line"></i> Click here to download your backup</a>';
-                        } else {
-                            msg = SS.strings.done;
-                        }
-                        showResult($form, msg, false);
+                        showResult($form, buildExportMessage((finalRes.status && finalRes.status.result) || {}), false);
                         $('.ss-resume-banner').remove();
                         $btn.prop('disabled', false);
                     }, 800);
@@ -1644,6 +1810,12 @@
             ajax('sitessaver_export_step', { uid: uid, step_index: currentStep }, function (stepRes) {
                 gdrivePoll = stopPoll(gdrivePoll);
                 if (stepRes.success) {
+                    // Drive upload sliced by the request deadline — repeat the
+                    // same step, which resumes from the stored byte offset.
+                    if (stepRes.pending) {
+                        runNextStep();
+                        return;
+                    }
                     currentStep++;
                     runNextStep();
                 } else {
@@ -1658,8 +1830,6 @@
                 $btn.prop('disabled', false);
             });
         }
-
-        runNextStep();
     }
 
     function checkActiveExport() {

@@ -21,6 +21,8 @@ final class Ajax {
         $actions = [
             'sitessaver_export'         => 'handle_export',
             'sitessaver_export_step'    => 'handle_export_step',
+            'sitessaver_export_work'    => 'handle_export_work',
+            'sitessaver_resume_export'  => 'handle_resume_export',
             'sitessaver_get_export_status' => 'handle_get_export_status',
             'sitessaver_cancel_export'     => 'handle_cancel_export',
             'sitessaver_import'         => 'handle_import',
@@ -53,6 +55,14 @@ final class Ajax {
         foreach ($actions as $action => $method) {
             add_action("wp_ajax_{$action}", [$this, $method]);
         }
+
+        // The background worker is reached by a detached loopback request that
+        // carries no auth cookie, so it can only ever arrive as "logged out".
+        // Registering it for wp_ajax_ alone made every spawn 400 and silently
+        // fall back to browser-driven steps — the exact thing the worker
+        // exists to avoid. Authorization is the single-use key checked inside
+        // handle_export_work(), not the session.
+        add_action('wp_ajax_nopriv_sitessaver_export_work', [$this, 'handle_export_work']);
     }
 
     /**
@@ -83,11 +93,83 @@ final class Ajax {
         // table has to be built for THIS export's destination.
         $steps  = Export::get_steps($destination);
 
+        // Hand the actual work to a detached background request and answer the
+        // browser immediately. Running the steps inline is what produced the
+        // bogus "An error occurred": a big site blows past the gateway's
+        // request timeout, nginx replies 504 with an HTML body, and the client
+        // — expecting JSON — falls back to a generic error while PHP is still
+        // happily working. The browser now only ever polls for status, so no
+        // single request has to outlive the gateway's patience.
+        $spawned = $this->spawn_export_worker($status['uid']);
+
         wp_send_json_success([
             'status'        => $status,
             'steps'         => $steps,
             'gdrive_job_id' => Export::gdrive_job_id($status['uid']),
+            // False means the loopback request could not be made (some hosts
+            // block self-requests); the client then drives the steps itself.
+            'background'    => $spawned,
         ]);
+    }
+
+    /**
+     * Fire a non-blocking loopback request that runs the export to completion.
+     *
+     * `blocking => false` makes WP write the request and return without
+     * reading the response, so this call costs milliseconds regardless of how
+     * long the backup takes. The worker authenticates with a single-use key
+     * rather than the user's cookies, because the detached request carries no
+     * session.
+     */
+    private function spawn_export_worker(string $uid): bool {
+        $key = wp_generate_password(32, false, false);
+        set_transient('sitessaver_worker_' . $uid, $key, HOUR_IN_SECONDS);
+
+        $response = wp_remote_post(admin_url('admin-ajax.php'), [
+            'timeout'   => 0.01,
+            'blocking'  => false,
+            'sslverify' => false,
+            'body'      => [
+                'action' => 'sitessaver_export_work',
+                'uid'    => $uid,
+                'key'    => $key,
+            ],
+        ]);
+
+        return !is_wp_error($response);
+    }
+
+    /**
+     * Background worker: runs every remaining export step in this request.
+     *
+     * No nonce and no capability check — a detached loopback request has no
+     * cookies, so neither would pass. Authorization is the single-use key
+     * handed out by handle_export() and stored server-side; it is deleted the
+     * moment it is used, so the endpoint cannot be replayed.
+     */
+    public function handle_export_work(): void {
+        $uid = sanitize_text_field(wp_unslash($_POST['uid'] ?? ''));
+        $key = sanitize_text_field(wp_unslash($_POST['key'] ?? ''));
+
+        $expected = get_transient('sitessaver_worker_' . $uid);
+        if ($uid === '' || !is_string($expected) || !hash_equals($expected, $key)) {
+            wp_send_json_error(['message' => __('Invalid worker key.', 'sitessaver')], 403);
+        }
+
+        delete_transient('sitessaver_worker_' . $uid);
+
+        // The caller already hung up. Keep running anyway, and do not let a
+        // half-written response abort the backup.
+        @ignore_user_abort(true);
+        @set_time_limit(0);
+
+        $result = Export::work($uid);
+
+        if (empty($result['success'])) {
+            wp_send_json_error(['message' => $result['message'] ?? '']);
+        }
+
+        wp_send_json_success(['message' => 'ok']);
     }
 
     /**
@@ -111,6 +193,32 @@ final class Ajax {
     }
 
     /**
+     * Resume an interrupted export by spawning a fresh background worker.
+     *
+     * Used by the "Resume" banner. The worker reads the persisted step_index
+     * (and, mid-upload, the Drive byte offset), so it continues rather than
+     * starting over.
+     */
+    public function handle_resume_export(): void {
+        sitessaver_verify_ajax();
+
+        $uid = sanitize_text_field(wp_unslash($_POST['uid'] ?? ''));
+        if ($uid === '') {
+            $uid = (string) (get_transient('sitessaver_active_export_id') ?: '');
+        }
+
+        $status = $uid !== '' ? Export::get_status($uid) : [];
+        if (empty($status) || ($status['status'] ?? '') !== 'running') {
+            wp_send_json_error(['message' => __('No active export found.', 'sitessaver')]);
+        }
+
+        wp_send_json_success([
+            'background' => $this->spawn_export_worker($uid),
+            'uid'        => $uid,
+        ]);
+    }
+
+    /**
      * Get the current status of the active export.
      */
     public function handle_get_export_status(): void {
@@ -129,10 +237,29 @@ final class Ajax {
         $destination = (string) ($status['options']['export_destination'] ?? 'local');
         $steps       = Export::get_steps($destination);
 
+        // Everything the client needs to render progress without running the
+        // steps itself: which step the worker is on, how long since it last
+        // reported in, and whether it looks dead.
+        $index   = (int) ($status['step_index'] ?? 0);
+        $current = $steps[$index] ?? null;
+        $since   = time() - (int) ($status['last_update'] ?? $status['start_time'] ?? time());
+
         wp_send_json_success([
             'status'        => $status,
             'steps'         => $steps,
             'gdrive_job_id' => Export::gdrive_job_id($uid),
+            'step_index'    => $index,
+            'step_id'       => $current['id'] ?? '',
+            'step_label'    => $current['label'] ?? '',
+            'step_pct'      => (int) ($current['pct'] ?? 0),
+            'step_from'     => (int) ($current['from'] ?? 0),
+            'poll'          => $current['poll'] ?? '',
+            'detail'        => $status['detail'] ?? null,
+            'seconds_since_update' => $since,
+            // The worker refreshes last_update at least every 10s from inside
+            // long loops, so a long silence means the process is gone (OOM,
+            // host kill) rather than merely busy.
+            'stalled'       => ($status['status'] ?? '') === 'running' && $since > Export::STALL_SECONDS,
         ]);
     }
 

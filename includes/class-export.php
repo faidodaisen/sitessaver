@@ -74,6 +74,120 @@ final class Export {
         return 'exp_gdrive_' . $uid;
     }
 
+    // ---------------------------------------------------------------
+    // Heartbeat
+    //
+    // A single step (copying 35k uploads, zipping 5 GB) runs for minutes
+    // inside one PHP process. Nothing observing it — the browser poll, the
+    // stale-worker watchdog — can tell "still working" from "died" unless the
+    // step says so while it runs. These ticks refresh the status transient's
+    // last_update from inside the long loops. Throttled, so a tick in a tight
+    // per-file loop costs effectively nothing.
+    // ---------------------------------------------------------------
+
+    /** Seconds of silence after which a running export is presumed dead. */
+    public const STALL_SECONDS = 300;
+
+    /** Export uid currently being worked on, for tick() to address. */
+    private static string $tick_uid = '';
+
+    /** Unix time of the last persisted tick. */
+    private static int $tick_last = 0;
+
+    /** Seconds between persisted ticks. */
+    private const TICK_INTERVAL = 10;
+
+    public static function begin_ticks(string $uid): void {
+        self::$tick_uid  = $uid;
+        self::$tick_last = 0;
+    }
+
+    public static function end_ticks(): void {
+        self::$tick_uid  = '';
+        self::$tick_last = 0;
+    }
+
+    /**
+     * Report liveness from inside a long-running step.
+     *
+     * @param string $note  Short label, e.g. 'zip'.
+     * @param int    $done  Items processed so far (files copied/added).
+     */
+    public static function tick(string $note = '', int $done = 0): void {
+        if (self::$tick_uid === '') {
+            return;
+        }
+
+        $now = time();
+        if ($now - self::$tick_last < self::TICK_INTERVAL) {
+            return;
+        }
+        self::$tick_last = $now;
+
+        $status = self::get_status(self::$tick_uid);
+        if (empty($status)) {
+            return;
+        }
+
+        $status['last_update'] = $now;
+        $status['detail']      = ['note' => $note, 'done' => $done];
+        self::save_status(self::$tick_uid, $status);
+    }
+
+    /**
+     * Run an export to completion in the CURRENT request.
+     *
+     * Called by the background worker (see Ajax::handle_export_work). The
+     * browser is not waiting on this request, so a step may take as long as it
+     * needs; progress reaches the UI through the status transient instead of
+     * through this response. If the process is killed part-way, the persisted
+     * step_index (and, inside finalize, the Drive byte offset) let a later
+     * worker pick up where this one stopped.
+     *
+     * @return array{success: bool, message?: string}
+     */
+    public static function work(string $uid): array {
+        @set_time_limit(0);
+        @ignore_user_abort(true);
+        wp_raise_memory_limit('admin');
+
+        $status = self::get_status($uid);
+        if (empty($status)) {
+            return ['success' => false, 'message' => __('No active export found for this ID.', 'sitessaver')];
+        }
+
+        $steps = self::get_steps((string) ($status['options']['export_destination'] ?? 'local'));
+
+        // Nothing is waiting on this response, so steps may run to completion
+        // rather than slicing themselves against a gateway timeout.
+        self::set_unbounded(true);
+        self::begin_ticks($uid);
+
+        try {
+            while (true) {
+                $status = self::get_status($uid);
+
+                if (empty($status) || ($status['status'] ?? '') !== 'running') {
+                    // Completed, cancelled, or errored — either way we are done.
+                    return ['success' => true];
+                }
+
+                $index = (int) ($status['step_index'] ?? 0);
+                if (!isset($steps[$index])) {
+                    return ['success' => true];
+                }
+
+                $res = self::run_step($uid, $index);
+                if (empty($res['success'])) {
+                    return ['success' => false, 'message' => $res['message'] ?? ''];
+                }
+            }
+        } finally {
+            self::set_unbounded(false);
+            self::end_ticks();
+        }
+    }
+
     /**
      * Start a new export process.
      */
@@ -110,6 +224,86 @@ final class Export {
         set_transient('sitessaver_active_export_id', $uid, HOUR_IN_SECONDS);
 
         return $status;
+    }
+
+    /**
+     * Upload the finished archive to Drive, resuming across requests.
+     *
+     * The Drive transfer state (resumable session URL + confirmed byte offset)
+     * lives in the export status, so it survives the request that started it.
+     * When a deadline is in force and the slice expires, this returns
+     * `pending` and the caller re-enters finalize later; with no deadline (the
+     * background worker) it runs the upload to completion in one go.
+     *
+     * @param array<string, mixed> $status
+     * @return array{success?: bool, message?: string, pending?: bool, progress?: int}
+     */
+    private static function upload_to_drive(string $uid, array $status, string $zip_path, string $job_id): array {
+        $state    = is_array($status['gdrive_state'] ?? null) ? $status['gdrive_state'] : [];
+        $deadline = self::request_deadline();
+
+        $res = GDrive::upload_step($zip_path, (string) $status['backup_name'], $job_id, $state, $deadline);
+
+        if ($res['status'] === 'incomplete') {
+            // Persist the offset so the next request continues instead of
+            // restarting a multi-gigabyte upload from byte zero.
+            $fresh = self::get_status($uid);
+            if (!empty($fresh)) {
+                $fresh['gdrive_state'] = $res['state'];
+                $fresh['last_update']  = time();
+                self::save_status($uid, $fresh);
+            }
+
+            return ['pending' => true, 'progress' => (int) $res['progress']];
+        }
+
+        // Terminal outcome — drop the carried state.
+        $fresh = self::get_status($uid);
+        if (!empty($fresh) && !empty($fresh['gdrive_state'])) {
+            unset($fresh['gdrive_state']);
+            self::save_status($uid, $fresh);
+        }
+
+        if ($res['status'] === 'complete') {
+            return ['success' => true, 'message' => $res['message']];
+        }
+
+        return ['success' => false, 'message' => $res['message']];
+    }
+
+    /** Set while a caller (the background worker) may run without a deadline. */
+    private static bool $unbounded = false;
+
+    public static function set_unbounded(bool $on): void {
+        self::$unbounded = $on;
+    }
+
+    /**
+     * Wall-clock time at which the current request must stop working.
+     *
+     * Null when nothing is timing us out (WP-Cron, WP-CLI, or the background
+     * worker, which has already been told the client is gone). Otherwise a
+     * timestamp comfortably inside both PHP's max_execution_time and the
+     * typical nginx/Apache gateway timeout, so we return a real JSON response
+     * instead of letting the gateway replace it with a 504 HTML page.
+     */
+    private static function request_deadline(): ?int {
+        if (self::$unbounded) {
+            return null;
+        }
+
+        if ((defined('DOING_CRON') && DOING_CRON) || (defined('WP_CLI') && WP_CLI)) {
+            return null;
+        }
+
+        $limit = (int) ini_get('max_execution_time');
+
+        // 0 / -1 means "no PHP limit", but the GATEWAY still has one and it is
+        // the one that produces the 504. Assume a conservative budget.
+        $budget = ($limit > 0) ? (int) floor($limit * 0.7) : 45;
+        $budget = max(20, min(45, $budget));
+
+        return time() + $budget;
     }
 
     /**
@@ -150,6 +344,9 @@ final class Export {
         $options  = $status['options'];
         $temp_dir = $status['temp_dir'];
         $plan     = is_array($status['plan'] ?? null) ? $status['plan'] : ['type' => 'full'];
+
+        // Long loops inside this step report liveness through tick().
+        self::begin_ticks($uid);
 
         try {
             switch ($step['id']) {
@@ -265,7 +462,12 @@ final class Export {
                     // local disk even for a gdrive-only destination: it is
                     // kilobytes, and without it the next run has no baseline
                     // to diff against and silently degrades to a full backup.
-                    if (!empty($options['track_chain'])) {
+                    //
+                    // Guarded by `finalized`: a Drive upload that needs more
+                    // than one request re-enters finalize, and registering the
+                    // same backup in the chain on every re-entry would corrupt
+                    // the chain with duplicate members.
+                    if (!empty($options['track_chain']) && empty($status['finalized'])) {
                         $sealed = $temp_dir . '/' . Index::ARCHIVE_ENTRY;
                         if (is_readable($sealed)) {
                             $payload = file_get_contents($sealed);
@@ -277,8 +479,13 @@ final class Export {
                         Index::record($plan, $status['backup_name'], $zip_size);
                     }
 
-                    // Isolated cleanup — ONLY delete this export's temp dir.
-                    self::remove_directory($temp_dir);
+                    if (empty($status['finalized'])) {
+                        // Isolated cleanup — ONLY delete this export's temp dir.
+                        self::remove_directory($temp_dir);
+
+                        $status['finalized'] = true;
+                        self::save_status($uid, $status);
+                    }
 
                     $result = [
                         'success'     => true,
@@ -293,7 +500,21 @@ final class Export {
                     // Upload to Google Drive if requested.
                     if (in_array($destination, ['gdrive', 'both'], true)) {
                         $job_id        = self::gdrive_job_id($uid);
-                        $gdrive_result = GDrive::upload($zip_path, $status['backup_name'], $job_id);
+                        $gdrive_result = self::upload_to_drive($uid, $status, $zip_path, $job_id);
+
+                        // The slice ran out of time: the export is NOT finished
+                        // and MUST NOT be marked completed. Report progress and
+                        // leave step_index on finalize so the next request
+                        // resumes this same upload from its byte offset.
+                        if (($gdrive_result['pending'] ?? false) === true) {
+                            return [
+                                'success'  => true,
+                                'step'     => 'finalize',
+                                'pending'  => true,
+                                'progress' => (int) ($gdrive_result['progress'] ?? 0),
+                            ];
+                        }
+
                         $result['gdrive'] = $gdrive_result;
 
                         // If destination is gdrive-only and upload failed, surface the error.
@@ -598,6 +819,8 @@ final class Export {
             \RecursiveIteratorIterator::SELF_FIRST
         );
 
+        $copied = 0;
+
         foreach ($files as $file) {
             $relative  = str_replace($source, '', $file->getPathname());
             $relative  = ltrim(str_replace(['\\', '/'], '/', $relative), '/');
@@ -658,6 +881,7 @@ final class Export {
                     wp_mkdir_p($parent);
                 }
                 @copy($file->getPathname(), $dest_path);
+                self::tick('copy', ++$copied);
             }
         }
     }

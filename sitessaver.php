@@ -3,7 +3,7 @@
  * Plugin Name: SitesSaver
  * Plugin URI:  https://github.com/faidodaisen/sitessaver
  * Description: Full site backup & migration — export, import, schedule, Google Drive. No restrictions.
- * Version:     1.4.0
+ * Version:     1.4.1
  * Author:      SitesSaver
  * Author URI:  https://github.com/faidodaisen
  * License:     GPL-2.0-or-later

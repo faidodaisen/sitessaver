@@ -55,7 +55,7 @@
                 <div class="ss-result-card">
                     <i></i>
                     <div>
-                        <strong style="display:block;"></strong>
+                        <strong style="display:block;" class="sitessaver-result-title"></strong>
                         <span class="sitessaver-result-text"></span>
                     </div>
                 </div>

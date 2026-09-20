@@ -237,21 +237,92 @@ final class GDrive {
      * Upload a file to Google Drive (direct to Google API).
      */
     public static function upload(string $file_path, string $filename, string $job_id = ''): array {
+        $state = [];
+
+        // No deadline: keep going until the transfer resolves one way or the
+        // other. Used by WP-Cron / CLI, where nothing is waiting on an HTTP
+        // response and there is no gateway to time the request out.
+        while (true) {
+            $res = self::upload_step($file_path, $filename, $job_id, $state, null);
+
+            if ($res['status'] === 'complete') {
+                return ['success' => true, 'message' => __('Backup uploaded to Google Drive.', 'sitessaver')];
+            }
+
+            if ($res['status'] === 'failed') {
+                return ['success' => false, 'message' => $res['message']];
+            }
+
+            // Defensive: upload_step() only reports 'incomplete' when a deadline
+            // was given, but if that ever changes we continue from the state
+            // rather than silently reporting success.
+            $state = $res['state'];
+        }
+    }
+
+    /**
+     * One slice of a resumable Drive upload, bounded by a wall-clock deadline.
+     *
+     * A 5 GB backup cannot be pushed to Drive inside a single HTTP request on a
+     * host that kills requests at 60-90s: the gateway answers 504, the browser
+     * gets HTML instead of JSON and the whole export reports a meaningless
+     * error even though PHP was still working. So the transfer is cut into
+     * slices: each call uploads chunks until $deadline passes, then returns the
+     * resumable session URL and confirmed byte offset. The caller persists that
+     * state and calls again in a FRESH request, as many times as needed.
+     *
+     * The session URL is pre-authorized by Google, so a slice never needs the
+     * access token again — an upload may safely outlive the token's lifetime.
+     *
+     * @param array{session_url?: string, offset?: int, file_size?: int, stalls?: int} $state
+     *        Empty on the first call; whatever the previous call returned after that.
+     * @param int|null $deadline Unix timestamp to stop at, or null for unbounded.
+     *
+     * @return array{status: 'complete'|'incomplete'|'failed', state: array, message: string, progress: int}
+     */
+    public static function upload_step(string $file_path, string $filename, string $job_id, array $state, ?int $deadline): array {
         @set_time_limit(0);
         wp_raise_memory_limit('admin');
 
+        $fail = static function (string $message): array {
+            return ['status' => 'failed', 'state' => [], 'message' => $message, 'progress' => 0];
+        };
+
+        $file_size = (int) @filesize($file_path);
+        if (!$file_size) {
+            return $fail(__('Cannot determine file size.', 'sitessaver'));
+        }
+
+        $session_url = (string) ($state['session_url'] ?? '');
+        $offset      = (int) ($state['offset'] ?? 0);
+        $stalls      = (int) ($state['stalls'] ?? 0);
+
+        if ($session_url === '') {
+            $started = self::begin_resumable_session($file_path, $filename, $job_id, $file_size);
+            if (!empty($started['message'])) {
+                return $fail($started['message']);
+            }
+            $session_url = $started['session_url'];
+            $offset      = 0;
+            $stalls      = 0;
+        }
+
+        return self::pump_resumable_session($file_path, $job_id, $session_url, $offset, $stalls, $file_size, $deadline);
+    }
+
+    /**
+     * Open a resumable upload session (token, folder, de-dupe, initiate).
+     *
+     * @return array{session_url: string, message: string}
+     */
+    private static function begin_resumable_session(string $file_path, string $filename, string $job_id, int $file_size): array {
         $token = self::get_token();
         if ($token === null) {
-            return ['success' => false, 'message' => __('Google Drive not connected.', 'sitessaver')];
+            return ['session_url' => '', 'message' => __('Google Drive not connected.', 'sitessaver')];
         }
 
         if (!empty($job_id)) {
             set_transient('sitessaver_gdrive_job_' . $job_id, ['progress' => 0, 'status' => 'starting'], HOUR_IN_SECONDS);
-        }
-
-        $file_size = @filesize($file_path);
-        if (!$file_size) {
-            return ['success' => false, 'message' => __('Cannot determine file size.', 'sitessaver')];
         }
 
         $metadata = ['name' => $filename];
@@ -302,44 +373,96 @@ final class GDrive {
         ]);
 
         if (is_wp_error($response)) {
-            return ['success' => false, 'message' => $response->get_error_message()];
+            return ['session_url' => '', 'message' => $response->get_error_message()];
         }
 
         $status_code = wp_remote_retrieve_response_code($response);
         if ($status_code !== 200) {
-            return ['success' => false, 'message' => __('Failed to initiate upload session.', 'sitessaver')];
+            return ['session_url' => '', 'message' => __('Failed to initiate upload session.', 'sitessaver')];
         }
 
         $session_url = wp_remote_retrieve_header($response, 'location');
         if (empty($session_url)) {
-            return ['success' => false, 'message' => __('No upload session URL received.', 'sitessaver')];
+            return ['session_url' => '', 'message' => __('No upload session URL received.', 'sitessaver')];
         }
 
+        return ['session_url' => (string) $session_url, 'message' => ''];
+    }
+
+    /**
+     * Push chunks into an open resumable session until it completes, fails, or
+     * the deadline passes.
+     *
+     * @return array{status: 'complete'|'incomplete'|'failed', state: array, message: string, progress: int}
+     */
+    private static function pump_resumable_session(
+        string $file_path,
+        string $job_id,
+        string $session_url,
+        int $offset,
+        int $stalls,
+        int $file_size,
+        ?int $deadline
+    ): array {
         // 2. Upload in chunks with per-chunk retry + session resume.
         $handle = fopen($file_path, 'rb');
         if (!$handle) {
-            return ['success' => false, 'message' => __('Cannot open backup file for reading.', 'sitessaver')];
+            return [
+                'status'   => 'failed',
+                'state'    => [],
+                'message'  => __('Cannot open backup file for reading.', 'sitessaver'),
+                'progress' => 0,
+            ];
         }
 
         $chunk_size = self::resumable_chunk_size();
-        $offset     = 0;
         $completed  = false;
 
         // Guard against a session that keeps answering 308 without advancing.
         // Without this the while-loop could spin forever against a misbehaving
         // endpoint, pinning CPU until the request is killed.
-        $stalled_rounds = 0;
+        $stalled_rounds = $stalls;
         $max_stalls     = 5;
+
+        $pct = static function (int $done) use ($file_size): int {
+            return min(99, max(0, (int) round(($done / max(1, $file_size)) * 100)));
+        };
+
+        $carry = function (int $at, int $stalled) use ($session_url, $file_size, $pct): array {
+            return [
+                'status'  => 'incomplete',
+                'state'   => [
+                    'session_url' => $session_url,
+                    'offset'      => $at,
+                    'file_size'   => $file_size,
+                    'stalls'      => $stalled,
+                ],
+                'message'  => '',
+                'progress' => $pct($at),
+            ];
+        };
+
+        $fail = static function (string $message): array {
+            return ['status' => 'failed', 'state' => [], 'message' => $message, 'progress' => 0];
+        };
 
         try {
             while ($offset < $file_size) {
+                // Hand control back to the caller BEFORE starting a chunk we
+                // may not be able to finish. The bytes already confirmed by
+                // Google are in $offset, so the next request resumes exactly
+                // here — nothing is re-sent and nothing is lost.
+                if ($deadline !== null && time() >= $deadline) {
+                    return $carry($offset, $stalled_rounds);
+                }
+
                 if (fseek($handle, $offset) !== 0) {
-                    return ['success' => false, 'message' => __('Error seeking backup file.', 'sitessaver')];
+                    return $fail(__('Error seeking backup file.', 'sitessaver'));
                 }
 
                 $data = fread($handle, $chunk_size);
                 if ($data === false) {
-                    return ['success' => false, 'message' => __('Error reading backup file.', 'sitessaver')];
+                    return $fail(__('Error reading backup file.', 'sitessaver'));
                 }
 
                 $current_size = strlen($data);
@@ -370,32 +493,35 @@ final class GDrive {
                     if ($offset <= $previous) {
                         // No forward progress at all — bail out instead of spinning.
                         if (++$stalled_rounds >= $max_stalls) {
-                            return [
-                                'success' => false,
-                                'message' => __('Upload stalled: Google Drive stopped accepting new bytes. Please retry.', 'sitessaver'),
-                            ];
+                            return $fail(__('Upload stalled: Google Drive stopped accepting new bytes. Please retry.', 'sitessaver'));
                         }
                     } else {
                         $stalled_rounds = 0;
                     }
 
                     if (!empty($job_id)) {
-                        $pct = (int) round(($offset / $file_size) * 100);
                         set_transient(
                             'sitessaver_gdrive_job_' . $job_id,
-                            ['progress' => min(99, max(0, $pct)), 'status' => 'uploading'],
+                            ['progress' => $pct($offset), 'status' => 'uploading'],
                             HOUR_IN_SECONDS
                         );
+                    }
+
+                    // In worker mode this loop runs unbounded for minutes, so
+                    // without a heartbeat here the export watchdog would see a
+                    // long silence and call a perfectly healthy upload dead.
+                    if (class_exists(Export::class)) {
+                        Export::tick('gdrive', $pct($offset));
                     }
                     continue;
                 }
 
                 // status === 'failed'
-                return ['success' => false, 'message' => $result['message']];
+                return $fail($result['message']);
             }
 
             if (!$completed && $offset < $file_size) {
-                return ['success' => false, 'message' => __('Upload ended before all bytes were sent.', 'sitessaver')];
+                return $fail(__('Upload ended before all bytes were sent.', 'sitessaver'));
             }
 
             if (!empty($job_id)) {
@@ -406,11 +532,20 @@ final class GDrive {
                 );
             }
 
-            return ['success' => true, 'message' => __('Backup uploaded to Google Drive.', 'sitessaver')];
+            return [
+                'status'   => 'complete',
+                'state'    => [],
+                'message'  => __('Backup uploaded to Google Drive.', 'sitessaver'),
+                'progress' => 100,
+            ];
 
         } finally {
             fclose($handle);
-            if (!empty($job_id) && !$completed && $offset < $file_size) {
+            // A slice that ran out of time is NOT a dead job — its progress
+            // transient must survive so the browser keeps seeing the bar move
+            // across requests. Only clear it when the upload really died.
+            $expired = ($deadline !== null && time() >= $deadline);
+            if (!empty($job_id) && !$completed && $offset < $file_size && !$expired) {
                 delete_transient('sitessaver_gdrive_job_' . $job_id);
             }
         }

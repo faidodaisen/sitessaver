@@ -1,25 +1,24 @@
 
 # Dev files & local overrides
-# IDE
+# IDE / editor
 # Node
 # OS files
 *.swo
 *.swp
 *.zip
 .DS_Store
-/
-
-
 .idea/
-
-
 .idx/
-.local-metadata/
-.raw/
 .vscode/
 Thumbs.db
 desktop.ini
 node_modules/
+
+# Local scratch and generated metadata.
+.[a-z]*-local/
+.local-metadata/
+.raw/
+/
 
 # Development-only, kept out of the public repo.
 # Present on the maintainer's machine, never shipped and never published.
@@ -27,4 +26,3 @@ tests/
 release-notes-v1.1.*.md
 release-notes-v1.2.*.md
 release-notes-v1.3.0.md
-

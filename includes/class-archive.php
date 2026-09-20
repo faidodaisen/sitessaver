@@ -48,6 +48,7 @@ final class Archive {
         // only discovers it during a restore, which is the worst possible
         // moment.
         $failed = 0;
+        $added  = 0;
 
         foreach ($files as $file) {
             $filepath     = $file->getPathname();
@@ -79,6 +80,15 @@ final class Archive {
                     if ($failed <= 50) {
                         error_log('[SitesSaver] Archive: addFile failed — ' . $relative);
                     }
+                }
+
+                // Archiving several gigabytes takes minutes. Without a
+                // liveness signal the watchdog cannot distinguish this from a
+                // worker that died mid-zip, and would restart the export.
+                // Guarded: Archive is also used standalone (tests, restore
+                // tooling) where the Export engine is not loaded.
+                if (class_exists(Export::class)) {
+                    Export::tick('zip', ++$added);
                 }
             }
         }

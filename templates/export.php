@@ -93,7 +93,7 @@
                     <div class="ss-result-card success">
                         <i class="ri-checkbox-circle-fill"></i>
                         <div>
-                            <strong style="display:block;"><?php esc_html_e('Success!', 'sitessaver'); ?></strong>
+                            <strong style="display:block;" class="sitessaver-result-title"><?php esc_html_e('Success!', 'sitessaver'); ?></strong>
                             <span class="sitessaver-result-text"></span>
                         </div>
                     </div>
