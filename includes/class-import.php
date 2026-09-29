@@ -365,7 +365,14 @@ final class Import {
                 $old_url = $manifest['home_url'] ?? '';
                 $new_url = home_url();
 
-                if (!Database::import($db_file, $old_url, $new_url)) {
+                // Source table prefix: from the manifest (1.2+), else sniffed
+                // from the dump itself so older backups migrate too.
+                $old_prefix = (string) ($manifest['db_prefix'] ?? '');
+                if ($old_prefix === '') {
+                    $old_prefix = Database::detect_dump_prefix($db_file);
+                }
+
+                if (!Database::import($db_file, $old_url, $new_url, $old_prefix)) {
                     throw new \RuntimeException(__('Failed to import database.', 'sitessaver'));
                 }
             }

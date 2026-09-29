@@ -12,6 +12,15 @@ defined('ABSPATH') || exit;
 final class Database {
 
     /**
+     * Source/target table prefixes for the current import (empty = no rewrite).
+     * Held statically so execute_statement() can see them without widening
+     * its already long signature.
+     */
+    private static string $prefix_from = '';
+    private static string $prefix_to   = '';
+
+
+    /**
      * Optional liveness callback, called after every chunk of rows written.
      *
      * Signature: fn(string $table, int $rows_done_in_table): void
@@ -501,11 +510,30 @@ final class Database {
      *                           outside this site's own scope — see
      *                           assert_import_scope_is_safe().
      */
-    public static function import(string $sql_file, string $old_url = '', string $new_url = ''): bool {
+    public static function import(string $sql_file, string $old_url = '', string $new_url = '', string $old_prefix = ''): bool {
         global $wpdb;
 
         if (!file_exists($sql_file)) {
             return false;
+        }
+
+        // Table-prefix migration. The dump carries the SOURCE site's table
+        // names (`bzm_posts`), but this site's wp-config.php is not restored,
+        // so WordPress keeps reading `$wpdb->prefix` (`wp_posts`). Without a
+        // rewrite the restore lands in a parallel set of tables nobody reads:
+        // files and the active theme switch over, while content, users and
+        // options stay the OLD site's — a half-migrated site.
+        self::$prefix_from = '';
+        self::$prefix_to   = '';
+        if (
+            $old_prefix !== ''
+            && !is_multisite()
+            && $old_prefix !== $wpdb->prefix
+            && preg_match('/^[A-Za-z0-9_]+$/', $old_prefix)
+            && preg_match('/^[A-Za-z0-9_]+$/', (string) $wpdb->prefix)
+        ) {
+            self::$prefix_from = $old_prefix;
+            self::$prefix_to   = (string) $wpdb->prefix;
         }
 
         if (is_multisite()) {
@@ -669,7 +697,123 @@ final class Database {
             fclose($handle);
         }
 
+        if (self::$prefix_from !== '') {
+            self::rename_prefixed_keys($wpdb, self::$prefix_from, self::$prefix_to);
+            self::$prefix_from = '';
+            self::$prefix_to   = '';
+        }
+
         return true;
+    }
+
+    /**
+     * Keys WordPress core builds from the table prefix. After the tables are
+     * renamed these still carry the SOURCE prefix, and WordPress then finds no
+     * roles (every user loses every capability, admin included) and no
+     * per-user settings.
+     *
+     * Deliberately a fixed list, not "every key that starts with the old
+     * prefix": a theme or plugin is free to name its own options with the
+     * same letters (a theme called `bzm` storing `bzm_gsheets_auth`), and a
+     * blanket rename would silently corrupt those.
+     */
+    private const PREFIX_BOUND_USERMETA = [
+        'capabilities',
+        'user_level',
+        'user-settings',
+        'user-settings-time',
+        'dashboard_quick_press_last_post_id',
+        'persisted_preferences',
+    ];
+
+    private static function rename_prefixed_keys(\wpdb $wpdb, string $from, string $to): void {
+        $options  = $to . 'options';
+        $usermeta = $to . 'usermeta';
+
+        // wp_options: `{prefix}user_roles` holds the whole role table.
+        $wpdb->query($wpdb->prepare(
+            "DELETE FROM `{$options}` WHERE option_name = %s",
+            $to . 'user_roles'
+        ));
+        $wpdb->query($wpdb->prepare(
+            "UPDATE `{$options}` SET option_name = %s WHERE option_name = %s",
+            $to . 'user_roles',
+            $from . 'user_roles'
+        ));
+
+        foreach (self::PREFIX_BOUND_USERMETA as $suffix) {
+            $wpdb->query($wpdb->prepare(
+                "DELETE FROM `{$usermeta}` WHERE meta_key = %s",
+                $to . $suffix
+            ));
+            $wpdb->query($wpdb->prepare(
+                "UPDATE `{$usermeta}` SET meta_key = %s WHERE meta_key = %s",
+                $to . $suffix,
+                $from . $suffix
+            ));
+        }
+
+        wp_cache_flush();
+    }
+
+    /**
+     * Rewrite the TABLE NAMES in one DDL/DML statement from the source prefix
+     * to this site's prefix. Only identifiers in table position are touched —
+     * the backticked name right after DROP/CREATE/ALTER/LOCK TABLE(S), INSERT
+     * INTO / REPLACE INTO, and REFERENCES inside a CREATE — never row data,
+     * so a post that happens to contain the text `bzm_posts` survives as-is.
+     */
+    public static function rewrite_table_prefix(string $sql, string $from, string $to): string {
+        if ($from === '' || $from === $to) {
+            return $sql;
+        }
+        $q = preg_quote($from, '/');
+
+        // Head of statement.
+        $sql = (string) preg_replace(
+            '/^(\s*(?:DROP\s+TABLE(?:\s+IF\s+EXISTS)?|CREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?|ALTER\s+TABLE|LOCK\s+TABLES|INSERT\s+(?:IGNORE\s+)?INTO|REPLACE\s+INTO)\s+`)' . $q . '/i',
+            '${1}' . $to,
+            $sql,
+            1
+        );
+
+        // Foreign keys inside CREATE TABLE point at other prefixed tables.
+        if (preg_match('/^\s*CREATE\s+TABLE/i', $sql)) {
+            $create_end = strpos($sql, ') ENGINE');
+            $head = $create_end === false ? $sql : substr($sql, 0, $create_end);
+            $tail = $create_end === false ? '' : substr($sql, $create_end);
+            $head = (string) preg_replace('/(REFERENCES\s+`)' . $q . '/i', '${1}' . $to, $head);
+            $sql  = $head . $tail;
+        }
+
+        return $sql;
+    }
+
+    /**
+     * Work out the source prefix of an older backup whose manifest has no
+     * db_prefix: every WordPress dump contains exactly one `<prefix>options`
+     * table, and it is written near the top of the file.
+     */
+    public static function detect_dump_prefix(string $sql_file): string {
+        $h = @fopen($sql_file, 'rb');
+        if ($h === false) {
+            return '';
+        }
+        $found = '';
+        $scanned = 0;
+        while (!feof($h) && $scanned < 64 * 1024 * 1024) {
+            $line = fgets($h, 1024 * 1024);
+            if ($line === false) {
+                break;
+            }
+            $scanned += strlen($line);
+            if (preg_match('/^DROP TABLE IF EXISTS `([A-Za-z0-9_]*?)options`;/', $line, $m)) {
+                $found = $m[1];
+                break;
+            }
+        }
+        fclose($h);
+        return $found;
     }
 
     /**
@@ -764,6 +908,10 @@ final class Database {
         $trimmed = self::strip_leading_comments($statement);
         if ($trimmed === '') {
             return;
+        }
+
+        if (self::$prefix_from !== '') {
+            $trimmed = self::rewrite_table_prefix($trimmed, self::$prefix_from, self::$prefix_to);
         }
 
         if ($do_replace) {

@@ -6,6 +6,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.4.5] — 2026-09-29
+
+### Fixed — restoring into a site with a different table prefix left it half-migrated
+
+A backup does not carry `wp-config.php`, so the destination keeps its own `$table_prefix`. A dump
+from a `bzm_` site imported into a `wp_` site created a parallel `bzm_*` table set that WordPress
+never reads: files and the active theme switched over, while content, users and options stayed the
+old site's. Seen on a live migration.
+
+- Table names in `DROP` / `CREATE` / `INSERT` statements (and foreign-key `REFERENCES` inside a `CREATE`) are rewritten to the destination prefix as the dump is replayed.
+- Afterwards the keys WordPress core derives from the prefix are renamed — `{prefix}user_roles`, `{prefix}capabilities`, `{prefix}user_level`, `{prefix}user-settings`, … — so every user keeps their role.
+- Row data is never touched, and plugin/theme options that merely start with the same letters (e.g. `bzm_gsheets_auth`) are left alone: only a fixed list of core keys is renamed.
+- Older backups whose manifest has no `db_prefix` are handled too: the source prefix is read from the dump's `<prefix>options` table.
+- A prefix containing anything other than letters, digits or `_` is refused, so a tampered manifest cannot inject SQL.
+
+Verified end-to-end: a real `bzm_` backup (16 posts of a custom type, 8 pages, app passwords) restored into a fresh `wp_` install — 17 `wp_*` tables and no `bzm_*`, the admin keeps `administrator`, every page renders, the application password still authenticates.
+
 ## [1.4.4] — 2026-09-29
 
 ### Fixed — restore did not log out / skip to Permalinks when login URL is hidden
