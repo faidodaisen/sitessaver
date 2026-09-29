@@ -6,6 +6,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.4.2] — 2026-09-29
+
+On sites with a large database the export sat on *"Exporting database..."* for a long time and
+could then be reported as *"The backup process stopped unexpectedly"* while it was in fact still
+running. Seen on a 546 MB database whose biggest table was a 427k-row plugin log.
+
+### Fixed — database dump no longer slows down as it goes
+
+Each table was read in pages with `LIMIT n OFFSET m`. MySQL has to walk past every earlier row to
+honour an OFFSET, so each page cost more than the last and a large table's dump grew with the
+square of its row count. Pages now continue from the last primary key seen
+(`WHERE id > last ORDER BY id LIMIT n`), an index range read that costs the same on every page.
+On a 430k-row table the late pages went from ~83x slower than the first to constant, and the
+table dumped in about 5 seconds instead of an estimated 20+ minutes. Output is unchanged: every
+row once, in primary-key order. Tables without a usable single-column key keep the previous
+behaviour.
+
+### Fixed — a long database dump is no longer reported as stalled
+
+The database step sent no heartbeat until it finished, so after 5 minutes the export screen
+assumed the worker had died. The dump now reports progress after every chunk of rows, the same
+way the file-copy and ZIP steps already do.
+
+---
+
 ## [1.4.1] — 2026-09-21
 
 Large backups to Google Drive could fail with nothing but *"An error occurred"*. The cause was

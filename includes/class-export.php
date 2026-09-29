@@ -361,7 +361,18 @@ final class Export {
                 case 'db':
                     if (!empty($options['include_db'])) {
                         $db_file = $temp_dir . '/database.sql';
-                        if (!Database::export($db_file)) {
+                        // Heartbeat from inside the dump: a large database can
+                        // take minutes, and without this the stall detector
+                        // (STALL_SECONDS) reports a healthy export as dead.
+                        Database::set_progress(static function (string $table, int $done): void {
+                            self::tick('db:' . $table, $done);
+                        });
+                        try {
+                            $ok = Database::export($db_file);
+                        } finally {
+                            Database::set_progress(null);
+                        }
+                        if (!$ok) {
                             throw new \RuntimeException(__('Failed to export database.', 'sitessaver'));
                         }
                     }

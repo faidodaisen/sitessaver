@@ -12,6 +12,27 @@ defined('ABSPATH') || exit;
 final class Database {
 
     /**
+     * Optional liveness callback, called after every chunk of rows written.
+     *
+     * Signature: fn(string $table, int $rows_done_in_table): void
+     *
+     * The export step that dumps the database can run for many minutes on a
+     * large site. Without a heartbeat from inside that loop, the export's
+     * last_update stays frozen for the whole dump and the UI's stall detector
+     * (Export::STALL_SECONDS) declares a perfectly healthy export dead.
+     *
+     * @var callable|null
+     */
+    private static $progress = null;
+
+    public static function set_progress(?callable $cb): void {
+        self::$progress = $cb;
+    }
+
+    /** Rows fetched per SELECT while dumping a table. */
+    private const CHUNK_ROWS = 250;
+
+    /**
      * Export all tables to a SQL file.
      */
     public static function export(string $output_file): bool {
@@ -234,15 +255,14 @@ final class Database {
         $generated = self::generated_columns($wpdb, $table);
 
         // Data — chunked to avoid memory issues.
-        $chunk_size = 100;
-        $offset     = 0;
+        $chunk_size = self::CHUNK_ROWS;
 
         // The options table gets a WHERE clause that drops this plugin's own
         // in-flight export state. Without it, the transients describing the
         // export that is CREATING this backup are captured inside it, and a
         // restore then resurrects a phantom "export in progress" on the target
         // site (progress modal reappears, cancel button does nothing).
-        $where = self::row_filter_for($wpdb, $table);
+        $filter = self::row_filter_for($wpdb, $table);
 
         // Pagination MUST be ordered. `LIMIT/OFFSET` without `ORDER BY` gives
         // MySQL licence to return rows in any order, and OFFSET counts
@@ -258,26 +278,64 @@ final class Database {
         // option_ids, i.e. 22 duplicated rows and 22 rows lost.
         //
         // Ordering by the primary key makes the sequence total and stable.
-        // Tables without a usable single-column key fall back to unordered
-        // reads, which is no worse than before.
         $order_col = self::pagination_key($wpdb, $table);
-        $order_by  = $order_col !== null ? "ORDER BY `" . esc_sql($order_col) . "`" : '';
+
+        // KEYSET pagination whenever there is a usable key: continue from the
+        // last key seen (`WHERE key > last ORDER BY key LIMIT n`) instead of
+        // `LIMIT n OFFSET m`. OFFSET makes MySQL walk and discard m rows on
+        // every page, so a table's dump costs O(rows^2): on a 427k-row log
+        // table the late pages took seconds each and the whole database step
+        // ran for tens of minutes, visibly slowing down as it went. A keyset
+        // read is an index range scan — every page costs the same, however
+        // deep into the table it is. It is also immune to rows being inserted
+        // or deleted mid-dump, which OFFSET is not even when ordered.
+        //
+        // Tables without a usable single-column key fall back to OFFSET
+        // (unordered), which is no worse than before.
+        $rows_done = 0;
+        $last_key  = null;
+        $offset    = 0;
 
         while (true) {
-            $rows = $wpdb->get_results(
-                $wpdb->prepare(
-                    "SELECT * FROM `{$escaped_table}` {$where} {$order_by} LIMIT %d OFFSET %d",
-                    $chunk_size,
-                    $offset
-                ),
-                ARRAY_A
-            );
+            if ($order_col !== null) {
+                $col   = '`' . esc_sql($order_col) . '`';
+                $conds = [];
+                if ($filter !== '') {
+                    $conds[] = '(' . $filter . ')';
+                }
+                if ($last_key !== null) {
+                    $conds[] = $wpdb->prepare("{$col} > %s", $last_key);
+                }
+                $where = $conds !== [] ? 'WHERE ' . implode(' AND ', $conds) : '';
+                $rows  = $wpdb->get_results(
+                    $wpdb->prepare(
+                        "SELECT * FROM `{$escaped_table}` {$where} ORDER BY {$col} LIMIT %d",
+                        $chunk_size
+                    ),
+                    ARRAY_A
+                );
+            } else {
+                $where = $filter !== '' ? 'WHERE ' . $filter : '';
+                $rows  = $wpdb->get_results(
+                    $wpdb->prepare(
+                        "SELECT * FROM `{$escaped_table}` {$where} LIMIT %d OFFSET %d",
+                        $chunk_size,
+                        $offset
+                    ),
+                    ARRAY_A
+                );
+            }
 
             if (empty($rows)) {
                 break;
             }
 
             foreach ($rows as $row) {
+                if ($order_col !== null && array_key_exists($order_col, $row)) {
+                    // Read BEFORE generated columns are stripped — the key is
+                    // never generated, but keep the invariant obvious.
+                    $last_key = (string) $row[$order_col];
+                }
                 if ($generated !== []) {
                     $row = array_diff_key($row, array_flip($generated));
                 }
@@ -298,7 +356,18 @@ final class Database {
                 fwrite($handle, "INSERT INTO `{$escaped_table}` (`{$columns}`) VALUES ({$vals});\n");
             }
 
-            $offset += $chunk_size;
+            $rows_done += count($rows);
+            $offset    += $chunk_size;
+
+            if (self::$progress !== null) {
+                (self::$progress)($table, $rows_done);
+            }
+
+            // A short page means the table is exhausted; skip the extra
+            // empty round trip.
+            if (count($rows) < $chunk_size) {
+                break;
+            }
         }
 
         fwrite($handle, "\n");
@@ -310,7 +379,7 @@ final class Database {
      * Only the options table is filtered, and only to exclude SitesSaver's own
      * transient export/import state. Everything else is dumped verbatim.
      *
-     * Returns a ready-to-inline `WHERE ...` fragment (or an empty string). The
+     * Returns a bare boolean condition, no `WHERE` (or an empty string). The
      * fragment contains no user input — the LIKE patterns are literals — so it
      * is safe to interpolate.
      */
@@ -319,7 +388,7 @@ final class Database {
             return '';
         }
 
-        return "WHERE option_name NOT LIKE '\\_transient\\_sitessaver\\_%'"
+        return "option_name NOT LIKE '\\_transient\\_sitessaver\\_%'"
              . " AND option_name NOT LIKE '\\_transient\\_timeout\\_sitessaver\\_%'"
              . " AND option_name NOT LIKE '\\_site\\_transient\\_sitessaver\\_%'"
              . " AND option_name NOT LIKE '\\_site\\_transient\\_timeout\\_sitessaver\\_%'"
