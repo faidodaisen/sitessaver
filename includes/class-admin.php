@@ -25,6 +25,11 @@ final class Admin {
         // request after a restore, then track the permalinks-save cycle.
         add_action('admin_init', [$this, 'handle_post_import_finalisation'], 1);
         add_action('admin_notices', [$this, 'render_restore_finalisation_notice']);
+
+        // Server-side logout for the post-restore hand-off. Both hooks: the
+        // session may or may not still be valid after the restore.
+        add_action('admin_post_sitessaver_finalize_logout', [$this, 'handle_finalize_logout']);
+        add_action('admin_post_nopriv_sitessaver_finalize_logout', [$this, 'handle_finalize_logout']);
     }
 
     /**
@@ -106,6 +111,37 @@ final class Admin {
                 }
             }
         }
+    }
+
+    /**
+     * End the current session server-side and send the user to the login
+     * screen, headed for Settings > Permalinks afterwards.
+     *
+     * Why not wp-login.php?reauth=1: see Import::build_finalize_redirect_url().
+     * The finalize token is required so this cannot be used as a drive-by
+     * logout link; it is NOT consumed here (the permalinks request does that).
+     */
+    public function handle_finalize_logout(): void {
+        $supplied = isset($_GET['token']) ? sanitize_text_field(wp_unslash($_GET['token'])) : '';
+        $expected = Import::current_finalize_token();
+
+        if ($expected === '' || $supplied === '' || !hash_equals($expected, $supplied)) {
+            wp_safe_redirect(wp_login_url());
+            exit;
+        }
+
+        if (is_user_logged_in()) {
+            wp_destroy_current_session();
+        }
+        wp_clear_auth_cookie();
+        wp_set_current_user(0);
+
+        wp_safe_redirect(add_query_arg(
+            'redirect_to',
+            rawurlencode(Import::finalize_permalinks_path($expected)),
+            wp_login_url()
+        ));
+        exit;
     }
 
     /**

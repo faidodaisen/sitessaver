@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.4.4] — 2026-09-29
+
+### Fixed — restore did not log out / skip to Permalinks when login URL is hidden
+
+- After a restore, "Finish & log out" now goes through a SitesSaver `admin-post.php` action that destroys the session server-side, then sends the user to the login screen with Settings → Permalinks as the destination. Previously it relied on `wp-login.php?reauth=1`, which login-hiding plugins (WPS Hide Login, Admin Speedboost, etc.) bounce to wp-admin before WordPress can clear the cookie, so the user stayed logged in and never reached the Permalinks step.
+- The action requires the one-time finalize token, so it cannot be used as a drive-by logout link.
+
 ## [1.4.3] — 2026-09-29
 
 ### Fixed — upload percentage shown twice

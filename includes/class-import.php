@@ -961,19 +961,42 @@ final class Import {
             return add_query_arg('reauth', '1', $login);
         }
 
+        // Do NOT send the browser straight to wp-login.php?reauth=1. Login-
+        // hiding plugins (WPS Hide Login, Admin Speedboost, ...) intercept a
+        // request for the login slug from an already-authenticated user and
+        // bounce it to wp-admin BEFORE wp-login.php runs, so reauth=1 never
+        // clears the cookie: the user stays logged in and lands on the
+        // dashboard instead of Settings > Permalinks. Reproduced against
+        // Admin Speedboost's hide-login module. Instead we hit our own
+        // admin-post.php action, which clears the session server-side and
+        // then redirects to the login screen (see Admin::handle_finalize_logout).
+        // admin-post.php is left alone by those plugins for both logged-in
+        // and logged-out visitors.
+        $admin_post = '/wp-admin/admin-post.php';
+        if (($ppath = wp_parse_url(admin_url('admin-post.php'), PHP_URL_PATH)) !== null && $ppath !== '') {
+            $admin_post = $ppath;
+        }
+
+        return add_query_arg(
+            [
+                'action' => 'sitessaver_finalize_logout',
+                'token'  => $token,
+            ],
+            $admin_post
+        );
+    }
+
+    /**
+     * Where the login screen should send the user once they have logged in
+     * again: Settings > Permalinks carrying the one-time finalize token.
+     * Root-relative for the host-mismatch reason documented above.
+     */
+    public static function finalize_permalinks_path(string $token): string {
         $permalinks = '/wp-admin/options-permalink.php';
         if (($apath = wp_parse_url(admin_url('options-permalink.php'), PHP_URL_PATH)) !== null && $apath !== '') {
             $permalinks = $apath;
         }
-        $permalinks = add_query_arg('sitessaver_finalize', $token, $permalinks);
-
-        return add_query_arg(
-            [
-                'reauth'      => '1',
-                'redirect_to' => rawurlencode($permalinks),
-            ],
-            $login
-        );
+        return add_query_arg('sitessaver_finalize', $token, $permalinks);
     }
 
     /**
