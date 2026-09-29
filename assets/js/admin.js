@@ -1015,7 +1015,7 @@
             }
         });
 
-        ssModal.setProgress(0, 'Uploading (0%)');
+        ssModal.setProgress(0, 'Uploading');
 
         function sendNextChunk() {
             if (cancelled) return;
@@ -1051,7 +1051,7 @@
                         }
                         currentChunk++;
                         var pct = Math.round((currentChunk / totalChunks) * 100);
-                        ssModal.setProgress(pct, 'Uploading (' + pct + '%)');
+                        ssModal.setProgress(pct, 'Uploading');
                         sendNextChunk();
                     } else {
                         onUploadError(res.data ? res.data.message : SS.strings.error);

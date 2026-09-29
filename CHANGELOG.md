@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.4.3] — 2026-09-29
+
+### Fixed — upload percentage shown twice
+
+While importing a backup, the progress modal read *"Uploading (5%)  5%"*: the label carried the
+percentage and the bar's own counter printed it again beside it. The label is now just
+*"Uploading"* and the counter is the single source of the number.
+
+---
+
 ## [1.4.2] — 2026-09-29
 
 On sites with a large database the export sat on *"Exporting database..."* for a long time and
