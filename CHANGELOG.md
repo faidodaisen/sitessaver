@@ -6,6 +6,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.4.6] — 2026-10-03
+
+### Fixed — large exports failed at 95% with "stopped unexpectedly (no progress for 301s)"
+
+`ZipArchive::close()` does the real read + compress + write for every file `addFile()`'d into the
+archive — `addFile()` itself just registers metadata and returns almost instantly. On a multi-
+gigabyte `wp-content`, the per-file liveness ticks taken during the (fast) add loop went silent
+right as the (slow) `close()` call started, and a backup large enough for `close()` alone to run
+past the 300s stall threshold was flagged dead and failed — even though the worker was still alive
+and simply finishing the archive.
+
+- `Archive::create()` now ticks a dedicated `zip-finalizing` phase immediately before calling
+  `close()`, using a new unthrottled tick that always persists regardless of the normal 10s
+  interval.
+- The stall check in `Ajax::handle_get_export_status()` gives that specific phase a 1800s grace
+  period instead of 300s, since it is a single uninterruptible call with no way to report
+  incremental progress from inside it.
+
+### Added — live step checklist in the export and restore progress modals
+
+Both modals previously showed one label and a bar; there was no way to see which phase a backup or
+restore was actually in.
+
+- Export: a checklist of all 9 pipeline steps (init → manifest → database → uploads → plugins →
+  themes → other files → ZIP → finalize) now sits above the bar, each row showing pending / active
+  / done state with an icon — driven by the real `step_index` the server reports, in both the
+  normal and background-worker code paths, and on resume.
+- Import/restore: the restore still runs inside one blocking request (it cannot be safely
+  backgrounded — it holds the admin session that authorized it), but it now ticks a phase transient
+  at each real boundary (extract → validate manifest → restore database → restore files → finalize)
+  that a concurrent status poll reads while the restore request is still in flight. Wired into all
+  three restore entry points: upload-then-restore, restore-an-existing-backup, and
+  restore-from-Google-Drive.
+
 ## [1.4.5] — 2026-09-29
 
 ### Fixed — restoring into a site with a different table prefix left it half-migrated
