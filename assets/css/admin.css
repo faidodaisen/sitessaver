@@ -683,6 +683,55 @@
     margin: 0;
 }
 
+.ss-step-list {
+    list-style: none;
+    margin: 0 0 20px;
+    padding: 0;
+    display: none;
+}
+
+.ss-step {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 0;
+    font-size: 13px;
+    color: var(--ss-text-muted);
+    transition: color 0.2s ease;
+}
+
+.ss-step-icon {
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    font-size: 13px;
+}
+
+.ss-step.is-pending .ss-step-icon {
+    color: var(--ss-border);
+}
+
+.ss-step.is-active {
+    color: var(--ss-text-main);
+    font-weight: 600;
+}
+
+.ss-step.is-active .ss-step-icon {
+    color: var(--ss-primary);
+}
+
+.ss-step.is-done {
+    color: var(--ss-text-muted);
+}
+
+.ss-step.is-done .ss-step-icon {
+    color: var(--ss-success);
+}
+
 .ss-progress-modal-caution {
     display: flex;
     align-items: flex-start;

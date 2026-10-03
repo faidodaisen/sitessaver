@@ -93,9 +93,17 @@ final class Archive {
             }
         }
 
-        // close() performs the actual write. A false return means the archive
-        // is incomplete or corrupt; returning success here would hand the user
-        // a broken backup file that looks fine in the listing.
+        // close() performs the actual write — this is where ZipArchive does
+        // the real read+compress+write for every entry addFile()'d above,
+        // and it is a single uninterruptible call with no way to tick from
+        // inside it. Mark the phase transition explicitly (tick_phase()
+        // bypasses the normal throttle and always persists) so the stall
+        // watchdog knows to extend its patience — see
+        // Export::STALL_SECONDS_FINALIZING's docblock for why.
+        if (class_exists(Export::class)) {
+            Export::tick_phase('zip-finalizing');
+        }
+
         if (!$zip->close()) {
             error_log('[SitesSaver] Archive: ZipArchive::close() failed for ' . $output_zip);
             return false;

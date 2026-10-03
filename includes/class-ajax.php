@@ -26,6 +26,7 @@ final class Ajax {
             'sitessaver_get_export_status' => 'handle_get_export_status',
             'sitessaver_cancel_export'     => 'handle_cancel_export',
             'sitessaver_import'         => 'handle_import',
+            'sitessaver_get_import_status' => 'handle_get_import_status',
             'sitessaver_import_upload'  => 'handle_import_upload',
             'sitessaver_delete_backup'  => 'handle_delete',
             'sitessaver_download_backup'=> 'handle_download',
@@ -244,6 +245,17 @@ final class Ajax {
         $current = $steps[$index] ?? null;
         $since   = time() - (int) ($status['last_update'] ?? $status['start_time'] ?? time());
 
+        // Most phases use the normal stall threshold. A handful of phases
+        // are a single uninterruptible blocking call with no way to tick
+        // from inside them (currently: ZipArchive::close(), tagged
+        // 'zip-finalizing' by Archive::create()) — those get a much longer
+        // grace period instead of being flagged dead mid-compress on a
+        // large backup. See Export::STALL_SECONDS_FINALIZING's docblock.
+        $phase_note      = (string) ($status['detail']['note'] ?? '');
+        $stall_threshold = $phase_note === 'zip-finalizing'
+            ? Export::STALL_SECONDS_FINALIZING
+            : Export::STALL_SECONDS;
+
         wp_send_json_success([
             'status'        => $status,
             'steps'         => $steps,
@@ -258,8 +270,9 @@ final class Ajax {
             'seconds_since_update' => $since,
             // The worker refreshes last_update at least every 10s from inside
             // long loops, so a long silence means the process is gone (OOM,
-            // host kill) rather than merely busy.
-            'stalled'       => ($status['status'] ?? '') === 'running' && $since > Export::STALL_SECONDS,
+            // host kill) rather than merely busy — EXCEPT during a tagged
+            // "finalizing" phase, which uses the extended threshold above.
+            'stalled'       => ($status['status'] ?? '') === 'running' && $since > $stall_threshold,
         ]);
     }
 
@@ -331,6 +344,22 @@ final class Ajax {
         } else {
             wp_send_json_error($result);
         }
+    }
+
+    /**
+     * Status poll for a restore in progress.
+     *
+     * The restore itself runs inside ONE blocking sitessaver_import request
+     * (see handle_import() — it can't be safely backgrounded, the browser
+     * holds the admin session that authorized it) but Import::tick() writes
+     * a transient at each phase boundary, which THIS separate concurrent
+     * request can read while that blocking call is still in flight — so the
+     * step checklist can show real progress instead of one static spinner.
+     */
+    public function handle_get_import_status(): void {
+        sitessaver_verify_ajax();
+
+        wp_send_json_success(['progress' => Import::get_progress()]);
     }
 
     /**

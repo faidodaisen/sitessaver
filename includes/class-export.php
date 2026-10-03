@@ -88,6 +88,22 @@ final class Export {
     /** Seconds of silence after which a running export is presumed dead. */
     public const STALL_SECONDS = 300;
 
+    /**
+     * Extended grace period for phases that are a single, uninterruptible
+     * blocking call with no incremental progress API — currently only
+     * ZipArchive::close(). PHP's ZipArchive defers the actual read+compress
+     * +write work for every addFile()'d entry to this one call (addFile()
+     * itself just registers metadata and returns almost instantly), so the
+     * per-file tick() calls during the add loop cover the FAST phase and
+     * go silent right when the SLOW phase starts. A multi-gigabyte
+     * wp-content easily takes longer than STALL_SECONDS to compress here,
+     * and there is no way to tick from inside it — so instead of lying
+     * with fake periodic ticks, the phase ticks once on entry with a
+     * distinguishable note and the watchdog is told to extend its patience
+     * for exactly that note.
+     */
+    public const STALL_SECONDS_FINALIZING = 1800;
+
     /** Export uid currently being worked on, for tick() to address. */
     private static string $tick_uid = '';
 
@@ -105,6 +121,32 @@ final class Export {
     public static function end_ticks(): void {
         self::$tick_uid  = '';
         self::$tick_last = 0;
+    }
+
+    /**
+     * Report liveness unconditionally, bypassing the TICK_INTERVAL throttle.
+     * For one-off phase transitions (not a loop) — e.g. "about to enter a
+     * single long blocking call with no internal progress hook" — where the
+     * normal throttle could suppress the one tick that actually matters
+     * (it fires regardless of how recently a previous tick landed).
+     *
+     * @param string $note Short label, e.g. 'zip-finalizing'.
+     */
+    public static function tick_phase(string $note = ''): void {
+        if (self::$tick_uid === '') {
+            return;
+        }
+
+        self::$tick_last = time();
+
+        $status = self::get_status(self::$tick_uid);
+        if (empty($status)) {
+            return;
+        }
+
+        $status['last_update'] = self::$tick_last;
+        $status['detail']      = ['note' => $note, 'done' => 0];
+        self::save_status(self::$tick_uid, $status);
     }
 
     /**

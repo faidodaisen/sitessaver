@@ -492,6 +492,7 @@
                     '<div class="ss-progress-modal-icon" id="ss-pm-icon"><i class="ri-loader-4-line ri-spin"></i></div>' +
                     '<h2 id="ss-pm-title"></h2>' +
                     '<p class="ss-progress-modal-subtitle" id="ss-pm-subtitle"></p>' +
+                    '<ol class="ss-step-list" id="ss-pm-step-list"></ol>' +
                     '<div class="ss-progress-modal-bar-wrap">' +
                       '<div class="sitessaver-progress" style="display:block;">' +
                         '<div class="sitessaver-progress-text">' +
@@ -548,8 +549,78 @@
             $('#ss-cancel-confirm').hide();
             $('#ss-pm-cancel-btn').prop('disabled', false).toggle(!!this.cancelable);
             this.setProgress(0, '');
+            this.clearSteps();
             this.$el.fadeIn(200);
             $('body').addClass('ss-modal-open');
+        },
+
+        // Build the step checklist for flows with named, ordered phases
+        // (export's 9-step pipeline, import's restore phases). Flows that
+        // don't pass steps keep the plain bar + single label they always
+        // had — the list only appears where there is something real to list.
+        //
+        // @param steps list<{id: string, label: string}>
+        setSteps: function (steps) {
+            var $list = $('#ss-pm-step-list');
+            if (!steps || !steps.length) {
+                $list.hide().empty();
+                return;
+            }
+            var html = '';
+            for (var i = 0; i < steps.length; i++) {
+                html +=
+                    '<li class="ss-step is-pending" data-step-id="' + steps[i].id + '">' +
+                      '<span class="ss-step-icon"><i class="ri-checkbox-circle-line"></i></span>' +
+                      '<span class="ss-step-label">' + steps[i].label + '</span>' +
+                    '</li>';
+            }
+            $list.html(html).show();
+        },
+
+        clearSteps: function () {
+            $('#ss-pm-step-list').hide().empty();
+        },
+
+        // Mark every step before `key` done, `key` itself active, the rest
+        // still pending. `key` is either a step id (import's phases, which
+        // can repeat — e.g. 'extract' fires once per chain member — so
+        // matching by id rather than a fixed index still lands on the right
+        // row) or a numeric index (export's flat step list).
+        setActiveStep: function (key) {
+            var $items = $('#ss-pm-step-list').children();
+            if (!$items.length) return;
+
+            var activeIndex = typeof key === 'number'
+                ? key
+                : $items.toArray().findIndex(function (el) { return el.getAttribute('data-step-id') === key; });
+
+            if (activeIndex < 0) return;
+
+            $items.each(function (i) {
+                var $li = $(this);
+                $li.removeClass('is-pending is-active is-done');
+                if (i < activeIndex) {
+                    $li.addClass('is-done');
+                    $li.find('.ss-step-icon i').attr('class', 'ri-checkbox-circle-fill');
+                } else if (i === activeIndex) {
+                    $li.addClass('is-active');
+                    $li.find('.ss-step-icon i').attr('class', 'ri-loader-4-line ri-spin');
+                } else {
+                    $li.addClass('is-pending');
+                    $li.find('.ss-step-icon i').attr('class', 'ri-checkbox-circle-line');
+                }
+            });
+        },
+
+        // All steps done (the final "completed" frame just before done()
+        // swaps the header icon) — called once a flow's last status report
+        // confirms completion, never assumed from the client's own count.
+        completeSteps: function () {
+            $('#ss-pm-step-list').children().each(function () {
+                var $li = $(this);
+                $li.removeClass('is-pending is-active').addClass('is-done');
+                $li.find('.ss-step-icon i').attr('class', 'ri-checkbox-circle-fill');
+            });
         },
 
 
@@ -638,6 +709,8 @@
             var gdriveJob   = res.gdrive_job_id;
             var currentStep = 0;
 
+            ssModal.setSteps(steps.map(function (s) { return { id: s.id, label: s.label }; }));
+
             // The server spawned a background worker: the browser must NOT
             // run the steps itself, it just watches. This is what stops a
             // big backup from dying on a gateway 504 — no request the browser
@@ -654,6 +727,7 @@
             }
 
             function finishExport(result) {
+                ssModal.completeSteps();
                 ssModal.done();
                 setTimeout(function () {
                     ssModal.close();
@@ -680,6 +754,7 @@
                 }
 
                 var step = steps[currentStep];
+                ssModal.setActiveStep(currentStep);
 
                 // A step flagged `poll` runs a long server-side transfer whose
                 // real progress is reported separately. Show the START of its
@@ -834,6 +909,7 @@
 
                 if (state === 'completed') {
                     clearInterval(poll);
+                    ssModal.completeSteps();
                     ssModal.done();
                     setTimeout(function () {
                         ssModal.close();
@@ -881,6 +957,7 @@
                 if (s.detail && s.detail.done) {
                     label += ' (' + s.detail.done + ' files)';
                 }
+                ssModal.setActiveStep(s.step_index);
                 ssModal.setProgress(s.step_pct, label);
             }, function () {
                 // One failed poll is not fatal — the worker keeps running
@@ -1076,10 +1153,15 @@
             $('#ss-pm-title').text('Restoring Site');
             $('#ss-pm-subtitle').text('Database and files are being restored. This cannot be interrupted.');
             $('#ss-pm-caution').text('Do not close this tab. Interrupting the restore may leave your site in a broken state.');
+            ssModal.setSteps(SS.importPhases || []);
             ssModal.setIndeterminate('Restoring database and files...');
+
+            var statusPoll = watchImportProgress();
 
             ajax('sitessaver_import', { file: filename },
                 function (res) {
+                    stopPoll(statusPoll);
+                    ssModal.completeSteps();
                     ssModal.done();
                     setTimeout(function () {
                         ssModal.close();
@@ -1088,6 +1170,7 @@
                     }, 800);
                 },
                 function (err) {
+                    stopPoll(statusPoll);
                     ssModal.close();
                     showResult($form, err.message || SS.strings.error, true);
                 }
@@ -1121,10 +1204,15 @@
             caution:    'Do not close this tab. Interrupting the restore may leave your site in a broken state.',
             cancelable: false
         });
+        ssModal.setSteps(SS.importPhases || []);
         ssModal.setIndeterminate('Restoring database and files...');
+
+        var statusPoll = watchImportProgress();
 
         ajax('sitessaver_import', { file: file },
             function (res) {
+                stopPoll(statusPoll);
+                ssModal.completeSteps();
                 ssModal.done();
                 setTimeout(function () {
                     ssModal.close();
@@ -1132,10 +1220,30 @@
                 }, 800);
             },
             function (err) {
+                stopPoll(statusPoll);
                 ssModal.close();
                 showResult($form, err.message || SS.strings.error, true);
             }
         );
+    }
+
+    // Poll the restore's current phase during the single blocking
+    // sitessaver_import request (see Ajax::handle_get_import_status()) and
+    // reflect it on the step list + indeterminate bar label. Shared by the
+    // upload-then-restore flow and the restore-an-existing-backup flow so
+    // both report identically — same pattern as watchExportProgress().
+    function watchImportProgress() {
+        return setInterval(function () {
+            ajax('sitessaver_get_import_status', {}, function (res) {
+                var p = res.progress;
+                if (!p || !p.phase) return;
+                ssModal.setActiveStep(p.phase);
+                ssModal.setIndeterminate(p.label || 'Restoring...');
+            }, function () {
+                // A failed poll is not fatal — the restore request keeps
+                // running regardless. Try again on the next tick.
+            });
+        }, 1500);
     }
 
 
@@ -1691,15 +1799,21 @@
                     caution:    'Do not close this tab. Interrupting the restore may leave your site in a broken state.',
                     cancelable: false
                 });
-                ssModal.setIndeterminate('Downloading and restoring...');
+                ssModal.setSteps(SS.importPhases || []);
+                ssModal.setIndeterminate('Downloading from Google Drive...');
+
+                var statusPoll = watchImportProgress();
 
                 ajax('sitessaver_gdrive_restore', { file_id: id }, function (res) {
+                    stopPoll(statusPoll);
+                    ssModal.completeSteps();
                     ssModal.done();
                     setTimeout(function () {
                         ssModal.close();
                         showRestoreCompleteModal(res);
                     }, 800);
                 }, function (err) {
+                    stopPoll(statusPoll);
                     ssModal.close();
                     ssNotify.error(err.message || SS.strings.error, { title: 'Restore failed' });
                     $btn.prop('disabled', false);
@@ -1749,6 +1863,8 @@
                 ssModal.disableCancel('Cancelling...');
             }
         });
+        ssModal.setSteps(steps.map(function (s) { return { id: s.id, label: s.label }; }));
+        ssModal.setActiveStep(startStep);
 
         // Restart the server-side worker and go back to watching. Driving the
         // remaining steps from the browser is exactly what fails on a large
@@ -1786,6 +1902,7 @@
 
             if (currentStep >= steps.length) {
                 ajax('sitessaver_get_export_status', { uid: uid }, function (finalRes) {
+                    ssModal.completeSteps();
                     ssModal.done();
                     setTimeout(function () {
                         ssModal.close();
@@ -1798,6 +1915,7 @@
             }
 
             var step = steps[currentStep];
+            ssModal.setActiveStep(currentStep);
 
             if (step.poll === 'gdrive') {
                 ssModal.disableCancel('Uploading to Drive…');

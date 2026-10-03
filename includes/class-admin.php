@@ -244,6 +244,11 @@ final class Admin {
             'nonce'         => wp_create_nonce('sitessaver_nonce'),
             'downloadNonce' => wp_create_nonce('sitessaver_download'),
             'maxUploadSize' => sitessaver_max_upload_size(),
+            'importPhases'  => array_values(array_map(
+                static fn($id, $label) => ['id' => $id, 'label' => $label],
+                array_keys(\SitesSaver\Import::phases()),
+                \SitesSaver\Import::phases()
+            )),
             'strings'       => [
                 'confirmDelete'  => __('Delete this backup? This cannot be undone.', 'sitessaver'),
                 'confirmRestore' => __('Restore this backup? Your current site will be overwritten.', 'sitessaver'),

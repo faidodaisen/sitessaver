@@ -11,6 +11,55 @@ defined('ABSPATH') || exit;
  */
 final class Import {
 
+    /** Transient key holding the live restore-phase readout. */
+    private const PROGRESS_KEY = 'sitessaver_import_progress';
+
+    /**
+     * Ordered restore phases, in the order run_from_dir() moves through
+     * them. Shared with the admin UI (via Ajax::localize) so the step
+     * checklist can never drift from what the backend actually reports —
+     * one array is the single source of truth for both sides.
+     *
+     * @return array<string, string> phase id => human label
+     */
+    public static function phases(): array {
+        return [
+            'extract'  => __('Extracting archive...', 'sitessaver'),
+            'manifest' => __('Validating backup...', 'sitessaver'),
+            'database' => __('Restoring database...', 'sitessaver'),
+            'files'    => __('Restoring files...', 'sitessaver'),
+            'finalize' => __('Running final tasks...', 'sitessaver'),
+        ];
+    }
+
+    /**
+     * Report the restore's current phase for the status poll.
+     *
+     * The restore runs inside one synchronous AJAX request (it cannot be
+     * safely backgrounded — the browser must hold the admin session that
+     * authorized it) but transient writes are visible to a concurrent
+     * request immediately, so a separate polling request can read this
+     * while the restore is still running — same trick Export::tick() uses,
+     * scoped to a single in-flight import since only one can run at a time.
+     */
+    private static function tick(string $phase): void {
+        set_transient(self::PROGRESS_KEY, [
+            'phase' => $phase,
+            'label' => self::phases()[$phase] ?? $phase,
+            'time'  => time(),
+        ], 10 * MINUTE_IN_SECONDS);
+    }
+
+    /**
+     * Fetch the current restore-phase readout for the status poll.
+     *
+     * @return array{phase?: string, label?: string, time?: int}
+     */
+    public static function get_progress(): array {
+        $progress = get_transient(self::PROGRESS_KEY);
+        return is_array($progress) ? $progress : [];
+    }
+
     /**
      * Import from a backup file in storage.
      *
@@ -18,6 +67,8 @@ final class Import {
      * @return array{success: bool, message: string}
      */
     public static function from_backup(string $backup_file): array {
+        delete_transient(self::PROGRESS_KEY);
+
         $zip_path = sitessaver_storage_dir() . '/' . sanitize_file_name($backup_file);
 
         if (!file_exists($zip_path)) {
@@ -147,6 +198,7 @@ final class Import {
             wp_mkdir_p($merged);
 
             foreach ($set as $member) {
+                self::tick('extract');
                 if (!Archive::extract($storage . '/' . $member, $merged)) {
                     throw new \RuntimeException(sprintf(
                         /* translators: %s: backup filename. */
@@ -169,6 +221,7 @@ final class Import {
             return self::run_from_dir($merged, basename((string) end($set)));
 
         } catch (\Throwable $e) {
+            delete_transient(self::PROGRESS_KEY);
             sitessaver_cleanup_temp($merged);
 
             return ['success' => false, 'message' => $e->getMessage()];
@@ -322,6 +375,7 @@ final class Import {
             wp_mkdir_p($temp_dir);
 
             // 1. Extract archive.
+            self::tick('extract');
             if (!Archive::extract($zip_path, $temp_dir)) {
                 throw new \RuntimeException(__('Failed to extract backup archive.', 'sitessaver'));
             }
@@ -329,6 +383,7 @@ final class Import {
             return self::run_from_dir($temp_dir, basename($zip_path));
 
         } catch (\Throwable $e) {
+            delete_transient(self::PROGRESS_KEY);
             sitessaver_cleanup_temp($temp_dir);
 
             return [
@@ -351,6 +406,7 @@ final class Import {
     private static function run_from_dir(string $temp_dir, string $source_label): array {
         try {
             // 2. Read and validate manifest.
+            self::tick('manifest');
             $manifest = self::read_manifest($temp_dir);
             if ($manifest === null) {
                 throw new \RuntimeException(__('Invalid backup: manifest.json not found.', 'sitessaver'));
@@ -362,6 +418,7 @@ final class Import {
             // 3. Restore database.
             $db_file = $temp_dir . '/database.sql';
             if (file_exists($db_file)) {
+                self::tick('database');
                 $old_url = $manifest['home_url'] ?? '';
                 $new_url = home_url();
 
@@ -380,17 +437,20 @@ final class Import {
             // 4. Restore wp-content files.
             $content_src = $temp_dir . '/wp-content';
             if (is_dir($content_src)) {
+                self::tick('files');
                 $old_url = $manifest['home_url'] ?? '';
                 $new_url = home_url();
                 self::restore_content($content_src, $old_url, $new_url);
             }
 
             // 5. Post-import tasks.
+            self::tick('finalize');
             self::post_import($manifest);
 
             // 6. Cleanup — scoped to THIS import only.
             sitessaver_cleanup_temp($temp_dir);
 
+            delete_transient(self::PROGRESS_KEY);
             do_action('sitessaver_import_complete', $source_label);
 
             return [
@@ -399,6 +459,7 @@ final class Import {
             ];
 
         } catch (\Throwable $e) {
+            delete_transient(self::PROGRESS_KEY);
             sitessaver_cleanup_temp($temp_dir);
 
             return [
