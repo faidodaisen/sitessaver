@@ -254,7 +254,7 @@ final class Import {
 
             $relative = str_replace('\\', '/', $relative);
 
-            if (str_contains($relative, '..') || str_starts_with($relative, '/')) {
+            if (Archive::is_unsafe_relative_path($relative)) {
                 continue;
             }
 

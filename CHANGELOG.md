@@ -6,6 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.4.7] — 2026-10-04
+
+### Fixed — restore failed with "Failed to extract backup archive." when the backup contained a file name with two dots
+
+`Archive::extract()` refused any ZIP entry whose name contained `..` anywhere (`str_contains($entry, '..')`),
+meant to stop path traversal. That also matched perfectly legal file names such as
+`wp-content/uploads/2021/03/ear-nose-and-throat-conditions..jpg`, and because the extractor is fail-closed one
+such file aborted the whole restore. Observed on a real migration (drpuvan.com, 2026-10-04): the ZIP was valid,
+the server was fine, two media files tripped the check.
+
+- New `Archive::is_unsafe_relative_path()` treats a path as traversal only when a path SEGMENT is exactly `..`
+  (after normalising backslashes). Absolute paths, Windows drive prefixes and NUL bytes are still refused.
+- Used by `Archive::extract()` and by the incremental-restore deletion list (`Import::apply_deletions()`), which had
+  the same check.
+- Zip-slip protection is unchanged (`../x`, `a/../b`, `a\..`, `/etc/passwd`, `C:/x` are all still rejected).
+
 ## [1.4.6] — 2026-10-03
 
 ### Fixed — large exports failed at 95% with "stopped unexpectedly (no progress for 301s)"

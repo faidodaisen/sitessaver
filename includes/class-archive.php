@@ -167,7 +167,7 @@ final class Archive {
             $entry = str_replace('\\', '/', $entry);
 
             // Reject path traversal attempts.
-            if (str_contains($entry, '..') || str_starts_with($entry, '/')) {
+            if (self::is_unsafe_relative_path($entry)) {
                 $zip->close();
                 return false;
             }
@@ -227,6 +227,32 @@ final class Archive {
 
         $zip->close();
         return true;
+    }
+
+    /**
+     * True when a path taken from a backup (ZIP entry name, manifest "deleted" list)
+     * could point outside the directory it is resolved against.
+     *
+     * Only a path SEGMENT equal to ".." is traversal. A file NAME that merely contains
+     * two dots ("photo..jpg", "my..report.pdf") is legal on every filesystem and does
+     * occur in real uploads; rejecting those used to abort a whole restore with
+     * "Failed to extract backup archive.". Absolute paths, Windows drive prefixes and
+     * NUL bytes are still refused.
+     */
+    public static function is_unsafe_relative_path(string $path): bool {
+        $p = str_replace('\\', '/', $path);
+        if ($p === '' || str_contains($p, "\0")) {
+            return true;
+        }
+        if ($p[0] === '/' || preg_match('#^[A-Za-z]:#', $p) === 1) {
+            return true;
+        }
+        foreach (explode('/', $p) as $segment) {
+            if ($segment === '..') {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
