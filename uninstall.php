@@ -49,3 +49,18 @@ $wpdb->query(
 
 // 4. Flush the alloptions cache so the removed rows disappear immediately.
 wp_cache_delete('alloptions', 'options');
+
+// 5. Remove the plugin's own bookkeeping (troubleshooting log, restore job
+//    records). These are not backups — nothing a user would want to keep.
+$sitessaver_storage = WP_CONTENT_DIR . '/sitessaver-backups';
+foreach (['logs', 'jobs'] as $sitessaver_sub) {
+    $sitessaver_dir = $sitessaver_storage . '/' . $sitessaver_sub;
+    if (is_dir($sitessaver_dir)) {
+        foreach ((array) @scandir($sitessaver_dir) as $sitessaver_f) {
+            if (is_string($sitessaver_f) && is_file($sitessaver_dir . '/' . $sitessaver_f)) {
+                @unlink($sitessaver_dir . '/' . $sitessaver_f);
+            }
+        }
+        @rmdir($sitessaver_dir);
+    }
+}

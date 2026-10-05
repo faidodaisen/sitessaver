@@ -64,6 +64,81 @@
         </div>
     </div>
 
+    <?php
+    $ss_log_entries = \SitesSaver\Log::entries(50);
+    $ss_catalogue   = \SitesSaver\Errors::catalogue();
+    ?>
+    <div class="ss-section" id="ss-log">
+        <div class="ss-section-header">
+            <h2 class="ss-section-title">
+                <i class="ri-time-line"></i>
+                <?php esc_html_e('Troubleshooting Log', 'sitessaver'); ?>
+            </h2>
+            <?php if (!empty($ss_log_entries)) : ?>
+                <div class="ss-log-actions">
+                    <a class="btn btn-outline" href="<?php echo esc_url(add_query_arg(['action' => 'sitessaver_log_download', 'nonce' => wp_create_nonce('sitessaver_nonce')], admin_url('admin-ajax.php'))); ?>">
+                        <i class="ri-download-2-line"></i>
+                        <?php esc_html_e('Download log', 'sitessaver'); ?>
+                    </a>
+                    <button type="button" class="btn btn-outline" id="ss-log-clear">
+                        <i class="ri-delete-bin-line"></i>
+                        <?php esc_html_e('Clear', 'sitessaver'); ?>
+                    </button>
+                </div>
+            <?php endif; ?>
+        </div>
+
+        <p class="ss-log-intro">
+            <?php esc_html_e('When a backup or restore runs into trouble, SitesSaver writes down what it was doing and why it stopped. Each problem has a reference code — the same one shown in the error message — so whoever helps you can find it quickly. Send them the downloaded log; it contains no passwords or keys.', 'sitessaver'); ?>
+        </p>
+
+        <?php if (empty($ss_log_entries)) : ?>
+            <div class="ss-empty-state">
+                <i class="ri-checkbox-circle-line ss-empty-icon"></i>
+                <p><?php esc_html_e('Nothing to report. Problems with backups and restores will show up here.', 'sitessaver'); ?></p>
+            </div>
+        <?php else : ?>
+            <table class="ss-table ss-log-table">
+                <thead>
+                    <tr>
+                        <th><?php esc_html_e('When', 'sitessaver'); ?></th>
+                        <th><?php esc_html_e('What happened', 'sitessaver'); ?></th>
+                        <th><?php esc_html_e('Reference', 'sitessaver'); ?></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($ss_log_entries as $e) :
+                        $level   = (string) ($e['level'] ?? 'info');
+                        $code    = (string) ($e['code'] ?? '');
+                        $time    = (int) ($e['time'] ?? 0);
+                        $human   = isset($ss_catalogue[$code]) ? $ss_catalogue[$code]['title'] : (string) ($e['message'] ?? '');
+                        $icon    = $level === 'error' ? 'ri-error-warning-line' : ($level === 'warning' ? 'ri-alert-line' : 'ri-information-line');
+                        $context = !empty($e['context']) ? wp_json_encode($e['context'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) : '';
+                        ?>
+                        <tr class="ss-log-row is-<?php echo esc_attr($level); ?>">
+                            <td class="ss-log-when">
+                                <span title="<?php echo esc_attr(wp_date('Y-m-d H:i:s T', $time)); ?>">
+                                    <?php
+                                    /* translators: %s: human time difference, e.g. "5 mins". */
+                                    echo esc_html(sprintf(__('%s ago', 'sitessaver'), human_time_diff($time)));
+                                    ?>
+                                </span>
+                            </td>
+                            <td class="ss-log-what">
+                                <span class="ss-log-title"><i class="<?php echo esc_attr($icon); ?>"></i><?php echo esc_html($human); ?></span>
+                                <details>
+                                    <summary><?php esc_html_e('Technical details', 'sitessaver'); ?></summary>
+                                    <code><?php echo esc_html((string) ($e['message'] ?? '')); ?><?php echo $context !== '' ? "\n" . esc_html($context) : ''; ?></code>
+                                </details>
+                            </td>
+                            <td class="ss-log-ref"><?php echo esc_html('SS-' . (string) ($e['ref'] ?? '')); ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        <?php endif; ?>
+    </div>
+
     <div class="ss-section" style="margin-top: 32px; border: 1px solid rgba(255, 209, 64, 0.3); background: rgba(255, 209, 64, 0.05);">
         <div class="ss-section-header" style="border-bottom: 1px solid rgba(255, 209, 64, 0.2);">
             <h2 class="ss-section-title" style="color: #856404;">

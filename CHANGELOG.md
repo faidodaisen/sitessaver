@@ -6,6 +6,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.4.8] — 2026-10-05
+
+### Fixed — uploading a large backup failed at 100% with "An error occurred."
+
+Each uploaded chunk was saved as its own file, and the request carrying the LAST chunk then glued every
+chunk back together — copying the whole backup twice inside one request. On a shared host with a
+throttled disk (observed: ~4 MB/s on LiteSpeed/CloudLinux) that took minutes; the web server cut the
+request off at its 60-second limit, the browser showed a bare "An error occurred." at 100%, and its
+cleanup call then deleted the chunks the server was still assembling, so nothing at all was left.
+
+- Each chunk is now appended to a single `.part` file as it arrives. The last chunk appends its own
+  2 MB and renames the file into place, so every upload request does the same small amount of work.
+- Chunks are idempotent: a retried chunk that already landed is recognised, not appended twice.
+- The browser retries a failed chunk up to 5 times with backoff, asking the server first how far the
+  upload actually got (`sitessaver_upload_status`). It no longer deletes the upload while retrying.
+
+### Fixed — a large restore could be cut off by the web server's request time limit
+
+The restore ran inside the single request the browser made, so it hit the same 60–120 second web
+server limit as the upload. It now runs as a background job, like exports have since 1.4.1.
+
+- `sitessaver_restore_start` returns at once; the work runs in a detached loopback request. The browser
+  only polls `sitessaver_restore_status`, so no request it makes lasts long.
+- Hosts that block loopback requests fall back to running the restore from the browser, still followed
+  through the status poll.
+- Job state lives in a protected file, not the options table, because the restore replaces the database
+  halfway through. The status poll is authorised by the job's own random token for the same reason: after
+  the database swap the browser's login session no longer exists.
+- A job that stops reporting progress is reported as stalled instead of spinning forever; a fatal error
+  inside the restore is caught on shutdown and reported too.
+- The previous endpoints (`sitessaver_import`, `sitessaver_gdrive_restore`) remain for cached older pages.
+
+### Added — a troubleshooting log and plain-language error messages
+
+- Every failure is written to the plugin's own log (`wp-content/sitessaver-backups/logs/`, web access
+  denied, no tokens or passwords recorded) with a short reference code.
+- Error notices now say what happened, whether anything on the site changed, and what to do next, in
+  non-technical words, with the reference code and a collapsed "Technical details" line.
+- Failures only the browser can see (dropped connection, gateway timeout page) are reported to the log too.
+- **Help → Troubleshooting Log** lists recent entries and offers Download / Clear.
+
+### Fixed — restore errors were invisible on the Backups page
+
+The Backups page's result container was empty, so a failed restore started from there showed nothing.
+
 ## [1.4.7] — 2026-10-04
 
 ### Fixed — restore failed with "Failed to extract backup archive." when the backup contained a file name with two dots

@@ -344,28 +344,127 @@
             },
             error: function (xhr, status, error) {
                 if (!onError) return;
-
-                // A gateway that killed the request answers with an HTML error
-                // page, so jQuery reports a JSON parse failure. Saying "an
-                // error occurred" there is actively misleading: PHP is usually
-                // still working, and the user needs to know the job survived.
-                var msg;
-                if (status === 'timeout') {
-                    msg = 'Server timed out. The process may still be running in the background — reload this page to check.';
-                } else if (xhr.status === 504 || xhr.status === 502 || xhr.status === 524) {
-                    msg = 'The server cut the request short (HTTP ' + xhr.status + '). The backup may still be running in the background — reload this page to check.';
-                } else if (status === 'parsererror') {
-                    msg = 'The server returned an unexpected response. Check the site\'s error log for details.';
-                } else if (xhr.status === 0) {
-                    msg = 'Lost connection to the server. The process may still be running in the background.';
-                } else {
-                    msg = SS.strings.error + (xhr.status ? ' (HTTP ' + xhr.status + ')' : '');
-                }
-
-                onError({ message: msg });
+                onError(errorFromXhr(xhr, status));
             },
             timeout: 300000 // 5 minutes
         });
+    }
+
+    // ---------- PLAIN-LANGUAGE ERRORS ----------
+    //
+    // Every failure the user sees answers: what happened, did anything on my
+    // site change, what do I do now. The wording lives in PHP (Errors class)
+    // and arrives as SS.errors, so a failure the SERVER reports and one only
+    // the BROWSER can see (dropped connection, gateway timeout page) read the
+    // same. The raw technical text is kept in a collapsed "Technical details"
+    // line and in the plugin's log under a reference code.
+
+    function errorFor(code, detail, ref) {
+        var cat = (SS.errors && (SS.errors[code] || SS.errors.generic)) || {};
+        return {
+            code:    SS.errors && SS.errors[code] ? code : 'generic',
+            title:   cat.title || 'Something went wrong',
+            message: cat.message || SS.strings.error,
+            hint:    cat.hint || '',
+            detail:  detail || '',
+            ref:     ref || null,
+            log:     cat.log !== false
+        };
+    }
+
+    // Turn a server error payload (new shape: code/title/message/hint/ref,
+    // or the older bare {message}) into the full error object.
+    function normalizeError(data, fallbackCode) {
+        if (data && data.title && data.message) {
+            return $.extend(errorFor(data.code || fallbackCode || 'generic'), data);
+        }
+        var detail = (data && data.message) ? String(data.message) : '';
+        return errorFor(fallbackCode || 'generic', detail);
+    }
+
+    function errorFromXhr(xhr, status, context) {
+        var http = xhr && xhr.status ? xhr.status : 0;
+        var body = xhr && xhr.responseJSON;
+
+        // The server answered with our own JSON error — use it as is.
+        if (body && body.data && (body.data.title || body.data.message)) {
+            return normalizeError(body.data);
+        }
+
+        var detail = (context ? context + ': ' : '') +
+            (status === 'timeout' ? 'request timed out'
+                : http ? 'HTTP ' + http + ' ' + ((xhr.statusText || '') + '').trim()
+                : 'no response (' + (status || 'network') + ')');
+
+        // A short snippet of an HTML error page often names the culprit
+        // (LiteSpeed, nginx, Cloudflare, ModSecurity).
+        if (xhr && typeof xhr.responseText === 'string' && xhr.responseText && !body) {
+            var text = xhr.responseText.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+            if (text) detail += ' — ' + text.slice(0, 180);
+        }
+
+        var code;
+        if (http === 403) code = 'session_expired';
+        else if (status === 'timeout' || http === 504 || http === 524 || http === 408) code = 'server_timeout';
+        else if (http >= 500) code = 'server_error';
+        else if (http === 0) code = 'connection_lost';
+        else code = 'generic';
+
+        return errorFor(code, detail);
+    }
+
+    function escapeHtml(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+    }
+
+    // Render a failure into the result card under the form. Failures with no
+    // server-side log entry yet (the browser saw them, the server didn't)
+    // are reported so they get a reference code too.
+    function showError($wrap, err, where) {
+        err = err && err.title ? err : normalizeError(err);
+
+        var $r = $wrap.find('.sitessaver-result').first();
+        ensureResultCard($r);
+        var $card = $r.find('.ss-result-card');
+        $r.show();
+        if ($r.length && $r[0].scrollIntoView) $r[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+        $card.removeClass('success').addClass('error');
+        $card.find('> i').attr('class', 'ri-error-warning-fill');
+        $card.find('.sitessaver-result-title').text(err.title);
+
+        var html = '<span class="ss-error-message">' + escapeHtml(err.message) + '</span>';
+        if (err.hint) {
+            html += '<span class="ss-error-hint">' + escapeHtml(err.hint) + '</span>';
+        }
+        html += '<span class="ss-error-meta"></span>';
+        if (err.detail) {
+            html += '<details class="ss-error-detail"><summary>Technical details</summary><code>' + escapeHtml(err.detail) + '</code></details>';
+        }
+        $r.find('.sitessaver-result-text').html(html);
+
+        function renderRef(ref) {
+            if (!ref) return;
+            $r.find('.ss-error-meta').html(
+                'Reference <strong>SS-' + escapeHtml(ref) + '</strong>' +
+                (SS.logUrl ? ' · <a href="' + escapeHtml(SS.logUrl) + '">View log</a>' : '')
+            );
+        }
+
+        if (err.ref) {
+            renderRef(err.ref);
+        } else if (err.log !== false) {
+            $.post(SS.ajaxUrl, {
+                action: 'sitessaver_client_error',
+                nonce:  SS.nonce,
+                code:   err.code,
+                detail: err.detail || err.message,
+                where:  where || ''
+            }).done(function (res) {
+                if (res && res.success && res.data && res.data.ref) renderRef(res.data.ref);
+            });
+        }
     }
 
     // ---------- RESTORE-COMPLETE MODAL ----------
@@ -464,8 +563,21 @@
         $p.hide();
     }
 
+    // Some screens (Backups) ship an empty result container; build the card
+    // on first use so a message is never written into nothing.
+    function ensureResultCard($r) {
+        if (!$r.find('.ss-result-card').length) {
+            $r.html(
+                '<div class="ss-result-card"><i></i><div>' +
+                '<strong style="display:block;" class="sitessaver-result-title"></strong>' +
+                '<span class="sitessaver-result-text"></span></div></div>'
+            );
+        }
+    }
+
     function showResult($wrap, msg, isError) {
-        var $r = $wrap.find('.sitessaver-result');
+        var $r = $wrap.find('.sitessaver-result').first();
+        ensureResultCard($r);
         $r.show();
         var $card = $r.find('.ss-result-card');
         $card.removeClass('success error').addClass(isError ? 'error' : 'success');
@@ -740,7 +852,7 @@
                 if (cancelled) {
                     ajax('sitessaver_cancel_export', { uid: uid }, function () {
                         ssModal.close();
-                        showResult($form, 'Export cancelled.', true);
+                        showError($form, errorFor('export_cancelled'));
                         $btn.prop('disabled', false);
                     });
                     return;
@@ -805,7 +917,7 @@
             function handleExportError(err) {
                 stopGdrivePolling();
                 ssModal.close();
-                showResult($form, err.message || SS.strings.error, true);
+                showError($form, (err && err.error) ? err.error : normalizeError(err, 'export_failed'), 'export_step');
                 $btn.prop('disabled', false);
             }
 
@@ -813,7 +925,7 @@
 
         }, function (err) {
             ssModal.close();
-            showResult($form, err.message || SS.strings.error, true);
+            showError($form, normalizeError(err, 'export_failed'), 'export_start');
             $btn.prop('disabled', false);
         });
     });
@@ -888,7 +1000,7 @@
                 clearInterval(poll);
                 ajax('sitessaver_cancel_export', { uid: uid }, function () {
                     ssModal.close();
-                    showResult($form, 'Export cancelled.', true);
+                    showError($form, errorFor('export_cancelled'));
                     $btn.prop('disabled', false);
                     onDone();
                 });
@@ -901,7 +1013,7 @@
                 if (state === 'error') {
                     clearInterval(poll);
                     ssModal.close();
-                    showResult($form, (s.status && s.status.message) || SS.strings.error, true);
+                    showError($form, s.error ? normalizeError(s.error) : errorFor('export_failed', (s.status && s.status.message) || ''), 'export');
                     $btn.prop('disabled', false);
                     onDone();
                     return;
@@ -926,9 +1038,8 @@
                 if (s.stalled) {
                     clearInterval(poll);
                     ssModal.close();
-                    showResult($form,
-                        'The backup process stopped unexpectedly (no progress for ' +
-                        s.seconds_since_update + 's). Please try again.', true);
+                    showError($form, s.error ? normalizeError(s.error)
+                        : errorFor('export_stalled', 'No progress for ' + s.seconds_since_update + 's'), 'export');
                     $btn.prop('disabled', false);
                     onDone();
                     return;
@@ -1067,14 +1178,15 @@
     }
 
     function startImportUpload(file) {
-        var $form       = $('.sitessaver-wrap');
-        var chunkSize   = 2 * 1024 * 1024;
-        var totalChunks = Math.ceil(file.size / chunkSize);
-        var uploadId    = generateUploadId();
+        var $form        = $('.sitessaver-wrap');
+        var chunkSize    = 2 * 1024 * 1024;
+        var totalChunks  = Math.ceil(file.size / chunkSize);
+        var uploadId     = generateUploadId();
         var currentChunk = 0;
-        var assembledFile = '';
-        var cancelled   = false;
-        var activeXhr   = null;
+        var cancelled    = false;
+        var activeXhr    = null;
+        var attempt      = 0;
+        var MAX_ATTEMPTS = 5;
 
         $form.find('.sitessaver-result').hide();
 
@@ -1088,7 +1200,7 @@
                 if (activeXhr) activeXhr.abort();
                 ajax('sitessaver_cleanup_chunks', { upload_id: uploadId });
                 ssModal.close();
-                showResult($form, 'Import cancelled.', true);
+                showError($form, errorFor('import_cancelled'));
             }
         });
 
@@ -1097,18 +1209,12 @@
         function sendNextChunk() {
             if (cancelled) return;
 
-            if (currentChunk >= totalChunks) {
-                startRestoration(assembledFile);
-                return;
-            }
-
             var start    = currentChunk * chunkSize;
             var end      = Math.min(start + chunkSize, file.size);
-            var blob     = file.slice(start, end);
             var formData = new FormData();
             formData.append('action', 'sitessaver_upload_chunk');
             formData.append('nonce', SS.nonce);
-            formData.append('chunk', blob);
+            formData.append('chunk', file.slice(start, end));
             formData.append('chunk_index', currentChunk);
             formData.append('total_chunks', totalChunks);
             formData.append('filename', file.name);
@@ -1120,68 +1226,211 @@
                 data: formData,
                 processData: false,
                 contentType: false,
+                dataType: 'json',
+                timeout: 180000,
                 success: function (res) {
                     if (cancelled) return;
-                    if (res.success) {
-                        if (res.data && res.data.assembled_file) {
-                            assembledFile = res.data.assembled_file;
-                        }
-                        currentChunk++;
-                        var pct = Math.round((currentChunk / totalChunks) * 100);
-                        ssModal.setProgress(pct, 'Uploading');
-                        sendNextChunk();
+                    if (res && res.success) {
+                        attempt = 0;
+                        afterChunk(res.data || {});
                     } else {
-                        onUploadError(res.data ? res.data.message : SS.strings.error);
+                        var data = (res && res.data) || {};
+                        // Out-of-order: the server tells us where it is.
+                        if (typeof data.next_index === 'number') {
+                            currentChunk = data.next_index;
+                            sendNextChunk();
+                            return;
+                        }
+                        failUpload(normalizeError(data, 'upload_failed'));
                     }
                 },
                 error: function (xhr, status) {
                     if (cancelled || status === 'abort') return;
-                    onUploadError(SS.strings.error);
+                    var body = xhr.responseJSON;
+                    if (xhr.status === 409 && body && body.data && typeof body.data.next_index === 'number') {
+                        currentChunk = body.data.next_index;
+                        sendNextChunk();
+                        return;
+                    }
+                    // A real answer from our own code (validation, disk
+                    // full): retrying won't change it.
+                    if (body && body.data && body.data.title) {
+                        failUpload(normalizeError(body.data));
+                        return;
+                    }
+                    if (xhr.status === 403) {
+                        failUpload(errorFor('upload_page_outdated', 'HTTP 403 on chunk ' + currentChunk + ' (nonce or session expired)'));
+                        return;
+                    }
+                    retryChunk(errorFromXhr(xhr, status, 'chunk ' + (currentChunk + 1) + '/' + totalChunks));
                 }
             });
         }
 
-        function onUploadError(msg) {
+        function afterChunk(data) {
+            if (data.assembled && data.assembled_file) {
+                ssModal.setProgress(100, 'Uploading');
+                startRestoration(data.assembled_file);
+                return;
+            }
+            currentChunk = typeof data.next_index === 'number' ? data.next_index : currentChunk + 1;
+            ssModal.setProgress(Math.min(99, Math.round((currentChunk / totalChunks) * 100)), 'Uploading');
+            sendNextChunk();
+        }
+
+        // Network blip or a gateway error: ask the server where the upload
+        // actually stands before doing anything — the chunk may have been
+        // written and only the reply lost. Never delete what's there while
+        // we're still trying.
+        function retryChunk(err) {
+            attempt++;
+            if (attempt > MAX_ATTEMPTS) {
+                err.code = 'upload_interrupted';
+                failUpload($.extend(errorFor('upload_interrupted'), { detail: err.detail }));
+                return;
+            }
+            var wait = Math.min(30, Math.pow(2, attempt)) * 1000;
+            ssModal.setProgress(Math.round((currentChunk / totalChunks) * 100), 'Connection hiccup — retrying (' + attempt + '/' + MAX_ATTEMPTS + ')…');
+
+            setTimeout(function () {
+                if (cancelled) return;
+                ajax('sitessaver_upload_status', { upload_id: uploadId }, function (st) {
+                    if (cancelled) return;
+                    if (st.assembled_file) {
+                        afterChunk({ assembled: true, assembled_file: st.assembled_file });
+                        return;
+                    }
+                    currentChunk = st.received;
+                    sendNextChunk();
+                }, function () {
+                    // Status unreachable too — just resend the same chunk;
+                    // the server ignores it if it already has it.
+                    sendNextChunk();
+                });
+            }, wait);
+        }
+
+        function failUpload(err) {
             ajax('sitessaver_cleanup_chunks', { upload_id: uploadId });
             ssModal.close();
-            showResult($form, msg, true);
+            showError($form, err, 'upload');
         }
 
         function startRestoration(filename) {
-            // Restore phase — cannot cancel, warn user clearly
             ssModal.disableCancel('Restoring — cannot cancel');
             $('#ss-pm-title').text('Restoring Site');
             $('#ss-pm-subtitle').text('Database and files are being restored. This cannot be interrupted.');
-            $('#ss-pm-caution').text('Do not close this tab. Interrupting the restore may leave your site in a broken state.');
-            ssModal.setSteps(SS.importPhases || []);
-            ssModal.setIndeterminate('Restoring database and files...');
-
-            var statusPoll = watchImportProgress();
-
-            ajax('sitessaver_import', { file: filename },
-                function (res) {
-                    stopPoll(statusPoll);
-                    ssModal.completeSteps();
-                    ssModal.done();
-                    setTimeout(function () {
-                        ssModal.close();
-                        showResult($form, res.message || SS.strings.done, false);
-                        showRestoreCompleteModal(res);
-                    }, 800);
-                },
-                function (err) {
-                    stopPoll(statusPoll);
-                    ssModal.close();
-                    showResult($form, err.message || SS.strings.error, true);
-                }
-            );
+            $('#ss-pm-caution').text('Keep this tab open until the restore finishes. If it does close, the restore carries on on the server.');
+            runRestore({ file: filename }, $form, function (res) {
+                showResult($form, res.message || SS.strings.done, false);
+            });
         }
 
         sendNextChunk();
     }
 
 
-    // ---------- RESTORE (from existing backup) ----------
+    // ---------- RESTORE ----------
+    //
+    // The restore runs on the server in the background (Restore_Job). The
+    // browser starts it, then only asks "how's it going?" every couple of
+    // seconds. No request lasts long, so a web server's 60-second limit can
+    // no longer cut the restore off or hide its outcome. If the host blocks
+    // background requests, the browser runs the restore itself but STILL
+    // follows it through the status poll, ignoring whatever the long request
+    // returns.
+
+    function runRestore(source, $form, onSuccessExtra) {
+        ssModal.setSteps(SS.importPhases || []);
+        ssModal.setIndeterminate(source.gdrive_file_id ? 'Downloading from Google Drive...' : 'Preparing restore...');
+
+        ajax('sitessaver_restore_start', source, function (job) {
+            followRestore(job, $form, onSuccessExtra);
+        }, function (err) {
+            ssModal.close();
+            showError($form, normalizeError(err, 'restore_failed_early'), 'restore_start');
+        });
+    }
+
+    function followRestore(job, $form, onSuccessExtra) {
+        var inlineStarted = false;
+        var misses        = 0;
+        var finished      = false;
+        var poll;
+
+        function runInline() {
+            if (inlineStarted) return;
+            inlineStarted = true;
+            // Fire and forget: the outcome comes from the status poll.
+            $.ajax({
+                url: SS.ajaxUrl,
+                type: 'POST',
+                data: { action: 'sitessaver_restore_run', nonce: SS.nonce, job: job.job, token: job.token },
+                timeout: 0
+            });
+        }
+
+        if (!job.background) runInline();
+
+        function finish() {
+            finished = true;
+            clearInterval(poll);
+        }
+
+        function tick() {
+            if (finished) return;
+            $.ajax({
+                url: SS.ajaxUrl,
+                type: 'POST',
+                dataType: 'json',
+                timeout: 30000,
+                data: { action: 'sitessaver_restore_status', job: job.job, token: job.token },
+                success: function (res) {
+                    if (finished) return;
+                    if (!res || !res.success) { miss(); return; }
+                    misses = 0;
+                    var s = res.data;
+
+                    if (s.status === 'queued' && s.not_started) runInline();
+
+                    if (s.phase && s.phase !== 'queued' && s.phase !== 'download' && s.phase !== 'done') {
+                        ssModal.setActiveStep(s.phase);
+                    }
+                    if (s.label && s.status !== 'completed') ssModal.setIndeterminate(s.label);
+
+                    if (s.status === 'completed') {
+                        finish();
+                        ssModal.completeSteps();
+                        ssModal.done();
+                        setTimeout(function () {
+                            ssModal.close();
+                            if (onSuccessExtra) onSuccessExtra(s.result || {});
+                            showRestoreCompleteModal(s.result || {});
+                        }, 800);
+                    } else if (s.status === 'failed') {
+                        finish();
+                        ssModal.close();
+                        showError($form, normalizeError(s.error, 'restore_failed'), 'restore');
+                    }
+                },
+                error: function () { miss(); }
+            });
+        }
+
+        // The site is mid-swap; a handful of failed polls is normal. Only
+        // give up after ~3 minutes without a single answer.
+        function miss() {
+            misses++;
+            if (misses >= 90) {
+                finish();
+                ssModal.close();
+                showError($form, errorFor('server_timeout', 'Restore status unreachable for ' + misses + ' polls (job ' + job.job + ')'), 'restore_poll');
+            }
+        }
+
+        poll = setInterval(tick, 2000);
+        tick();
+    }
 
     $(document).on('click', '.sitessaver-restore-btn', function () {
         var file  = $(this).data('file');
@@ -1198,52 +1447,14 @@
     });
 
     function doRestore(file, $form) {
+        $form.find('.sitessaver-result').hide();
         ssModal.open({
             title:      'Restoring Site',
             subtitle:   'Database and files are being restored. Please wait.',
-            caution:    'Do not close this tab. Interrupting the restore may leave your site in a broken state.',
+            caution:    'Keep this tab open until the restore finishes. If it does close, the restore carries on on the server.',
             cancelable: false
         });
-        ssModal.setSteps(SS.importPhases || []);
-        ssModal.setIndeterminate('Restoring database and files...');
-
-        var statusPoll = watchImportProgress();
-
-        ajax('sitessaver_import', { file: file },
-            function (res) {
-                stopPoll(statusPoll);
-                ssModal.completeSteps();
-                ssModal.done();
-                setTimeout(function () {
-                    ssModal.close();
-                    showRestoreCompleteModal(res);
-                }, 800);
-            },
-            function (err) {
-                stopPoll(statusPoll);
-                ssModal.close();
-                showResult($form, err.message || SS.strings.error, true);
-            }
-        );
-    }
-
-    // Poll the restore's current phase during the single blocking
-    // sitessaver_import request (see Ajax::handle_get_import_status()) and
-    // reflect it on the step list + indeterminate bar label. Shared by the
-    // upload-then-restore flow and the restore-an-existing-backup flow so
-    // both report identically — same pattern as watchExportProgress().
-    function watchImportProgress() {
-        return setInterval(function () {
-            ajax('sitessaver_get_import_status', {}, function (res) {
-                var p = res.progress;
-                if (!p || !p.phase) return;
-                ssModal.setActiveStep(p.phase);
-                ssModal.setIndeterminate(p.label || 'Restoring...');
-            }, function () {
-                // A failed poll is not fatal — the restore request keeps
-                // running regardless. Try again on the next tick.
-            });
-        }, 1500);
+        runRestore({ file: file }, $form);
     }
 
 
@@ -1796,28 +2007,11 @@
                 ssModal.open({
                     title:      'Restoring from Google Drive',
                     subtitle:   'Downloading the backup and restoring your site. Please wait.',
-                    caution:    'Do not close this tab. Interrupting the restore may leave your site in a broken state.',
+                    caution:    'Keep this tab open until the restore finishes. If it does close, the restore carries on on the server.',
                     cancelable: false
                 });
-                ssModal.setSteps(SS.importPhases || []);
-                ssModal.setIndeterminate('Downloading from Google Drive...');
-
-                var statusPoll = watchImportProgress();
-
-                ajax('sitessaver_gdrive_restore', { file_id: id }, function (res) {
-                    stopPoll(statusPoll);
-                    ssModal.completeSteps();
-                    ssModal.done();
-                    setTimeout(function () {
-                        ssModal.close();
-                        showRestoreCompleteModal(res);
-                    }, 800);
-                }, function (err) {
-                    stopPoll(statusPoll);
-                    ssModal.close();
-                    ssNotify.error(err.message || SS.strings.error, { title: 'Restore failed' });
-                    $btn.prop('disabled', false);
-                });
+                runRestore({ gdrive_file_id: id }, $('.sitessaver-wrap'));
+                $btn.prop('disabled', false);
             }
         });
     });
@@ -1894,7 +2088,7 @@
                 ajax('sitessaver_cancel_export', { uid: uid }, function () {
                     ssModal.close();
                     $('.ss-resume-banner').remove();
-                    showResult($form, 'Export cancelled.', true);
+                    showError($form, errorFor('export_cancelled'));
                     $btn.prop('disabled', false);
                 });
                 return;
@@ -1938,13 +2132,13 @@
                     runNextStep();
                 } else {
                     ssModal.close();
-                    showResult($form, stepRes.message || SS.strings.error, true);
+                    showError($form, stepRes.error ? normalizeError(stepRes.error) : normalizeError(stepRes, 'export_failed'), 'export_resume');
                     $btn.prop('disabled', false);
                 }
             }, function (err) {
                 gdrivePoll = stopPoll(gdrivePoll);
                 ssModal.close();
-                showResult($form, err.message || SS.strings.error, true);
+                showError($form, (err && err.error) ? normalizeError(err.error) : normalizeError(err, 'export_failed'), 'export_resume');
                 $btn.prop('disabled', false);
             });
         }
@@ -2007,6 +2201,27 @@
             });
         });
     }
+
+    // ---------- TROUBLESHOOTING LOG (Help page) ----------
+
+    $(document).on('click', '#ss-log-clear', function () {
+        var $btn = $(this);
+        ssNotify.confirm({
+            title: 'Clear the troubleshooting log?',
+            message: 'Older reference codes will no longer be found. Only do this once any open problem is sorted out.',
+            confirmText: 'Clear log',
+            cancelText: 'Keep it',
+            onConfirm: function () {
+                $btn.prop('disabled', true);
+                ajax('sitessaver_log_clear', {}, function () {
+                    window.location.reload();
+                }, function (err) {
+                    $btn.prop('disabled', false);
+                    ssNotify.error(normalizeError(err).message);
+                });
+            }
+        });
+    });
 
     checkActiveExport();
 

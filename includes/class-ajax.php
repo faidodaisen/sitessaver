@@ -47,8 +47,16 @@ final class Ajax {
             'sitessaver_gdrive_restore' => 'handle_gdrive_restore',
             'sitessaver_gdrive_delete'  => 'handle_gdrive_delete',
             'sitessaver_upload_chunk'   => 'handle_upload_chunk',
+            'sitessaver_upload_status'  => 'handle_upload_status',
             'sitessaver_cleanup_chunks' => 'handle_cleanup_chunks',
             'sitessaver_finalize_restore' => 'handle_finalize_restore',
+            'sitessaver_restore_start'  => 'handle_restore_start',
+            'sitessaver_restore_status' => 'handle_restore_status',
+            'sitessaver_restore_run'    => 'handle_restore_run',
+            'sitessaver_restore_worker' => 'handle_restore_worker',
+            'sitessaver_client_error'   => 'handle_client_error',
+            'sitessaver_log_download'   => 'handle_log_download',
+            'sitessaver_log_clear'      => 'handle_log_clear',
         ];
 
 
@@ -64,6 +72,14 @@ final class Ajax {
         // exists to avoid. Authorization is the single-use key checked inside
         // handle_export_work(), not the session.
         add_action('wp_ajax_nopriv_sitessaver_export_work', [$this, 'handle_export_work']);
+
+        // Same for the restore worker. The restore STATUS poll is also open
+        // to logged-out requests, because halfway through a restore the
+        // database (and with it the user's login session) is replaced — the
+        // browser can no longer prove who it is with a cookie or nonce. It
+        // proves possession of the job's own random token instead.
+        add_action('wp_ajax_nopriv_sitessaver_restore_worker', [$this, 'handle_restore_worker']);
+        add_action('wp_ajax_nopriv_sitessaver_restore_status', [$this, 'handle_restore_status']);
     }
 
     /**
@@ -256,6 +272,26 @@ final class Ajax {
             ? Export::STALL_SECONDS_FINALIZING
             : Export::STALL_SECONDS;
 
+        $stalled = ($status['status'] ?? '') === 'running' && $since > $stall_threshold;
+
+        // Log a stall once (the browser keeps polling) and give the user a
+        // plain-language message with a reference code.
+        $error = null;
+        if ($stalled) {
+            $ref = get_transient('sitessaver_export_stall_ref_' . $uid);
+            if (!is_string($ref) || $ref === '') {
+                $ref = Log::error('export_stalled', sprintf('No progress for %ds during step "%s".', $since, $current['id'] ?? $index), [
+                    'uid'  => $uid,
+                    'note' => $phase_note,
+                    'done' => $status['detail']['done'] ?? null,
+                ]);
+                set_transient('sitessaver_export_stall_ref_' . $uid, $ref, DAY_IN_SECONDS);
+            }
+            $error = Errors::payload('export_stalled', sprintf('No progress for %ds during "%s".', $since, $current['label'] ?? ''), $ref);
+        } elseif (($status['status'] ?? '') === 'error') {
+            $error = Errors::payload('export_failed', (string) ($status['message'] ?? ''), $status['ref'] ?? null);
+        }
+
         wp_send_json_success([
             'status'        => $status,
             'steps'         => $steps,
@@ -272,7 +308,8 @@ final class Ajax {
             // long loops, so a long silence means the process is gone (OOM,
             // host kill) rather than merely busy — EXCEPT during a tagged
             // "finalizing" phase, which uses the extended threshold above.
-            'stalled'       => ($status['status'] ?? '') === 'running' && $since > $stall_threshold,
+            'stalled'       => $stalled,
+            'error'         => $error,
         ]);
     }
 
@@ -342,8 +379,21 @@ final class Ajax {
             $result['finalize_url']   = Import::build_finalize_redirect_url();
             wp_send_json_success($result);
         } else {
-            wp_send_json_error($result);
+            wp_send_json_error($this->restore_failure_payload($result));
         }
+    }
+
+    /**
+     * Turn a failed Import result into the plain-language error payload,
+     * logging the technical message under a reference code.
+     *
+     * @param array<string, mixed> $result
+     * @return array<string, mixed>
+     */
+    private function restore_failure_payload(array $result): array {
+        $technical = (string) ($result['message'] ?? '');
+        $phase     = (string) (Import::get_progress()['phase'] ?? '');
+        return Errors::report(Errors::classify_restore($technical, $phase), $technical, ['phase' => $phase, 'mode' => 'legacy']);
     }
 
     /**
@@ -387,7 +437,7 @@ final class Ajax {
             $result['finalize_url']   = Import::build_finalize_redirect_url();
             wp_send_json_success($result);
         } else {
-            wp_send_json_error($result);
+            wp_send_json_error($this->restore_failure_payload($result));
         }
     }
 
@@ -1080,7 +1130,7 @@ final class Ajax {
             $restore['finalize_url']   = Import::build_finalize_redirect_url();
             wp_send_json_success($restore);
         } else {
-            wp_send_json_error($restore);
+            wp_send_json_error($this->restore_failure_payload($restore));
         }
     }
 
@@ -1106,158 +1156,282 @@ final class Ajax {
     }
 
     /**
+     * Receive one chunk of an uploaded backup.
      *
      * Receives: chunk (file blob), chunk_index, total_chunks, filename, upload_id.
-     * On the final chunk, assembles all chunks into a single ZIP in the storage dir.
+     *
+     * Each chunk is APPENDED to a single growing .part file the moment it
+     * arrives, so every request does the same small amount of work. This
+     * replaced "save each chunk separately, then glue them all together when
+     * the last one lands": that final request had to copy the whole backup
+     * twice over, which on a large site and a throttled shared disk took
+     * minutes — the web server cut it off at its request limit (60s on many
+     * LiteSpeed hosts), the browser showed "An error occurred." at 100%, and
+     * the half-built file was then deleted. Now the last chunk only appends
+     * its own few MB and renames the result into place.
+     *
+     * Idempotent per chunk: if the browser retries a chunk whose response it
+     * never saw, the server recognises it as already written and says so,
+     * instead of appending it twice.
      */
-
     public function handle_upload_chunk(): void {
         sitessaver_verify_ajax();
 
-        // Validate upload_id — alphanumeric only, 8-32 chars.
         $upload_id = sanitize_key(wp_unslash($_POST['upload_id'] ?? ''));
         if (empty($upload_id) || !preg_match('/^[a-z0-9]{8,32}$/', $upload_id)) {
-            wp_send_json_error(['message' => __('Invalid upload ID.', 'sitessaver')]);
+            wp_send_json_error(Errors::payload('upload_page_outdated', 'Invalid upload ID.'), 400);
         }
 
         $chunk_index  = (int) ($_POST['chunk_index'] ?? -1);
         $total_chunks = (int) ($_POST['total_chunks'] ?? 0);
         $filename     = sanitize_file_name(wp_unslash($_POST['filename'] ?? ''));
 
-        // Basic validation.
-        if ($total_chunks < 1 || $total_chunks > 10000) {
-            wp_send_json_error(['message' => __('Invalid chunk count.', 'sitessaver')]);
-        }
-
-        if ($chunk_index < 0 || $chunk_index >= $total_chunks) {
-            wp_send_json_error(['message' => __('Invalid chunk index.', 'sitessaver')]);
+        if ($total_chunks < 1 || $total_chunks > 100000 || $chunk_index < 0 || $chunk_index >= $total_chunks) {
+            wp_send_json_error(Errors::payload('upload_page_outdated', "Invalid chunk index {$chunk_index}/{$total_chunks}."), 400);
         }
 
         if (empty($filename) || strtolower(pathinfo($filename, PATHINFO_EXTENSION)) !== 'zip') {
-            wp_send_json_error(['message' => __('Only ZIP files are accepted.', 'sitessaver')]);
+            wp_send_json_error(Errors::payload('upload_not_zip', 'Rejected file name: ' . $filename), 400);
         }
 
-        if (empty($_FILES['chunk']) || $_FILES['chunk']['error'] !== UPLOAD_ERR_OK) {
-            wp_send_json_error(['message' => __('Chunk upload failed.', 'sitessaver')]);
+        if (empty($_FILES['chunk']) || (int) $_FILES['chunk']['error'] !== UPLOAD_ERR_OK) {
+            $php_err = (int) ($_FILES['chunk']['error'] ?? -1);
+            wp_send_json_error(Errors::report(
+                $php_err === UPLOAD_ERR_CANT_WRITE ? 'upload_disk_full' : 'upload_failed',
+                'PHP rejected chunk upload (UPLOAD_ERR ' . $php_err . ').',
+                ['upload_id' => $upload_id, 'chunk' => $chunk_index, 'total' => $total_chunks]
+            ));
         }
 
-        // Create chunk directory.
         $chunk_dir = SITESSAVER_TEMP_DIR . '/chunks/' . $upload_id;
         if (!is_dir($chunk_dir)) {
             wp_mkdir_p($chunk_dir);
         }
 
-        // Save this chunk with zero-padded index for correct ordering.
-        $chunk_path = $chunk_dir . '/chunk_' . str_pad((string) $chunk_index, 5, '0', STR_PAD_LEFT);
-        if (!move_uploaded_file($_FILES['chunk']['tmp_name'], $chunk_path)) {
-            wp_send_json_error(['message' => __('Failed to save chunk.', 'sitessaver')]);
+        // One request at a time per upload: a retried chunk can overlap the
+        // original if the network hiccupped, and both must not append.
+        $lock = @fopen($chunk_dir . '/.lock', 'c');
+        if ($lock === false) {
+            wp_send_json_error(Errors::report('upload_failed', 'Cannot create upload lock in ' . $chunk_dir, ['upload_id' => $upload_id]));
         }
+        flock($lock, LOCK_EX);
 
-        // If this is the last chunk, assemble them.
-        if ($chunk_index === $total_chunks - 1) {
-            $assembled = $this->assemble_chunks($chunk_dir, $total_chunks, $filename);
+        $state = $this->upload_state($chunk_dir);
 
-            if ($assembled === null) {
-                wp_send_json_error(['message' => __('Failed to assemble uploaded file.', 'sitessaver')]);
-            }
-
+        // Already finished (the browser is retrying the last chunk after
+        // missing our reply): hand back the same answer again.
+        if (!empty($state['assembled_file'])) {
+            flock($lock, LOCK_UN);
+            fclose($lock);
             wp_send_json_success([
                 'chunk_index'    => $chunk_index,
                 'assembled'      => true,
-                'assembled_file' => basename($assembled),
+                'assembled_file' => $state['assembled_file'],
                 'message'        => __('Upload complete.', 'sitessaver'),
             ]);
         }
 
+        $received = (int) ($state['received'] ?? 0);
+
+        if ($chunk_index < $received) {
+            // Duplicate of a chunk already written.
+            flock($lock, LOCK_UN);
+            fclose($lock);
+            wp_send_json_success(['chunk_index' => $chunk_index, 'assembled' => false, 'next_index' => $received, 'duplicate' => true]);
+        }
+
+        if ($chunk_index > $received) {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+            wp_send_json_error(array_merge(
+                Errors::payload('upload_interrupted', "Out-of-order chunk {$chunk_index}, expected {$received}."),
+                ['next_index' => $received]
+            ), 409);
+        }
+
+        // Append.
+        $part   = $chunk_dir . '/upload.part';
+        clearstatcache(true, $part);
+        $before = is_file($part) ? (int) filesize($part) : 0;
+        $in     = @fopen($_FILES['chunk']['tmp_name'], 'rb');
+        $out    = @fopen($part, 'ab');
+        $size   = (int) ($_FILES['chunk']['size'] ?? 0);
+        $copied = ($in && $out) ? stream_copy_to_stream($in, $out) : false;
+        if ($in) {
+            fclose($in);
+        }
+        if ($out) {
+            fflush($out);
+            fclose($out);
+        }
+
+        if ($copied === false || (int) $copied !== $size) {
+            // Roll the partial write back so a retry starts clean.
+            if (is_file($part)) {
+                $h = @fopen($part, 'r+');
+                if ($h) {
+                    ftruncate($h, $before);
+                    fclose($h);
+                }
+            }
+            $free = @disk_free_space($chunk_dir);
+            flock($lock, LOCK_UN);
+            fclose($lock);
+            wp_send_json_error(Errors::report(
+                ($free !== false && $free < $size * 4) ? 'upload_disk_full' : 'upload_failed',
+                sprintf('Appending chunk %d failed: wrote %s of %d bytes.', $chunk_index, var_export($copied, true), $size),
+                ['upload_id' => $upload_id, 'free_bytes' => $free === false ? 'unknown' : (int) $free]
+            ));
+        }
+
+        $state = [
+            'filename' => $filename,
+            'total'    => $total_chunks,
+            'received' => $chunk_index + 1,
+            'bytes'    => $before + $size,
+            'updated'  => time(),
+        ];
+        $this->save_upload_state($chunk_dir, $state);
+        @touch($chunk_dir); // keeps the 6h stale-chunk sweep away from a slow upload
+
+        if ($chunk_index < $total_chunks - 1) {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+            wp_send_json_success(['chunk_index' => $chunk_index, 'assembled' => false, 'next_index' => $chunk_index + 1]);
+        }
+
+        // Last chunk: verify and move into storage. A rename, not a copy.
+        $error = null;
+        $dest  = $this->finish_upload($part, $filename, $error);
+
+        if ($dest === null) {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+            $this->remove_chunk_dir($chunk_dir);
+            wp_send_json_error(Errors::report(
+                $error === 'not_zip' ? 'upload_not_zip' : 'upload_failed',
+                'Finishing the upload failed: ' . (string) $error,
+                ['upload_id' => $upload_id, 'bytes' => $state['bytes'], 'file' => $filename]
+            ));
+        }
+
+        $state['assembled_file'] = basename($dest);
+        $this->save_upload_state($chunk_dir, $state);
+
+        flock($lock, LOCK_UN);
+        fclose($lock);
+
+        Log::info('upload_complete', 'Backup uploaded.', [
+            'file'   => basename($dest),
+            'size'   => size_format((int) $state['bytes']),
+            'chunks' => $total_chunks,
+        ]);
+
         wp_send_json_success([
-            'chunk_index' => $chunk_index,
-            'assembled'   => false,
+            'chunk_index'    => $chunk_index,
+            'assembled'      => true,
+            'assembled_file' => basename($dest),
+            'message'        => __('Upload complete.', 'sitessaver'),
         ]);
     }
 
     /**
-     * Assemble chunk files into a single ZIP in the storage directory.
-     *
-     * @return string|null Full path to assembled file, or null on failure.
+     * Where an upload stands, so the browser can recover after a failed
+     * chunk request instead of guessing: retry the same chunk, skip ahead
+     * (it landed, only the reply was lost), or pick up the finished file.
      */
-    private function assemble_chunks(string $chunk_dir, int $total_chunks, string $filename): ?string {
-        $dest = sitessaver_storage_dir() . '/' . sanitize_file_name($filename);
+    public function handle_upload_status(): void {
+        sitessaver_verify_ajax();
 
-        // Avoid overwriting — add suffix if file exists.
-        if (file_exists($dest)) {
-            $base = pathinfo($filename, PATHINFO_FILENAME);
-            $dest = sitessaver_storage_dir() . '/' . $base . '-' . wp_generate_password(4, false) . '.zip';
+        $upload_id = sanitize_key(wp_unslash($_POST['upload_id'] ?? ''));
+        if (empty($upload_id) || !preg_match('/^[a-z0-9]{8,32}$/', $upload_id)) {
+            wp_send_json_error(Errors::payload('upload_page_outdated', 'Invalid upload ID.'), 400);
         }
 
-        $out = fopen($dest, 'wb');
-        if (!$out) {
-            $this->remove_chunk_dir($chunk_dir);
+        $state = $this->upload_state(SITESSAVER_TEMP_DIR . '/chunks/' . $upload_id);
+
+        wp_send_json_success([
+            'received'       => (int) ($state['received'] ?? 0),
+            'total'          => (int) ($state['total'] ?? 0),
+            'assembled_file' => $state['assembled_file'] ?? null,
+        ]);
+    }
+
+    /**
+     * Validate the finished .part file and move it into the storage dir.
+     *
+     * @return string|null Final path, or null with $error set.
+     */
+    private function finish_upload(string $part, string $filename, ?string &$error): ?string {
+        $handle = @fopen($part, 'rb');
+        if (!$handle) {
+            $error = 'part file missing';
+            return null;
+        }
+        $header = fread($handle, 4);
+        fclose($handle);
+
+        // PK\x03\x04 = local file header, PK\x05\x06 = empty archive.
+        if ($header !== "PK\x03\x04" && $header !== "PK\x05\x06") {
+            $error = 'not_zip';
             return null;
         }
 
-        for ($i = 0; $i < $total_chunks; $i++) {
-            $chunk_path = $chunk_dir . '/chunk_' . str_pad((string) $i, 5, '0', STR_PAD_LEFT);
+        $dir  = sitessaver_storage_dir();
+        $dest = $dir . '/' . sanitize_file_name($filename);
+        if (file_exists($dest)) {
+            $dest = $dir . '/' . pathinfo($filename, PATHINFO_FILENAME) . '-' . wp_generate_password(4, false) . '.zip';
+        }
 
-            if (!file_exists($chunk_path)) {
-                fclose($out);
-                @unlink($dest);
-                $this->remove_chunk_dir($chunk_dir);
-                return null;
-            }
+        if (@rename($part, $dest)) {
+            return $dest;
+        }
 
-            $in = fopen($chunk_path, 'rb');
-            if (!$in) {
-                fclose($out);
-                @unlink($dest);
-                $this->remove_chunk_dir($chunk_dir);
-                return null;
-            }
-
-            while (!feof($in)) {
-                fwrite($out, fread($in, 8192));
-            }
-
+        // Different filesystem (unusual): fall back to a streamed copy.
+        $in  = @fopen($part, 'rb');
+        $out = @fopen($dest, 'wb');
+        $ok  = $in && $out && stream_copy_to_stream($in, $out) !== false;
+        if ($in) {
             fclose($in);
         }
-
-        fclose($out);
-
-        // Validate assembled file is actually a ZIP (PK magic bytes).
-        $handle = fopen($dest, 'rb');
-        if ($handle) {
-            $header = fread($handle, 4);
-            fclose($handle);
-
-            // PK\x03\x04 = local file header, PK\x05\x06 = empty archive.
-            if ($header !== "PK\x03\x04" && $header !== "PK\x05\x06") {
-                @unlink($dest);
-                $this->remove_chunk_dir($chunk_dir);
-                return null;
-            }
+        if ($out) {
+            fclose($out);
         }
-
-        // Clean up chunk directory.
-        $this->remove_chunk_dir($chunk_dir);
-
+        if (!$ok) {
+            @unlink($dest);
+            $error = 'could not move upload into ' . $dir;
+            return null;
+        }
+        @unlink($part);
         return $dest;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function upload_state(string $chunk_dir): array {
+        $file = $chunk_dir . '/state.json';
+        if (!is_readable($file)) {
+            return [];
+        }
+        $state = json_decode((string) file_get_contents($file), true);
+        return is_array($state) ? $state : [];
+    }
+
+    /**
+     * @param array<string, mixed> $state
+     */
+    private function save_upload_state(string $chunk_dir, array $state): void {
+        file_put_contents($chunk_dir . '/state.json', wp_json_encode($state), LOCK_EX);
     }
 
     /**
      * Remove a chunk directory and all its contents.
      */
     private function remove_chunk_dir(string $dir): void {
-        if (!is_dir($dir)) {
-            return;
-        }
-
-        $files = glob($dir . '/*');
-        if ($files) {
-            foreach ($files as $file) {
-                @unlink($file);
-            }
-        }
-
-        @rmdir($dir);
+        // sitessaver_rm_recursive() also removes dotfiles (.lock) and does
+        // not depend on GLOB_BRACE, which musl-based PHP builds lack.
+        sitessaver_rm_recursive($dir);
     }
 
     /**
@@ -1275,5 +1449,163 @@ final class Ajax {
         $this->remove_chunk_dir($chunk_dir);
 
         wp_send_json_success(['message' => __('Chunks cleaned up.', 'sitessaver')]);
+    }
+
+    // ------------------------------------------------------------------
+    // Restore jobs
+    // ------------------------------------------------------------------
+
+    /**
+     * Start a restore. Returns at once with a job id + token; the work runs
+     * in a background request (or, if the host blocks those, in a request the
+     * browser makes to handle_restore_run()). The browser follows progress
+     * through handle_restore_status().
+     *
+     * Accepts `file` (a backup in storage) or `gdrive_file_id`.
+     */
+    public function handle_restore_start(): void {
+        sitessaver_verify_ajax();
+
+        $file     = sanitize_file_name(wp_unslash($_POST['file'] ?? ''));
+        $drive_id = sanitize_text_field(wp_unslash($_POST['gdrive_file_id'] ?? ''));
+
+        if ($file === '' && $drive_id === '') {
+            wp_send_json_error(Errors::payload('restore_file_missing', 'No file specified.'), 400);
+        }
+
+        if ($file !== '' && !is_readable(sitessaver_storage_dir() . '/' . $file)) {
+            wp_send_json_error(Errors::report('restore_file_missing', 'Backup file not found: ' . $file));
+        }
+
+        $job = $file !== ''
+            ? Restore_Job::create('file', $file)
+            : Restore_Job::create('gdrive', $drive_id);
+
+        $spawned = Restore_Job::spawn($job['id'], $job['worker_key']);
+
+        wp_send_json_success([
+            'job'        => $job['id'],
+            'token'      => $job['token'],
+            'background' => $spawned,
+        ]);
+    }
+
+    /**
+     * Background worker for a restore job (detached loopback; no session).
+     * Authorized by the single-use worker key stored hashed in the job.
+     */
+    public function handle_restore_worker(): void {
+        $id  = sanitize_key(wp_unslash($_POST['job'] ?? ''));
+        $key = sanitize_text_field(wp_unslash($_POST['key'] ?? ''));
+
+        $job = Restore_Job::get($id);
+        if ($job === null || !Restore_Job::verify_worker_key($job, $key) || (int) ($job['blog_id'] ?? 0) !== get_current_blog_id()) {
+            wp_send_json_error(['message' => 'Invalid worker key.'], 403);
+        }
+
+        if (!Restore_Job::claim($id)) {
+            wp_send_json_success(['message' => 'already running']);
+        }
+
+        Restore_Job::run($id, 'background');
+
+        // Nobody is listening; just end cleanly.
+        wp_send_json_success(['message' => 'ok']);
+    }
+
+    /**
+     * In-browser fallback: run a job that the background worker never picked
+     * up. The response may be cut off by the web server on a long restore —
+     * the browser ignores this request's outcome and keeps following the job
+     * through the status poll, which tells the truth either way.
+     */
+    public function handle_restore_run(): void {
+        sitessaver_verify_ajax();
+
+        $id    = sanitize_key(wp_unslash($_POST['job'] ?? ''));
+        $token = sanitize_text_field(wp_unslash($_POST['token'] ?? ''));
+
+        $job = Restore_Job::get($id);
+        if ($job === null || !Restore_Job::verify_token($job, $token)) {
+            wp_send_json_error(Errors::payload('upload_page_outdated', 'Unknown restore job.'), 403);
+        }
+
+        if (($job['status'] ?? '') !== 'queued' || !Restore_Job::claim($id)) {
+            wp_send_json_success(['message' => 'already running']);
+        }
+
+        Log::info('restore_inline', 'Background restore did not start; running it in the browser request.', ['job' => $id]);
+
+        ob_start();
+        Restore_Job::run($id, 'inline');
+        self::discard_output_buffer();
+
+        wp_send_json_success(['message' => 'ok']);
+    }
+
+    /**
+     * Restore progress for the browser. Token-authorized (see init()).
+     */
+    public function handle_restore_status(): void {
+        // Never cache this — some hosts cache admin-ajax GET/POST responses
+        // for logged-out visitors, which is exactly what this request looks
+        // like after the database swap.
+        nocache_headers();
+
+        $id    = sanitize_key(wp_unslash($_POST['job'] ?? ''));
+        $token = sanitize_text_field(wp_unslash($_POST['token'] ?? ''));
+
+        $job = Restore_Job::get($id);
+        if ($job === null || !Restore_Job::verify_token($job, $token)) {
+            wp_send_json_error(['message' => 'Unknown restore job.'], 404);
+        }
+
+        wp_send_json_success(Restore_Job::public_view($job));
+    }
+
+    /**
+     * Failures only the browser can see (a dropped connection, a gateway
+     * timeout returning HTML) are reported here so they reach the log too
+     * and get a reference code the user can quote.
+     */
+    public function handle_client_error(): void {
+        sitessaver_verify_ajax();
+
+        $code   = sanitize_key(wp_unslash($_POST['code'] ?? 'generic'));
+        $detail = sanitize_textarea_field(wp_unslash($_POST['detail'] ?? ''));
+        $where  = sanitize_text_field(wp_unslash($_POST['where'] ?? ''));
+
+        $known = Errors::catalogue();
+        if (!isset($known[$code])) {
+            $code = 'generic';
+        }
+
+        $ref = Log::error($code, $detail !== '' ? $detail : 'Reported by the browser.', [
+            'where'      => $where,
+            'user_agent' => isset($_SERVER['HTTP_USER_AGENT']) ? substr(sanitize_text_field(wp_unslash($_SERVER['HTTP_USER_AGENT'])), 0, 200) : '',
+        ]);
+
+        wp_send_json_success(['ref' => $ref]);
+    }
+
+    /**
+     * Download the troubleshooting log as a .txt file.
+     */
+    public function handle_log_download(): void {
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false) || !current_user_can('manage_options')) {
+            wp_die(esc_html__('Permission denied.', 'sitessaver'), '', ['response' => 403]);
+        }
+
+        nocache_headers();
+        header('Content-Type: text/plain; charset=utf-8');
+        header('Content-Disposition: attachment; filename="sitessaver-log-' . gmdate('Ymd-His') . '.txt"');
+        echo Log::as_text(); // phpcs:ignore WordPress.Security.EscapeOutput -- plain-text download.
+        exit;
+    }
+
+    public function handle_log_clear(): void {
+        sitessaver_verify_ajax();
+        Log::clear();
+        wp_send_json_success(['message' => __('Log cleared.', 'sitessaver')]);
     }
 }

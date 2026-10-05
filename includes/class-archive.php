@@ -163,6 +163,9 @@ final class Archive {
                 continue;
             }
 
+            // Liveness for a background restore (throttled by the listener).
+            do_action('sitessaver_heartbeat');
+
             // Normalize entry path (forward slashes, no backslashes).
             $entry = str_replace('\\', '/', $entry);
 

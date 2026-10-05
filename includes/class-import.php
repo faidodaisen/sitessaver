@@ -40,14 +40,20 @@ final class Import {
      * authorized it) but transient writes are visible to a concurrent
      * request immediately, so a separate polling request can read this
      * while the restore is still running — same trick Export::tick() uses,
-     * scoped to a single in-flight import since only one can run at a time.
+     * The transient serves the legacy in-request restore path; a background
+     * restore job also gets the phase written to its job FILE, which (unlike
+     * the options table) survives the database being swapped out mid-restore.
      */
     private static function tick(string $phase): void {
+        $label = self::phases()[$phase] ?? $phase;
+
         set_transient(self::PROGRESS_KEY, [
             'phase' => $phase,
-            'label' => self::phases()[$phase] ?? $phase,
+            'label' => $label,
             'time'  => time(),
         ], 10 * MINUTE_IN_SECONDS);
+
+        Restore_Job::phase($phase, $label);
     }
 
     /**
@@ -432,6 +438,11 @@ final class Import {
                 if (!Database::import($db_file, $old_url, $new_url, $old_prefix)) {
                     throw new \RuntimeException(__('Failed to import database.', 'sitessaver'));
                 }
+
+                // The options table is now the backup's. Listeners (the
+                // background restore job) re-assert anything the rest of
+                // this restore depends on.
+                do_action('sitessaver_database_restored');
             }
 
             // 4. Restore wp-content files.
@@ -739,7 +750,11 @@ final class Import {
         );
 
         $failures = 0;
+        $failed_paths = [];
         foreach ($files as $file) {
+            // Liveness for a background restore (throttled by the listener).
+            do_action('sitessaver_heartbeat');
+
             $relative  = str_replace($source, '', $file->getPathname());
             $relative  = ltrim(str_replace('\\', '/', $relative), '/');
             $dest_path = $dest . '/' . $relative;
@@ -779,6 +794,9 @@ final class Import {
 
                 if (!$ok) {
                     $failures++;
+                    if ($failures <= 10) {
+                        $failed_paths[] = $relative;
+                    }
                     if ($failures <= 50) {
                         error_log(sprintf(
                             '[SitesSaver] merge_directory: copy failed for %s (path length %d) — source: %s',
@@ -797,6 +815,14 @@ final class Import {
                 $failures,
                 $dest
             ));
+            // Also into the plugin's own log, where the admin can actually
+            // read it — a partial restore with no visible trace is how
+            // "some images are broken" reports start.
+            Log::warning(
+                'restore_files_skipped',
+                sprintf('%d file(s) could not be copied while restoring.', $failures),
+                ['destination' => $dest, 'first_paths' => $failed_paths]
+            );
         }
     }
 

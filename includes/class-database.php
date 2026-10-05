@@ -568,6 +568,11 @@ final class Database {
                     break;
                 }
 
+                // Liveness for a background restore: a multi-GB dump can run
+                // for many minutes, and the job watcher must not mistake that
+                // for a dead worker. Throttled by the listener.
+                do_action('sitessaver_heartbeat');
+
                 $buf_len = strlen($buffer);
                 for ($i = 0; $i < $buf_len; $i++) {
                     $char = $buffer[$i];

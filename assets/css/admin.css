@@ -498,6 +498,158 @@
     word-break: break-word;
 }
 
+/* Error variant. Without it the card fell through to WordPress core's
+   `div.error` notice style (4px red left bar, white box) — the success
+   card had its own tint, the failure card did not. Mirrors the success
+   card: tinted surface, 1px border, danger accent on the icon + title. */
+.ss-result-card.error {
+    margin: 20px 0;
+    padding: 20px;
+    background: rgba(var(--ss-danger-rgb), 0.05);
+    border: 1px solid rgba(var(--ss-danger-rgb), 0.25);
+    box-shadow: none;
+    color: var(--ss-text-main);
+}
+
+.ss-result-card.error > i,
+.ss-result-card.error .sitessaver-result-title {
+    color: var(--ss-danger);
+}
+
+.ss-result-card.error .sitessaver-result-text {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-width: 68ch;
+}
+
+.ss-error-message {
+    color: var(--ss-text-main);
+    font-size: 14px;
+}
+
+.ss-error-hint {
+    color: var(--ss-text-muted);
+}
+
+.ss-error-meta {
+    color: var(--ss-text-muted);
+    font-size: 12px;
+}
+
+.ss-error-meta:empty {
+    display: none;
+}
+
+.ss-error-meta strong {
+    display: inline;
+    font-size: inherit;
+    color: var(--ss-text-main);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.02em;
+}
+
+.ss-error-meta a,
+.ss-error-detail summary {
+    color: var(--ss-primary);
+}
+
+.ss-error-detail summary,
+.ss-log-table summary {
+    cursor: pointer;
+    font-size: 12px;
+    width: fit-content;
+}
+
+.ss-error-detail summary:focus-visible,
+.ss-log-table summary:focus-visible {
+    outline: 2px solid var(--ss-primary);
+    outline-offset: 2px;
+    border-radius: 2px;
+}
+
+.ss-error-detail code,
+.ss-log-table code {
+    display: block;
+    margin-top: 6px;
+    padding: 10px 12px;
+    background: var(--ss-bg);
+    border-radius: var(--ss-radius);
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--ss-text-main);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 240px;
+    overflow: auto;
+}
+
+/* Troubleshooting log (Help page) */
+.ss-log-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.ss-log-intro {
+    margin: 0;
+    padding: 18px 24px 4px;
+    max-width: 75ch;
+    color: var(--ss-text-muted);
+    line-height: 1.6;
+}
+
+.ss-log-table td {
+    vertical-align: top;
+}
+
+.ss-log-when {
+    white-space: nowrap;
+    color: var(--ss-text-muted);
+    width: 1%;
+}
+
+.ss-log-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+}
+
+.ss-log-title i {
+    font-size: 16px;
+    color: var(--ss-text-muted);
+}
+
+.ss-log-row.is-error .ss-log-title i {
+    color: var(--ss-danger);
+}
+
+.ss-log-row.is-warning .ss-log-title i {
+    color: var(--ss-warning-hover);
+}
+
+.ss-log-table details {
+    margin-top: 4px;
+}
+
+.ss-log-ref {
+    white-space: nowrap;
+    width: 1%;
+    font-variant-numeric: tabular-nums;
+    color: var(--ss-text-muted);
+}
+
+@media (max-width: 782px) {
+    .ss-log-table th,
+    .ss-log-table td {
+        padding: 12px;
+    }
+    .ss-log-actions .btn {
+        padding-left: 10px;
+        padding-right: 10px;
+    }
+}
+
 .ss-download-link {
     display: inline-flex;
     align-items: center;
