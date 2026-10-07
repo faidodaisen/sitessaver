@@ -6,6 +6,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.4.10] — 2026-10-07
+
+### Fixed — backups on hosts that stop every PHP request after ~30 seconds
+
+On some shared hosts (LiteSpeed with `max_execution_time = 30` that the plugin is not allowed to lift) the
+export worker was stopped after 30 seconds. Every restart began the database step again from the first
+table, so the backup died at the same place each time ("No progress … during Exporting database",
+`db:wp_posts`, `done: 250`). The final ZIP step had the same problem: `ZipArchive::close()` does all of
+its work in one call that cannot be split.
+
+The export now runs as a chain of short requests. Each one works for a limited time slice, saves its
+place, and hands over to the next:
+
+- **Database:** the dump saves its position (table, last row key, bytes written) after every page of
+  rows. The next request cuts the file back to the last saved size and carries on. Rows are never
+  written twice or skipped.
+- **Files:** a large file copy continues from where the previous request stopped, instead of starting
+  the file again.
+- **ZIP:** built by SitesSaver's own append-only writer instead of `ZipArchive`. It writes a few files, or
+  a few MB of one large file, per slice and can continue in the next request. The result is a standard
+  ZIP (deflate, ZIP64 when needed) that restores exactly as before. Images, video and archives are
+  stored without recompressing them, which also makes this step faster.
+- **Cleanup** of the temporary folder is also done in slices.
+- **Slice length** follows the host's limit (60% of `max_execution_time`). If a background worker still
+  goes silent, the next one gets half the time.
+- **Fallback when background requests do not survive:** if background requests keep dying, or never
+  start at all, the open Export screen takes over and runs the slices itself, one short request at a
+  time. A request that is cut off is retried, and the work it saved is kept.
+- **PHP time limit reached mid-slice:** this no longer fails the backup. The work saved up to that point
+  is kept and the export continues with a shorter slice.
+- **Progress:** the progress line shows the table being exported and the row count.
+
 ## [1.4.9] — 2026-10-07
 
 ### Fixed — backup stopped at "Copying uploads..." with "No progress for 301s"

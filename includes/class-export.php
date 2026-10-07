@@ -153,11 +153,190 @@ final class Export {
      */
     private static string $worker_id = '';
 
-    /** Times a stalled export is restarted automatically before giving up. */
-    public const AUTO_RESUMES = 3;
+    /**
+     * Times a silent background worker is replaced by a new one before the
+     * browser takes the export over and runs the slices itself.
+     */
+    public const AUTO_RESUMES = 2;
+
+    /**
+     * Seconds without any sign of life before a background worker is
+     * presumed stopped by the host. A healthy worker checkpoints every few
+     * seconds and hands over to the next slice within a second.
+     */
+    public const RESPAWN_SECONDS = 60;
 
     /** Exception code used to unwind a superseded worker quietly. */
     public const SUPERSEDED = 7301;
+
+    /** Exception code used when a slice runs out of time (work is saved). */
+    public const SLICE = 7302;
+
+    /**
+     * When the current request must hand over (unix time, float), or null to
+     * run a step to the end. Every step checks it between units of work and
+     * leaves a cursor behind, so an export is a chain of short requests and
+     * no single request ever needs more than ~20-60 s. This is what makes a
+     * backup possible on hosts that stop every PHP request after 30 s.
+     */
+    private static ?float $deadline = null;
+
+    /** Last time a cursor was persisted (checkpoint throttle). */
+    private static float $checkpoint_last = 0.0;
+
+    /** Seconds between persisted checkpoints inside a slice. */
+    private const CHECKPOINT_INTERVAL = 2.0;
+
+    public static function begin_slice(?int $seconds): void {
+        self::$deadline        = $seconds === null ? null : microtime(true) + max(1, $seconds);
+        self::$checkpoint_last = 0.0;
+    }
+
+    public static function end_slice(): void {
+        self::$deadline = null;
+    }
+
+    public static function out_of_time(): bool {
+        return self::$deadline !== null && microtime(true) >= self::$deadline;
+    }
+
+    /** Unwind to run_step(), which reports the step as pending. */
+    private static function slice_expired(): never {
+        throw new \RuntimeException('Slice time used up; continuing in the next request.', self::SLICE);
+    }
+
+    /**
+     * Seconds a background worker may work before handing over.
+     *
+     * Read AFTER set_time_limit(0): a host that honours it reports 0, one
+     * that does not still shows its real limit. A worker that went silent
+     * halves the slice for the next one (see the status poll), so the chain
+     * settles below whatever the host actually enforces.
+     *
+     * @param array<string, mixed> $status
+     */
+    public static function slice_budget(array $status): int {
+        if (!empty($status['slice'])) {
+            return max(5, (int) $status['slice']);
+        }
+        $limit  = (int) ini_get('max_execution_time');
+        $budget = $limit > 0 ? (int) floor($limit * 0.6) : 60;
+        return (int) apply_filters('sitessaver_export_slice_seconds', max(8, min(120, $budget)));
+    }
+
+    /**
+     * Seconds a browser-driven step request may work: inside PHP's limit and
+     * the usual gateway timeout, so the response always gets back.
+     */
+    public static function browser_budget(): int {
+        $limit  = (int) ini_get('max_execution_time');
+        $budget = $limit > 0 ? max(8, min(40, (int) floor($limit * 0.6))) : 40;
+        return (int) apply_filters('sitessaver_export_browser_slice_seconds', $budget);
+    }
+
+    /**
+     * The saved position of a resumable step.
+     *
+     * @return array<string, mixed>
+     */
+    private static function cursor(string $uid, string $key): array {
+        $status = self::get_status($uid);
+        $c      = $status['cursor'][$key] ?? [];
+        return is_array($c) ? $c : [];
+    }
+
+    /**
+     * Persist a step's position (throttled unless forced) and prove liveness.
+     *
+     * @param array<string, mixed> $data
+     */
+    private static function checkpoint(string $uid, string $key, array $data, bool $force): void {
+        $now = microtime(true);
+        if (!$force && $now - self::$checkpoint_last < self::CHECKPOINT_INTERVAL) {
+            return;
+        }
+        self::$checkpoint_last = $now;
+
+        $status = self::get_status($uid);
+        if (empty($status)) {
+            return;
+        }
+        self::assert_owner($status);
+
+        $status['cursor']        = is_array($status['cursor'] ?? null) ? $status['cursor'] : [];
+        $status['cursor'][$key]  = $data;
+        $status['last_update']   = time();
+        self::$tick_last         = time();
+        self::save_status($uid, $status);
+    }
+
+    /** Forget a finished step's cursor. */
+    private static function clear_cursor(array &$status, string $key): void {
+        if (isset($status['cursor'][$key])) {
+            unset($status['cursor'][$key]);
+        }
+    }
+
+    /**
+     * The browser is about to run a slice itself: make it the owner, so a
+     * background worker that wakes up late stands aside instead of racing.
+     */
+    public static function claim_for_browser(string $uid): void {
+        $status = self::get_status($uid);
+        if (empty($status) || ($status['status'] ?? '') !== 'running') {
+            return;
+        }
+        $status['worker']      = 'browser';
+        $status['driver']      = 'browser';
+        $status['last_update'] = time();
+        self::save_status($uid, $status);
+    }
+
+    /**
+     * Fire a non-blocking loopback request that runs the next export slice.
+     *
+     * `blocking => false` makes WP write the request and return without
+     * reading the response, so this costs milliseconds. The worker
+     * authenticates with a single-use key, because the detached request
+     * carries no session.
+     */
+    public static function spawn_worker(string $uid): bool {
+        $key = wp_generate_password(32, false, false);
+        set_transient('sitessaver_worker_' . $uid, $key, HOUR_IN_SECONDS);
+
+        $response = wp_remote_post(admin_url('admin-ajax.php'), [
+            'timeout'   => 0.01,
+            'blocking'  => false,
+            'sslverify' => false,
+            'body'      => [
+                'action' => 'sitessaver_export_work',
+                'uid'    => $uid,
+                'key'    => $key,
+            ],
+        ]);
+
+        return !is_wp_error($response);
+    }
+
+    /** Scratch dir for the ZIP builder — beside, never inside, temp_dir. */
+    private static function zip_work_dir(string $temp_dir): string {
+        return rtrim($temp_dir, '/\\') . '-zip';
+    }
+
+    /**
+     * Remove everything an unfinished export left behind.
+     *
+     * @param array<string, mixed> $status
+     */
+    public static function discard_work(array $status): void {
+        if (!empty($status['temp_dir'])) {
+            self::remove_directory((string) $status['temp_dir']);
+            self::remove_directory(self::zip_work_dir((string) $status['temp_dir']));
+        }
+        if (!empty($status['backup_name'])) {
+            @unlink(sitessaver_storage_dir() . '/' . $status['backup_name'] . '.part');
+        }
+    }
 
     /** File currently being copied, for the stall report. */
     private static array $current_item = [];
@@ -287,6 +466,21 @@ final class Export {
                 return;
             }
             $tech = sprintf('%s in %s:%d', $err['message'], basename((string) $err['file']), (int) $err['line']);
+
+            // PHP's own time limit ran out mid-slice. That is not a failure
+            // of the backup: everything up to the last checkpoint is saved.
+            // Shorten the slice and hand over to a fresh worker right away.
+            if (stripos((string) $err['message'], 'Maximum execution time') !== false
+                && (int) ($st['timeouts'] ?? 0) < 6) {
+                $st['timeouts']    = (int) ($st['timeouts'] ?? 0) + 1;
+                $st['slice']       = max(5, intdiv(self::slice_budget($st), 2));
+                $st['last_update'] = time();
+                self::save_status($uid, $st);
+                Log::warning('export_slice_timeout', $tech . sprintf(' — continuing with a %ds slice.', $st['slice']), self::diagnostics($st));
+                self::spawn_worker($uid);
+                return;
+            }
+
             $ref  = Log::error('export_killed', $tech, self::diagnostics($st));
             $st['status']     = 'error';
             $st['message']    = $tech;
@@ -296,13 +490,19 @@ final class Export {
             delete_transient('sitessaver_active_export_id');
         });
 
-        // Nothing is waiting on this response, so steps may run to completion
-        // rather than slicing themselves against a gateway timeout.
+        // Nothing is waiting on this response, so a Drive upload need not
+        // slice itself against a gateway timeout. Everything else works in a
+        // time slice: the host may stop this request at any moment.
         self::set_unbounded(true);
         self::begin_ticks($uid);
+        self::begin_slice(self::slice_budget($status));
 
         try {
             while (true) {
+                if (self::out_of_time()) {
+                    return ['success' => true, 'continue' => true];
+                }
+
                 $status = self::get_status($uid);
 
                 if (empty($status) || ($status['status'] ?? '') !== 'running') {
@@ -323,6 +523,10 @@ final class Export {
                 if (empty($res['success'])) {
                     return ['success' => false, 'message' => $res['message'] ?? ''];
                 }
+                if (!empty($res['pending']) && ($res['step'] ?? '') !== 'finalize') {
+                    // Slice used up; the next worker continues from the cursor.
+                    return ['success' => true, 'continue' => true];
+                }
             }
         } catch (\RuntimeException $e) {
             if ($e->getCode() === self::SUPERSEDED) {
@@ -332,6 +536,7 @@ final class Export {
         } finally {
             self::set_unbounded(false);
             self::end_ticks();
+            self::end_slice();
             self::$worker_id    = '';
             self::$current_item = [];
         }
@@ -359,6 +564,9 @@ final class Export {
             'running_for'        => isset($status['start_time']) ? (time() - (int) $status['start_time']) . 's' : null,
             'workers'            => $status['workers'] ?? null,
             'resumes'            => $status['resumes'] ?? 0,
+            'slices'             => $status['slices'] ?? 0,
+            'slice_seconds'      => $status['slice'] ?? null,
+            'driver'             => $status['driver'] ?? 'worker',
             'max_execution_time' => ini_get('max_execution_time'),
             'memory_limit'       => ini_get('memory_limit'),
             'peak_memory'        => size_format(memory_get_peak_usage(true)),
@@ -502,6 +710,14 @@ final class Export {
      * Fetch export status from transient store.
      */
     public static function get_status(string $uid): array {
+        // Another request (the browser poll, a newer worker) may have changed
+        // the status since this request last read it. Without an external
+        // object cache WordPress would answer from its per-request copy, and
+        // a worker would never notice it had been replaced.
+        if (function_exists('wp_using_ext_object_cache') && !wp_using_ext_object_cache()) {
+            wp_cache_delete("_transient_sitessaver_export_{$uid}", 'options');
+            wp_cache_delete("_transient_timeout_sitessaver_export_{$uid}", 'options');
+        }
         $status = get_transient("sitessaver_export_{$uid}");
         return is_array($status) ? $status : [];
     }
@@ -553,12 +769,22 @@ final class Export {
                             self::tick('db:' . $table, $done);
                         });
                         try {
-                            $ok = Database::export($db_file);
+                            $cursor = Database::export_resumable(
+                                $db_file,
+                                self::cursor($uid, 'db'),
+                                [self::class, 'out_of_time'],
+                                static function (array $c, bool $force) use ($uid): void {
+                                    self::checkpoint($uid, 'db', $c, $force);
+                                }
+                            );
                         } finally {
                             Database::set_progress(null);
                         }
-                        if (!$ok) {
+                        if (!empty($cursor['error'])) {
                             throw new \RuntimeException(__('Failed to export database.', 'sitessaver'));
+                        }
+                        if (empty($cursor['done'])) {
+                            self::slice_expired();
                         }
                     }
                     break;
@@ -637,7 +863,12 @@ final class Export {
                     // now that both are known. Must happen BEFORE the archive
                     // is built so manifest.json and fileindex.json.gz go into
                     // the ZIP.
-                    self::seal_index($temp_dir, (string) $status['backup_name'], $options, $plan);
+                    $zcur = self::cursor($uid, 'zip');
+                    if (empty($zcur['sealed'])) {
+                        self::seal_index($temp_dir, (string) $status['backup_name'], $options, $plan);
+                        $zcur = ['sealed' => true, 'w' => []];
+                        self::checkpoint($uid, 'zip', $zcur, true);
+                    }
 
                     $zip_path = sitessaver_storage_dir() . '/' . $status['backup_name'];
                     $exclude  = [
@@ -648,9 +879,30 @@ final class Export {
                         '.DS_Store',
                         'Thumbs.db',
                     ];
-                    if (!Archive::create($temp_dir, $zip_path, $exclude)) {
-                        throw new \RuntimeException(__('Failed to create ZIP archive.', 'sitessaver'));
+                    // Built a slice at a time (Zip_Writer), not with
+                    // ZipArchive: its close() does all the work in one call
+                    // that a 30-second host limit kills every time.
+                    $w = Zip_Writer::build(
+                        $temp_dir,
+                        $zip_path,
+                        $exclude,
+                        self::zip_work_dir($temp_dir),
+                        is_array($zcur['w'] ?? null) ? $zcur['w'] : [],
+                        [self::class, 'out_of_time'],
+                        static function (array $ws, bool $force) use ($uid): void {
+                            self::checkpoint($uid, 'zip', ['sealed' => true, 'w' => $ws], $force);
+                        },
+                        static function (int $n): void {
+                            self::tick('zip', $n);
+                        }
+                    );
+                    if (empty($w['done'])) {
+                        self::slice_expired();
                     }
+                    if (!empty($w['skipped'])) {
+                        Log::warning('export_zip_skipped', sprintf('%d file(s) could not be read and were left out of the ZIP.', (int) $w['skipped']));
+                    }
+                    self::remove_directory(self::zip_work_dir($temp_dir));
                     break;
 
                 case 'finalize':
@@ -669,7 +921,7 @@ final class Export {
                     // than one request re-enters finalize, and registering the
                     // same backup in the chain on every re-entry would corrupt
                     // the chain with duplicate members.
-                    if (!empty($options['track_chain']) && empty($status['finalized'])) {
+                    if (!empty($options['track_chain']) && empty($status['finalized']) && empty($status['indexed'])) {
                         $sealed = $temp_dir . '/' . Index::ARCHIVE_ENTRY;
                         if (is_readable($sealed)) {
                             $payload = file_get_contents($sealed);
@@ -679,11 +931,17 @@ final class Export {
                             }
                         }
                         Index::record($plan, $status['backup_name'], $zip_size);
+                        $status['indexed'] = true;
+                        self::save_status($uid, $status);
                     }
 
                     if (empty($status['finalized'])) {
                         // Isolated cleanup — ONLY delete this export's temp dir.
-                        self::remove_directory($temp_dir);
+                        // Sliced: tens of thousands of files can take longer
+                        // to delete than a request is allowed to live.
+                        if (!self::remove_directory($temp_dir, true)) {
+                            self::slice_expired();
+                        }
 
                         $status['finalized'] = true;
                         self::save_status($uid, $status);
@@ -746,7 +1004,15 @@ final class Export {
                     return $result;
             }
 
-            $status['step_index'] = $index + 1;
+            // Re-read: checkpoints wrote cursors meanwhile. An empty status
+            // means the export was cancelled while this step ran — do not
+            // bring it back to life by saving it.
+            $status = self::get_status($uid);
+            if (empty($status)) {
+                return ['success' => false, 'message' => __('Export cancelled.', 'sitessaver')];
+            }
+            self::clear_cursor($status, (string) $step['id']);
+            $status['step_index']  = $index + 1;
             $status['last_update'] = time();
             self::save_status($uid, $status);
 
@@ -755,6 +1021,16 @@ final class Export {
         } catch (\Throwable $e) {
             if ($e->getCode() === self::SUPERSEDED) {
                 throw $e;
+            }
+
+            if ($e->getCode() === self::SLICE) {
+                $fresh = self::get_status($uid);
+                if (!empty($fresh)) {
+                    $fresh['slices']      = (int) ($fresh['slices'] ?? 0) + 1;
+                    $fresh['last_update'] = time();
+                    self::save_status($uid, $fresh);
+                }
+                return ['success' => true, 'step' => $step['id'] ?? '', 'pending' => true];
             }
 
             $ref = Log::error('export_failed', $e->getMessage(), [
@@ -768,7 +1044,7 @@ final class Export {
             $status['ref']     = $ref;
             self::save_status($uid, $status);
             delete_transient('sitessaver_active_export_id');
-            self::remove_directory($temp_dir);
+            self::discard_work($status);
 
             return ['success' => false, 'message' => $e->getMessage(), 'ref' => $ref, 'error' => Errors::payload('export_failed', $e->getMessage(), $ref)];
         }
@@ -783,10 +1059,12 @@ final class Export {
         $uid    = $status['uid'];
 
         foreach (array_keys($steps) as $i) {
-            $res = self::run_step($uid, $i);
-            if (!$res['success']) {
-                return $res;
-            }
+            do {
+                $res = self::run_step($uid, $i);
+                if (!$res['success']) {
+                    return $res;
+                }
+            } while (!empty($res['pending']));
         }
 
         $status = self::get_status($uid);
@@ -1119,6 +1397,9 @@ final class Export {
             }
 
             $result = self::copy_file($file->getPathname(), $dest_path, $relative, $size);
+            if ($result === 'paused') {
+                self::slice_expired();
+            }
             if ($result === 'unreadable') {
                 // Same as before: a file PHP cannot read is left out rather
                 // than failing the whole backup — but it is now on record.
@@ -1145,6 +1426,15 @@ final class Export {
             }
 
             self::tick('copy', ++$copied);
+
+            // Hand over between files. Files finished in this slice are
+            // skipped by size on the next pass, so nothing is copied twice.
+            if (self::out_of_time()) {
+                if ($skipped) {
+                    Log::warning('export_unreadable_files', 'Some files could not be read and were left out of the backup.', ['files' => $skipped]);
+                }
+                self::slice_expired();
+            }
         }
 
         if ($skipped) {
@@ -1159,7 +1449,7 @@ final class Export {
      * worker killed mid-file never leaves a truncated file under the real
      * name for a resumed run to mistake as done.
      *
-     * @return string 'ok' | 'unreadable' | 'write_failed'
+     * @return string 'ok' | 'unreadable' | 'write_failed' | 'paused' (slice over; .part kept)
      */
     public static function copy_file(string $src, string $dst, string $relative = '', int $size = -1): string {
         if ($size < 0) {
@@ -1178,16 +1468,27 @@ final class Export {
             return 'unreadable';
         }
 
-        $part = $dst . '.part';
-        $out  = @fopen($part, 'wb');
+        // A piece already copied by an earlier slice is kept: continue from
+        // its end instead of starting the file again.
+        $part   = $dst . '.part';
+        $have   = is_file($part) ? (int) @filesize($part) : 0;
+        $have   = $have <= $size ? $have : 0;
+        $out    = @fopen($part, $have > 0 ? 'ab' : 'wb');
         if (!$out) {
             fclose($in);
             return 'write_failed';
         }
+        if ($have > 0 && fseek($in, $have) !== 0) {
+            fclose($in);
+            fclose($out);
+            @unlink($part);
+            return 'write_failed';
+        }
 
-        self::$current_item = ['file' => $relative, 'size' => $size, 'copied' => 0];
-        $copied = 0;
+        self::$current_item = ['file' => $relative, 'size' => $size, 'copied' => $have];
+        $copied = $have;
         $ok     = true;
+        $paused = false;
 
         try {
             // Loop on the known size, not feof(): at end of file PHP's
@@ -1201,11 +1502,20 @@ final class Export {
                 $copied += $n;
                 self::$current_item['copied'] = $copied;
                 self::tick('copy-large', $copied);
+
+                if ($copied < $size && self::out_of_time()) {
+                    $paused = true;
+                    break;
+                }
             }
         } finally {
             fclose($in);
             fclose($out);
             self::$current_item = [];
+        }
+
+        if ($paused) {
+            return 'paused';
         }
 
         if (!$ok || $copied !== $size || !@rename($part, $dst)) {
@@ -1245,23 +1555,31 @@ final class Export {
     /**
      * Recursively remove a directory.
      */
-    private static function remove_directory(string $dir): void {
+    private static function remove_directory(string $dir, bool $sliced = false): bool {
         if (!is_dir($dir)) {
-            return;
+            return true;
         }
 
         $iterator = new \RecursiveDirectoryIterator($dir, \RecursiveDirectoryIterator::SKIP_DOTS);
         $files    = new \RecursiveIteratorIterator($iterator, \RecursiveIteratorIterator::CHILD_FIRST);
 
+        $n = 0;
         foreach ($files as $file) {
             if ($file->isDir()) {
                 @rmdir($file->getPathname());
             } else {
                 @unlink($file->getPathname());
             }
+            if ($sliced && (++$n % 200) === 0) {
+                self::tick('cleanup', $n);
+                if (self::out_of_time()) {
+                    return false;
+                }
+            }
         }
 
         @rmdir($dir);
+        return true;
     }
 }
 

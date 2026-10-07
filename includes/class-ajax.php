@@ -139,21 +139,7 @@ final class Ajax {
      * session.
      */
     private function spawn_export_worker(string $uid): bool {
-        $key = wp_generate_password(32, false, false);
-        set_transient('sitessaver_worker_' . $uid, $key, HOUR_IN_SECONDS);
-
-        $response = wp_remote_post(admin_url('admin-ajax.php'), [
-            'timeout'   => 0.01,
-            'blocking'  => false,
-            'sslverify' => false,
-            'body'      => [
-                'action' => 'sitessaver_export_work',
-                'uid'    => $uid,
-                'key'    => $key,
-            ],
-        ]);
-
-        return !is_wp_error($response);
+        return Export::spawn_worker($uid);
     }
 
     /**
@@ -175,12 +161,25 @@ final class Ajax {
 
         delete_transient('sitessaver_worker_' . $uid);
 
+        // The browser has taken this export over (background requests kept
+        // dying on this host). A late worker must not race it.
+        $current = Export::get_status($uid);
+        if (($current['driver'] ?? '') === 'browser') {
+            wp_send_json_success(['message' => 'browser-driven']);
+        }
+
         // The caller already hung up. Keep running anyway, and do not let a
         // half-written response abort the backup.
         @ignore_user_abort(true);
         @set_time_limit(0);
 
         $result = Export::work($uid);
+
+        // The slice is used up: hand over to a fresh request before this one
+        // gets anywhere near the host's time limit.
+        if (!empty($result['continue'])) {
+            $this->spawn_export_worker($uid);
+        }
 
         if (empty($result['success'])) {
             wp_send_json_error(['message' => $result['message'] ?? '']);
@@ -198,9 +197,29 @@ final class Ajax {
         @set_time_limit(0);
         wp_raise_memory_limit('admin');
 
-        $uid   = sanitize_text_field($_POST['uid'] ?? '');
-        $index = (int) ($_POST['step_index'] ?? 0);
-        $result = Export::run_step($uid, $index);
+        $uid    = sanitize_text_field(wp_unslash($_POST['uid'] ?? ''));
+        $status = Export::get_status($uid);
+
+        // `auto`: the browser has taken over from a background chain and asks
+        // the server which step is next, rather than counting steps itself.
+        $index = !empty($_POST['auto'])
+            ? (int) ($status['step_index'] ?? 0)
+            : (int) ($_POST['step_index'] ?? 0);
+
+        // This request now owns the export, and works in a slice short enough
+        // to return before PHP's or the gateway's time limit.
+        Export::claim_for_browser($uid);
+        Export::begin_ticks($uid);
+        Export::begin_slice(Export::browser_budget());
+        try {
+            $result = Export::run_step($uid, $index);
+        } finally {
+            Export::end_slice();
+            Export::end_ticks();
+        }
+
+        $after           = Export::get_status($uid);
+        $result['state'] = (string) ($after['status'] ?? 'gone');
 
         if ($result['success']) {
             wp_send_json_success($result);
@@ -272,21 +291,42 @@ final class Ajax {
             ? Export::STALL_SECONDS_FINALIZING
             : Export::STALL_SECONDS;
 
-        $stalled = ($status['status'] ?? '') === 'running' && $since > $stall_threshold;
+        $running  = ($status['status'] ?? '') === 'running';
+        $driver   = (string) ($status['driver'] ?? 'worker');
+        $takeover = $running && $driver === 'browser';
 
-        // A silent worker is usually one the host stopped (a hard time limit
-        // on background requests) rather than a bug. Start a fresh worker a
-        // few times before giving up: it continues from the step it was on
-        // and skips files already copied, so each attempt gets further.
-        if ($stalled && (int) ($status['resumes'] ?? 0) < Export::AUTO_RESUMES) {
-            $status['resumes']     = (int) ($status['resumes'] ?? 0) + 1;
-            $status['last_update'] = time();
-            Export::save_status_public($uid, $status);
-            Log::warning('export_auto_resumed', sprintf('No progress for %ds during step "%s"; started a new worker (attempt %d of %d).', $since, $current['id'] ?? $index, $status['resumes'], Export::AUTO_RESUMES), Export::diagnostics($status));
-            $this->spawn_export_worker($uid);
-            $stalled = false;
-            $since   = 0;
+        // A background chain hands over every slice and checkpoints every
+        // few seconds, so a minute of silence means the host stopped the
+        // worker. Start a new one with a shorter slice (it continues from the
+        // saved cursor); if that keeps failing, this host does not let
+        // background requests live, and the open browser tab runs the slices
+        // itself instead of the export failing.
+        if ($running && $driver !== 'browser' && $phase_note !== 'zip-finalizing' && $since > Export::RESPAWN_SECONDS) {
+            $diag = Export::diagnostics($status);
+            // No worker ever started: this host does not deliver loopback
+            // requests at all, so a second one would not arrive either.
+            $never = empty($status['workers']);
+            if (!$never && (int) ($status['resumes'] ?? 0) < Export::AUTO_RESUMES) {
+                $status['resumes']     = (int) ($status['resumes'] ?? 0) + 1;
+                $status['slice']       = max(5, intdiv(Export::slice_budget($status), 2));
+                $status['last_update'] = time();
+                Export::save_status_public($uid, $status);
+                Log::warning('export_auto_resumed', sprintf('No progress for %ds during step "%s"; started a new worker with a %ds slice (attempt %d of %d).', $since, $current['id'] ?? $index, $status['slice'], $status['resumes'], Export::AUTO_RESUMES), $diag);
+                $this->spawn_export_worker($uid);
+            } else {
+                $status['driver']      = 'browser';
+                $status['worker']      = 'browser';
+                $status['last_update'] = time();
+                Export::save_status_public($uid, $status);
+                Log::warning('export_browser_takeover', sprintf($never
+                    ? 'Background requests never started on this host (step "%s"); the browser continues the export.'
+                    : 'Background workers keep stopping on this host (step "%s"); the browser continues the export.', $current['id'] ?? $index), $diag);
+                $takeover = true;
+            }
+            $since = 0;
         }
+
+        $stalled = $running && $since > $stall_threshold;
 
         // Log a stall once (the browser keeps polling) and give the user a
         // plain-language message with a reference code.
@@ -324,6 +364,7 @@ final class Ajax {
             'step_from'     => (int) ($current['from'] ?? 0),
             'poll'          => $current['poll'] ?? '',
             'detail'        => $status['detail'] ?? null,
+            'takeover'      => $takeover,
             'seconds_since_update' => $since,
             // The worker refreshes last_update at least every 10s from inside
             // long loops, so a long silence means the process is gone (OOM,
@@ -351,6 +392,9 @@ final class Ajax {
             $status = Export::get_status($uid);
             if (!empty($status['temp_dir'])) {
                 sitessaver_cleanup_temp($status['temp_dir']);
+            }
+            if (!empty($status)) {
+                Export::discard_work($status);
             }
             delete_transient("sitessaver_export_{$uid}");
         }

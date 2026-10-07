@@ -994,10 +994,37 @@
         var gdriveJob   = opts.gdriveJob;
         var isCancelled = opts.isCancelled || function () { return false; };
         var onDone      = opts.onDone || function () {};
+        var ended       = false;
+        var driving     = false;
+        var lastSince   = 0;
+
+        // Some hosts stop every background request after ~30 s, however
+        // short. When the server reports that its workers keep dying, this
+        // tab runs the export's slices itself: one short request at a time,
+        // each continuing from where the last one saved its place. The status
+        // poll below keeps rendering progress and spots the end, as before.
+        function drive(retries) {
+            if (ended || isCancelled()) return;
+            ajax('sitessaver_export_step', { uid: uid, auto: 1 }, function (r) {
+                if (ended) return;
+                if (r && r.state && r.state !== 'running') return; // the poll shows the outcome
+                setTimeout(function () { drive(0); }, 150);
+            }, function (err) {
+                if (ended) return;
+                // A step that failed for real marks the export as failed and
+                // the poll shows that. Anything else (the host cut the request
+                // off, a 503, a dropped connection) is retried: the work done
+                // so far was saved. Keep going while the export still moves.
+                if (err && err.state && err.state !== 'running') return;
+                if (lastSince < 60) retries = 0;
+                if (retries >= 8) return;
+                setTimeout(function () { drive(retries + 1); }, 3000);
+            });
+        }
 
         var poll = setInterval(function () {
             if (isCancelled()) {
-                clearInterval(poll);
+                clearInterval(poll); ended = true;
                 ajax('sitessaver_cancel_export', { uid: uid }, function () {
                     ssModal.close();
                     showError($form, errorFor('export_cancelled'));
@@ -1009,9 +1036,15 @@
 
             ajax('sitessaver_get_export_status', { uid: uid }, function (s) {
                 var state = (s.status && s.status.status) || '';
+                lastSince = Number(s.seconds_since_update) || 0;
+
+                if (s.takeover && !driving && state === 'running') {
+                    driving = true;
+                    drive(0);
+                }
 
                 if (state === 'error') {
-                    clearInterval(poll);
+                    clearInterval(poll); ended = true;
                     ssModal.close();
                     showError($form, s.error ? normalizeError(s.error) : errorFor('export_failed', (s.status && s.status.message) || ''), 'export');
                     $btn.prop('disabled', false);
@@ -1020,7 +1053,7 @@
                 }
 
                 if (state === 'completed') {
-                    clearInterval(poll);
+                    clearInterval(poll); ended = true;
                     ssModal.completeSteps();
                     ssModal.done();
                     setTimeout(function () {
@@ -1036,7 +1069,7 @@
                 // mid-zip. A long silence means the process is gone — report
                 // it instead of spinning a progress bar forever.
                 if (s.stalled) {
-                    clearInterval(poll);
+                    clearInterval(poll); ended = true;
                     ssModal.close();
                     showError($form, s.error ? normalizeError(s.error)
                         : errorFor('export_stalled', 'No progress for ' + s.seconds_since_update + 's'), 'export');
@@ -1071,7 +1104,11 @@
                     // so a long copy reads as progress, not a freeze.
                     var mb = function (b) { return Math.round(b / 1048576) + ' MB'; };
                     label += ' — ' + String(d.file).split('/').pop() + ' (' + mb(d.copied || d.done || 0) + ' of ' + mb(d.size) + ')';
-                } else if (d.done && d.note !== 'zip-finalizing') {
+                } else if (d.note && String(d.note).indexOf('db:') === 0) {
+                    label += ' — ' + String(d.note).slice(3) + (d.done ? ' (' + d.done + ' rows)' : '');
+                } else if (d.note === 'zip-large' && d.done) {
+                    label += ' (' + Math.round(d.done / 1048576) + ' MB of a large file)';
+                } else if (d.done && d.note !== 'zip-finalizing' && d.note !== 'cleanup') {
                     label += ' (' + d.done + ' files)';
                 }
                 ssModal.setActiveStep(s.step_index);

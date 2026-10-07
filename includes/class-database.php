@@ -42,16 +42,111 @@ final class Database {
     private const CHUNK_ROWS = 250;
 
     /**
-     * Export all tables to a SQL file.
+     * Export all tables to a SQL file in one go.
      */
     public static function export(string $output_file): bool {
+        $cursor = self::export_resumable($output_file, []);
+        return !empty($cursor['done']);
+    }
+
+    /** Per-table facts looked up once per request (key column, filters). */
+    private static array $table_meta = [];
+
+    /**
+     * Export all tables to a SQL file, in slices that survive the request
+     * being cut short.
+     *
+     * Some shared hosts stop every PHP request after ~30 s no matter what the
+     * plugin asks for. A dump that has to finish inside one request then dies
+     * on the first large table, and a retry starts again from the top and
+     * dies in the same place. Here the position (table, last key, bytes
+     * written) is handed to $commit after every page; the next request passes
+     * it back in and the file is cut back to the last committed size and
+     * continued. Rows are never written twice and never skipped.
+     *
+     * @param array<string, mixed> $cursor     [] to start, or a cursor from $commit.
+     * @param callable|null        $should_stop fn(): bool — checked after every page.
+     * @param callable|null        $commit      fn(array $cursor, bool $force): void.
+     * @return array<string, mixed> Cursor; `done` is true when the dump is complete,
+     *                              `error` is set when the file could not be opened.
+     */
+    public static function export_resumable(string $output_file, array $cursor, ?callable $should_stop = null, ?callable $commit = null): array {
         global $wpdb;
 
-        $handle = fopen($output_file, 'w');
-        if ($handle === false) {
-            return false;
+        if (empty($cursor['tables'])) {
+            $handle = @fopen($output_file, 'wb');
+            if ($handle === false) {
+                return ['error' => 'open'];
+            }
+            self::write_dump_header($wpdb, $handle);
+            $cursor = [
+                'tables'  => self::tables_for_current_site($wpdb),
+                't'       => 0,
+                'started' => false,
+                'key'     => null,
+                'offset'  => 0,
+                'rows'    => 0,
+                'bytes'   => 0,
+            ];
+        } else {
+            $handle = @fopen($output_file, 'c+b');
+            if ($handle === false) {
+                return ['error' => 'open'];
+            }
+            // Drop anything written after the last commit: a request killed
+            // mid-page leaves a partial page that the cursor does not cover.
+            ftruncate($handle, (int) $cursor['bytes']);
+            fseek($handle, 0, SEEK_END);
         }
 
+        $save = static function (bool $force) use (&$cursor, $handle, $commit): void {
+            fflush($handle);
+            $cursor['bytes'] = (int) ftell($handle);
+            if ($commit !== null) {
+                $commit($cursor, $force);
+            }
+        };
+        $save(true);
+
+        while ($cursor['t'] < count($cursor['tables'])) {
+            $table = (string) $cursor['tables'][$cursor['t']];
+
+            if (empty($cursor['started'])) {
+                self::export_table_head($wpdb, $handle, $table);
+                $cursor['started'] = true;
+                $cursor['key']     = null;
+                $cursor['offset']  = 0;
+                $cursor['rows']    = 0;
+            }
+
+            if (!self::export_table_page($wpdb, $handle, $table, $cursor)) {
+                fwrite($handle, "\n");
+                $cursor['t']++;
+                $cursor['started'] = false;
+            }
+
+            $save(false);
+
+            if ($should_stop !== null && $cursor['t'] < count($cursor['tables']) && $should_stop()) {
+                $save(true);
+                fclose($handle);
+                return $cursor;
+            }
+        }
+
+        fwrite($handle, "\nSET FOREIGN_KEY_CHECKS = 1;\n");
+        fflush($handle);
+        $cursor['bytes'] = (int) ftell($handle);
+        fclose($handle);
+        $cursor['done'] = true;
+
+        return $cursor;
+    }
+
+    /**
+     * @param resource $handle
+     */
+    private static function write_dump_header(\wpdb $wpdb, $handle): void {
         // Header.
         fwrite($handle, "-- SitesSaver Database Export\n");
         fwrite($handle, "-- Generated: " . gmdate('Y-m-d H:i:s') . " UTC\n");
@@ -79,16 +174,7 @@ final class Database {
         // `DROP TABLE IF EXISTS` + reinsert on restore, silently wiping every
         // OTHER site's users/blogs list too. tables_for_current_site() scopes
         // this correctly for both the main site and any subsite.
-        $tables = self::tables_for_current_site($wpdb);
-
-        foreach ($tables as $table) {
-            self::export_table($wpdb, $handle, $table);
-        }
-
-        fwrite($handle, "\nSET FOREIGN_KEY_CHECKS = 1;\n");
-        fclose($handle);
-
-        return true;
+        // (Applied in export_resumable(), which builds the table list.)
     }
 
     /**
@@ -241,18 +327,38 @@ final class Database {
     }
 
     /**
-     * Export a single table: DROP + CREATE + INSERT.
+     * Start a table in the dump: DROP + CREATE.
+     *
+     * @param resource $handle
      */
-    private static function export_table(\wpdb $wpdb, $handle, string $table): void {
+    private static function export_table_head(\wpdb $wpdb, $handle, string $table): void {
         $escaped_table = esc_sql($table);
 
-        // DROP + CREATE.
         fwrite($handle, "-- Table: {$table}\n");
         fwrite($handle, "DROP TABLE IF EXISTS `{$escaped_table}`;\n");
 
         $create = $wpdb->get_row("SHOW CREATE TABLE `{$escaped_table}`", ARRAY_N);
         if ($create && isset($create[1])) {
             fwrite($handle, $create[1] . ";\n\n");
+        }
+    }
+
+    /**
+     * Dump ONE page of a table's rows, continuing from $cursor.
+     *
+     * @param resource             $handle
+     * @param array<string, mixed> $cursor key/offset/rows are advanced in place.
+     * @return bool True if the table may have more rows.
+     */
+    private static function export_table_page(\wpdb $wpdb, $handle, string $table, array &$cursor): bool {
+        $escaped_table = esc_sql($table);
+
+        if (!isset(self::$table_meta[$table])) {
+            self::$table_meta[$table] = [
+                'generated' => self::generated_columns($wpdb, $table),
+                'filter'    => self::row_filter_for($wpdb, $table),
+                'order'     => self::pagination_key($wpdb, $table),
+            ];
         }
 
         // Generated (STORED/VIRTUAL) columns must be omitted from the column
@@ -261,7 +367,7 @@ final class Database {
         // the whole row is then lost on restore. WooCommerce lookup tables and
         // several analytics plugins use generated columns, so this silently
         // dropped real customer data.
-        $generated = self::generated_columns($wpdb, $table);
+        $generated = self::$table_meta[$table]['generated'];
 
         // Data — chunked to avoid memory issues.
         $chunk_size = self::CHUNK_ROWS;
@@ -271,7 +377,7 @@ final class Database {
         // export that is CREATING this backup are captured inside it, and a
         // restore then resurrects a phantom "export in progress" on the target
         // site (progress modal reappears, cancel button does nothing).
-        $filter = self::row_filter_for($wpdb, $table);
+        $filter = self::$table_meta[$table]['filter'];
 
         // Pagination MUST be ordered. `LIMIT/OFFSET` without `ORDER BY` gives
         // MySQL licence to return rows in any order, and OFFSET counts
@@ -287,7 +393,7 @@ final class Database {
         // option_ids, i.e. 22 duplicated rows and 22 rows lost.
         //
         // Ordering by the primary key makes the sequence total and stable.
-        $order_col = self::pagination_key($wpdb, $table);
+        $order_col = self::$table_meta[$table]['order'];
 
         // KEYSET pagination whenever there is a usable key: continue from the
         // last key seen (`WHERE key > last ORDER BY key LIMIT n`) instead of
@@ -301,11 +407,11 @@ final class Database {
         //
         // Tables without a usable single-column key fall back to OFFSET
         // (unordered), which is no worse than before.
-        $rows_done = 0;
-        $last_key  = null;
-        $offset    = 0;
+        $rows_done = (int) ($cursor['rows'] ?? 0);
+        $last_key  = isset($cursor['key']) ? (string) $cursor['key'] : null;
+        $offset    = (int) ($cursor['offset'] ?? 0);
 
-        while (true) {
+        {
             if ($order_col !== null) {
                 $col   = '`' . esc_sql($order_col) . '`';
                 $conds = [];
@@ -336,7 +442,7 @@ final class Database {
             }
 
             if (empty($rows)) {
-                break;
+                return false;
             }
 
             foreach ($rows as $row) {
@@ -368,18 +474,18 @@ final class Database {
             $rows_done += count($rows);
             $offset    += $chunk_size;
 
+            $cursor['rows']   = $rows_done;
+            $cursor['key']    = $last_key;
+            $cursor['offset'] = $offset;
+
             if (self::$progress !== null) {
                 (self::$progress)($table, $rows_done);
             }
 
             // A short page means the table is exhausted; skip the extra
             // empty round trip.
-            if (count($rows) < $chunk_size) {
-                break;
-            }
+            return count($rows) >= $chunk_size;
         }
-
-        fwrite($handle, "\n");
     }
 
     /**
