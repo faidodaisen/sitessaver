@@ -47,6 +47,10 @@ final class Plugin {
         // Scheduled backups (cron may fire outside admin).
         Schedule::instance()->init();
 
+        // Keeps a manual export moving with no tab open (watchdog, LiteSpeed
+        // rule, email). Outside is_admin(): WP-Cron fires on the front end.
+        Background::init();
+
         // Self-hosted updates from GitHub releases. Registered outside the
         // is_admin() guard because WP-Cron runs the update check in a
         // front-end context on many hosts.

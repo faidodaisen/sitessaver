@@ -316,6 +316,7 @@ $field_labels = [
         <div class="ss-section-content">
             <p class="description" style="margin-top: 0;">
                 <?php esc_html_e('WordPress fires WP-Cron only when someone loads a page, so on a quiet site a scheduled backup can be hours or days late — and if DISABLE_WP_CRON is set, it never runs at all. The URL below triggers backups directly and does not depend on WP-Cron.', 'sitessaver'); ?>
+                <?php esc_html_e('It also keeps a backup you started from the Export screen moving after you close the page, on hosts that stop background work. Run it every minute if your host allows.', 'sitessaver'); ?>
             </p>
 
             <div class="ss-field-group">

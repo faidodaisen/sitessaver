@@ -905,6 +905,74 @@
     margin-top: 1px;
 }
 
+/* Reassurance rather than warning: the work carries on without the tab. */
+.ss-progress-modal-caution.is-info {
+    background: rgba(var(--ss-primary-rgb), 0.06);
+    border-color: rgba(var(--ss-primary-rgb), 0.25);
+    color: #1b4b72;
+}
+
+.ss-progress-modal-caution.is-info i {
+    color: var(--ss-primary);
+}
+
+/* Note under the Start Export button. */
+.ss-export-note {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin-top: 16px;
+    color: var(--ss-text-muted);
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+.ss-export-note > i {
+    font-size: 18px;
+    line-height: 1.3;
+    color: var(--ss-primary);
+    flex-shrink: 0;
+}
+
+.ss-export-note p {
+    margin: 0;
+}
+
+.ss-export-note strong {
+    color: var(--ss-text-main);
+    font-weight: 600;
+}
+
+/* Banner for a backup that is still moving in the background. */
+.ss-resume-banner.is-running {
+    background: rgba(var(--ss-primary-rgb), 0.05);
+    border: 1px solid rgba(var(--ss-primary-rgb), 0.22);
+    color: #1b4b72;
+    align-items: flex-start;
+}
+
+.ss-resume-banner.is-running > i {
+    font-size: 24px;
+    color: var(--ss-primary);
+}
+
+.ss-resume-banner .ss-banner-body {
+    flex: 1;
+}
+
+.ss-resume-banner .ss-banner-title {
+    display: block;
+    margin-bottom: 4px;
+    color: var(--ss-text-main);
+}
+
+.ss-resume-banner .ss-banner-actions {
+    margin-top: 12px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
 .ss-progress-modal-actions {
     display: flex;
     justify-content: flex-end;

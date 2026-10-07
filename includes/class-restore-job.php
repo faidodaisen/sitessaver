@@ -178,7 +178,7 @@ final class Restore_Job {
      * later by the client noticing the job never left `queued`.
      */
     public static function spawn(string $id, string $worker_key): bool {
-        $response = wp_remote_post(admin_url('admin-ajax.php'), [
+        $response = wp_remote_post(Background::worker_url(), [
             'timeout'   => 0.01,
             'blocking'  => false,
             'sslverify' => false,

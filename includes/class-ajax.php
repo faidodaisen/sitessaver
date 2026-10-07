@@ -267,6 +267,9 @@ final class Ajax {
             wp_send_json_error(['message' => __('No active export found.', 'sitessaver')]);
         }
 
+        // An Export tab is watching: it sees the result itself, no email.
+        Background::mark_watched($uid);
+
         // Rebuild the step table for the destination this export was started
         // with. Resuming an orphaned export used to fall back to the default
         // local table, which mislabelled the steps of a Drive export.

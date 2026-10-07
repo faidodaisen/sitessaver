@@ -658,6 +658,11 @@
             $('#ss-pm-title').text(opts.title || '');
             $('#ss-pm-subtitle').text(opts.subtitle || '');
             $('#ss-pm-caution').text(opts.caution || 'Do not close this tab or navigate away while the operation is running.');
+            // 'info' = the work carries on without this tab; 'warning' (the
+            // default) = closing the tab would stop or lose it.
+            var info = opts.cautionTone === 'info';
+            $('.ss-progress-modal-caution').toggleClass('is-info', info)
+                .children('i').attr('class', info ? 'ri-information-line' : 'ri-alert-line');
             $('#ss-cancel-confirm').hide();
             $('#ss-pm-cancel-btn').prop('disabled', false).toggle(!!this.cancelable);
             this.setProgress(0, '');
@@ -792,14 +797,11 @@
         var destination = $form.find('[name=export_destination]:checked').val() || 'local';
         var cancelled   = false;
 
-        var cautionText = destination === 'local'
-            ? 'Do not close this tab while the backup is being created.'
-            : 'Do not close this tab. The backup will be uploaded to Google Drive after it is created.';
-
         ssModal.open({
             title:    'Exporting Site',
             subtitle: 'Your site backup is being created. This may take a few minutes.',
-            caution:  cautionText,
+            caution:  backgroundNote(destination),
+            cautionTone: 'info',
             cancelable: true,
             onCancel: function () {
                 cancelled = true;
@@ -2093,7 +2095,8 @@
         ssModal.open({
             title:      'Resuming Export',
             subtitle:   'Continuing your site backup from where it left off.',
-            caution:    'Do not close this tab while the backup is being created.',
+            caution:    backgroundNote(),
+            cautionTone: 'info',
             cancelable: true,
             onCancel: function () {
                 cancelled = true;
@@ -2187,12 +2190,105 @@
         }
     }
 
+    // What the progress modal says about leaving the page. The export runs
+    // on the server (worker chain, WP-Cron watchdog, server cron), so the
+    // tab is a window onto it, not the engine.
+    function backgroundNote(destination) {
+        var who = SS.adminEmail ? ' and we email ' + SS.adminEmail : '';
+        return destination === 'gdrive' || destination === 'both'
+            ? 'You can close this page. The backup keeps running on your server, uploads to Google Drive' + who + ' when it is done.'
+            : 'You can close this page. The backup keeps running on your server' + who + ' when it is ready.';
+    }
+
+    // A backup that is still moving on its own: show it, offer to watch it.
+    function showRunningBanner($form, res) {
+        var steps       = res.steps;
+        var uid         = res.status.uid;
+        var currentStep = res.status.step_index;
+        var stepLabel   = (steps[currentStep] && steps[currentStep].label) || 'Working';
+        var started     = Number(res.status.start_time) || 0;
+        var mins        = started ? Math.max(1, Math.round((Date.now() / 1000 - started) / 60)) : 0;
+
+        var banner =
+            '<div class="ss-resume-banner ss-result-card is-running" role="status">' +
+                '<i class="ri-loader-4-line ri-spin" aria-hidden="true"></i>' +
+                '<div class="ss-banner-body">' +
+                    '<strong class="ss-banner-title">A backup is running in the background</strong>' +
+                    '<span>' + (mins ? 'Started ' + mins + ' min ago. ' : '') + 'Now: ' + escapeHtml(stepLabel.replace(/[.…]+$/, '')) +
+                    '. It keeps going if you leave this page.</span>' +
+                    '<div class="ss-banner-actions">' +
+                        '<button type="button" class="btn btn-primary ss-watch-btn">Show progress</button>' +
+                        '<button type="button" class="btn btn-outline ss-discard-btn" style="color:var(--ss-danger);border-color:var(--ss-danger);">Cancel backup</button>' +
+                    '</div>' +
+                '</div>' +
+            '</div>';
+
+        $form.prepend(banner);
+        var $btn = $('#sitessaver-export-btn').prop('disabled', true);
+
+        $form.on('click', '.ss-watch-btn', function () {
+            $('.ss-resume-banner').remove();
+            var cancelled = false;
+            ssModal.open({
+                title:       'Exporting Site',
+                subtitle:    'Your site backup is being created.',
+                caution:     backgroundNote(res.status.options && res.status.options.export_destination),
+                cautionTone: 'info',
+                cancelable:  true,
+                onCancel: function () {
+                    cancelled = true;
+                    ssModal.disableCancel('Cancelling...');
+                }
+            });
+            ssModal.setSteps(steps.map(function (s) { return { id: s.id, label: s.label }; }));
+            ssModal.setActiveStep(currentStep);
+            watchExportProgress({
+                $form:       $form,
+                $btn:        $btn,
+                uid:         uid,
+                gdriveJob:   res.gdrive_job_id,
+                isCancelled: function () { return cancelled; },
+                onDone:      function () {}
+            });
+        });
+
+        bindDiscard($form, uid, 'Cancel this backup?', 'The backup stops and the partly written file is deleted.', 'Cancel backup', 'Backup cancelled.');
+    }
+
+    function bindDiscard($form, uid, title, message, confirmText, doneText) {
+        $form.on('click', '.ss-discard-btn', function () {
+            ssNotify.confirm({
+                tone: 'danger',
+                title: title,
+                message: message,
+                confirmText: confirmText,
+                cancelText: 'Keep it',
+                onConfirm: function () {
+                    ajax('sitessaver_cancel_export', { uid: uid }, function () {
+                        $('.ss-resume-banner').remove();
+                        $('#sitessaver-export-btn').prop('disabled', false);
+                        ssNotify.info(doneText);
+                    }, function (err) {
+                        ssNotify.error(err.message || SS.strings.error);
+                    });
+                }
+            });
+        });
+    }
+
     function checkActiveExport() {
         var $form = $('#sitessaver-export-form');
         if (!$form.length) return;
 
         ajax('sitessaver_get_export_status', {}, function (res) {
             if (!res || !res.status || res.status.status !== 'running') return;
+
+            // Still moving (or just rescued): it needs no decision from the
+            // user, only a way to watch it.
+            if (Number(res.seconds_since_update) < 90 && !res.stalled) {
+                showRunningBanner($form, res);
+                return;
+            }
 
             var steps       = res.steps;
             var uid         = res.status.uid;
@@ -2224,24 +2320,7 @@
                 runExportLoop($form, uid, steps, currentStep, res.gdrive_job_id);
             });
 
-            $form.on('click', '.ss-discard-btn', function () {
-                ssNotify.confirm({
-                    tone: 'danger',
-                    title: 'Discard this export?',
-                    message: 'The partially written backup will be deleted and you will need to start a new export.',
-                    confirmText: 'Discard export',
-                    cancelText: 'Keep it',
-                    onConfirm: function () {
-                        ajax('sitessaver_cancel_export', { uid: uid }, function () {
-                            $('.ss-resume-banner').remove();
-                            $('#sitessaver-export-btn').prop('disabled', false);
-                            ssNotify.info('Export discarded.');
-                        }, function (err) {
-                            ssNotify.error(err.message || SS.strings.error);
-                        });
-                    }
-                });
-            });
+            bindDiscard($form, uid, 'Discard this export?', 'The partially written backup will be deleted and you will need to start a new export.', 'Discard export', 'Export discarded.');
         });
     }
 

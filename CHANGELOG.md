@@ -6,6 +6,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.4.11] — 2026-10-07
+
+### Added — leave the Export page while a backup runs
+
+A backup started from the Export screen no longer needs the tab to stay open. When nobody is watching,
+the plugin emails the result.
+
+- **Fix for LiteSpeed hosts.** LiteSpeed stops a PHP request as soon as its client disconnects, and a
+  background worker's client disconnects straight away. On LiteSpeed, SitesSaver now adds LiteSpeed's
+  `noabort` rule to `.htaccess`, inside its own `# BEGIN/END SitesSaver` markers. The rule applies only
+  to SitesSaver's worker requests (`?sitessaver_bg=1`) and to `wp-cron.php`. It is never added on other
+  servers, never creates an `.htaccess` that does not already exist, and is removed when the plugin is
+  deactivated or uninstalled.
+- **WP-Cron watchdog.** While a manual backup is open, a check runs every minute. If the backup has gone
+  quiet for 45 seconds, the check runs its next time slice itself. WP-Cron runs when someone visits the
+  site.
+- **Server cron keeps backups moving.** The existing server-cron trigger URL (Schedule → Server Cron)
+  now does the same on every call, so it no longer depends on site visits. Running it every minute
+  is recommended.
+- **Email when it ends.** If no Export tab was watching, the site admin gets an email when the backup is
+  ready (file and size) or when it stops (reference code and what to do next). The recipient can be
+  changed with the `sitessaver_export_notify_email` filter. Scheduled backups keep their own
+  notification settings.
+- **Clearer Export screen.**
+  - The progress window says the page can be closed, instead of "do not close this tab".
+  - Coming back to the Export screen shows "A backup is running in the background", with
+    **Show progress** and **Cancel backup**. Previously it only offered Resume/Discard.
+  - A note under the Start button repeats this, and links to the server cron setup if one has never
+    run.
+- The pointer to the running backup no longer expires after one hour, so a long backup is not lost
+  while it is still moving.
+
 ## [1.4.10] — 2026-10-07
 
 ### Fixed — backups on hosts that stop every PHP request after ~30 seconds

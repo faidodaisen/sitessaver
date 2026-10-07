@@ -407,6 +407,19 @@ final class Schedule {
             self::respond(403, 'sitessaver: invalid key');
         }
 
+        update_option('sitessaver_server_cron_seen', time(), false);
+
+        // A backup started from the Export screen comes first: if it has
+        // gone quiet (its background worker was stopped and no tab is
+        // driving it), this call runs its next slice. Every minute of server
+        // cron is then a minute of progress, with no browser and no traffic.
+        $moved = Background::continue_stalled('server-cron');
+        if ($moved !== 'idle') {
+            self::respond(200, $moved === 'busy'
+                ? 'sitessaver: a backup is running'
+                : 'sitessaver: continued the running backup (' . $moved . ')');
+        }
+
         $settings = get_option('sitessaver_schedule', []);
         $settings = is_array($settings) ? $settings : [];
 

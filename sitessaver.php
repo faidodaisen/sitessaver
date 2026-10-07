@@ -3,7 +3,7 @@
  * Plugin Name: SitesSaver
  * Plugin URI:  https://github.com/faidodaisen/sitessaver
  * Description: Full site backup & migration — export, import, schedule, Google Drive. No restrictions.
- * Version:     1.4.10
+ * Version:     1.4.11
  * Author:      SitesSaver
  * Author URI:  https://github.com/faidodaisen
  * License:     GPL-2.0-or-later
@@ -20,7 +20,7 @@ defined('ABSPATH') || exit;
 // This copy's version, read BEFORE any constants so the duplicate-copy
 // handler below can compare against an already-loaded instance. Folder
 // name is irrelevant — we identify SitesSaver by its VERSION constant.
-$sitessaver_this_version = '1.4.10';
+$sitessaver_this_version = '1.4.11';
 
 // Duplicate-copy handler. WordPress lets the same plugin live in multiple
 // folders (e.g. `plugins/sitessaver/` and `plugins/ss/`) and will happily
@@ -198,6 +198,11 @@ register_activation_hook(__FILE__, static function (): void {
 
 // Deactivation hook — clear scheduled events.
 register_deactivation_hook(__FILE__, static function (): void {
+    if (class_exists(\SitesSaver\Background::class)) {
+        \SitesSaver\Background::disarm_watchdog();
+        \SitesSaver\Background::remove_rules();
+    }
+
     // Each frequency is its own event (the frequency is passed as a cron
     // argument), and wp_clear_scheduled_hook() only clears events whose args
     // match. Passing an empty selection makes sync_cron_events() clear every

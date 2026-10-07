@@ -33,6 +33,19 @@ if (is_array($token_data) && !empty($token_data['refresh_token'])) {
 // event in the cron array and leave WordPress trying to fire a hook that no
 // longer has a listener.
 wp_clear_scheduled_hook('sitessaver_scheduled_backup');
+wp_clear_scheduled_hook('sitessaver_export_watchdog');
+
+// The LiteSpeed background-worker rule SitesSaver added to .htaccess.
+$sitessaver_ht = (function_exists('get_home_path') ? get_home_path() : ABSPATH) . '.htaccess';
+if (is_file($sitessaver_ht) && is_writable($sitessaver_ht)) {
+    $sitessaver_text = (string) file_get_contents($sitessaver_ht);
+    if (str_contains($sitessaver_text, '# BEGIN SitesSaver')) {
+        $sitessaver_clean = preg_replace('/\R?# BEGIN SitesSaver\R.*?# END SitesSaver\R?/s', "\n", $sitessaver_text);
+        if (is_string($sitessaver_clean)) {
+            file_put_contents($sitessaver_ht, ltrim($sitessaver_clean, "\r\n"), LOCK_EX);
+        }
+    }
+}
 foreach (['hourly', 'twicedaily', 'daily', 'weekly', 'sitessaver_monthly'] as $sitessaver_frequency) {
     wp_clear_scheduled_hook('sitessaver_scheduled_backup', [$sitessaver_frequency]);
 }

@@ -105,6 +105,34 @@
                         <?php esc_html_e('Start Export Process', 'sitessaver'); ?>
                     </button>
                 </p>
+
+                <?php
+                // Has a server cron called the trigger URL in the last two days?
+                $sitessaver_cron_seen = (int) get_option('sitessaver_server_cron_seen', 0);
+                $sitessaver_has_cron  = $sitessaver_cron_seen > time() - 2 * DAY_IN_SECONDS;
+                ?>
+                <div class="ss-export-note">
+                    <i class="ri-information-line" aria-hidden="true"></i>
+                    <p>
+                        <?php
+                        printf(
+                            /* translators: %s: site admin email address */
+                            esc_html__('You can leave this page once the backup starts. It keeps running on your server, and we email %s when it is ready.', 'sitessaver'),
+                            '<strong>' . esc_html((string) get_option('admin_email')) . '</strong>'
+                        );
+                        ?>
+                        <?php if (!$sitessaver_has_cron) : ?>
+                            <br>
+                            <?php
+                            printf(
+                                /* translators: %s: link to the server cron setup */
+                                esc_html__('On shared hosting, %s so a backup never waits for site visits to keep going.', 'sitessaver'),
+                                '<a href="' . esc_url(admin_url('admin.php?page=sitessaver-schedule#sitessaver-trigger-url')) . '">' . esc_html__('set up the server cron', 'sitessaver') . '</a>'
+                            );
+                            ?>
+                        <?php endif; ?>
+                    </p>
+                </div>
             </form>
         </div>
     </div>

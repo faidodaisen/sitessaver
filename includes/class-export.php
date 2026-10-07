@@ -304,7 +304,7 @@ final class Export {
         $key = wp_generate_password(32, false, false);
         set_transient('sitessaver_worker_' . $uid, $key, HOUR_IN_SECONDS);
 
-        $response = wp_remote_post(admin_url('admin-ajax.php'), [
+        $response = wp_remote_post(Background::worker_url(), [
             'timeout'   => 0.01,
             'blocking'  => false,
             'sslverify' => false,
@@ -488,6 +488,7 @@ final class Export {
             $st['error_code'] = 'export_killed';
             self::save_status($uid, $st);
             delete_transient('sitessaver_active_export_id');
+            Background::notify($st, false);
         });
 
         // Nothing is waiting on this response, so a Drive upload need not
@@ -610,6 +611,9 @@ final class Export {
 
         self::save_status($uid, $status);
         set_transient('sitessaver_active_export_id', $uid, HOUR_IN_SECONDS);
+        if (empty($options['track_chain'])) {
+            Background::arm_watchdog();
+        }
 
         return $status;
     }
@@ -699,6 +703,13 @@ final class Export {
      */
     private static function save_status(string $uid, array $status): void {
         set_transient("sitessaver_export_{$uid}", $status, HOUR_IN_SECONDS);
+
+        // A backup left to run on its own can take longer than an hour on a
+        // slow host; keep the pointer to it alive while it is moving.
+        if (($status['status'] ?? '') === 'running' && empty($status['options']['track_chain'])
+            && get_transient('sitessaver_active_export_id') === $uid) {
+            set_transient('sitessaver_active_export_id', $uid, HOUR_IN_SECONDS);
+        }
     }
 
     /** save_status() for the AJAX layer (auto-resume bookkeeping). */
@@ -1000,6 +1011,7 @@ final class Export {
                     $status['result'] = $result;
                     self::save_status($uid, $status);
                     delete_transient('sitessaver_active_export_id');
+                    Background::notify($status, true);
 
                     return $result;
             }
@@ -1045,6 +1057,7 @@ final class Export {
             self::save_status($uid, $status);
             delete_transient('sitessaver_active_export_id');
             self::discard_work($status);
+            Background::notify($status, false);
 
             return ['success' => false, 'message' => $e->getMessage(), 'ref' => $ref, 'error' => Errors::payload('export_failed', $e->getMessage(), $ref)];
         }
