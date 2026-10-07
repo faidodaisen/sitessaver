@@ -1065,8 +1065,14 @@
                 }
 
                 var label = s.step_label;
-                if (s.detail && s.detail.done) {
-                    label += ' (' + s.detail.done + ' files)';
+                var d = s.detail || {};
+                if (d.note === 'copy-large' && d.file && d.size) {
+                    // One big file: show its name and how much of it is done,
+                    // so a long copy reads as progress, not a freeze.
+                    var mb = function (b) { return Math.round(b / 1048576) + ' MB'; };
+                    label += ' — ' + String(d.file).split('/').pop() + ' (' + mb(d.copied || d.done || 0) + ' of ' + mb(d.size) + ')';
+                } else if (d.done && d.note !== 'zip-finalizing') {
+                    label += ' (' + d.done + ' files)';
                 }
                 ssModal.setActiveStep(s.step_index);
                 ssModal.setProgress(s.step_pct, label);

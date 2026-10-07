@@ -274,22 +274,43 @@ final class Ajax {
 
         $stalled = ($status['status'] ?? '') === 'running' && $since > $stall_threshold;
 
+        // A silent worker is usually one the host stopped (a hard time limit
+        // on background requests) rather than a bug. Start a fresh worker a
+        // few times before giving up: it continues from the step it was on
+        // and skips files already copied, so each attempt gets further.
+        if ($stalled && (int) ($status['resumes'] ?? 0) < Export::AUTO_RESUMES) {
+            $status['resumes']     = (int) ($status['resumes'] ?? 0) + 1;
+            $status['last_update'] = time();
+            Export::save_status_public($uid, $status);
+            Log::warning('export_auto_resumed', sprintf('No progress for %ds during step "%s"; started a new worker (attempt %d of %d).', $since, $current['id'] ?? $index, $status['resumes'], Export::AUTO_RESUMES), Export::diagnostics($status));
+            $this->spawn_export_worker($uid);
+            $stalled = false;
+            $since   = 0;
+        }
+
         // Log a stall once (the browser keeps polling) and give the user a
         // plain-language message with a reference code.
         $error = null;
         if ($stalled) {
             $ref = get_transient('sitessaver_export_stall_ref_' . $uid);
             if (!is_string($ref) || $ref === '') {
-                $ref = Log::error('export_stalled', sprintf('No progress for %ds during step "%s".', $since, $current['id'] ?? $index), [
-                    'uid'  => $uid,
-                    'note' => $phase_note,
-                    'done' => $status['detail']['done'] ?? null,
-                ]);
+                $ref = Log::error('export_stalled', sprintf('No progress for %ds during step "%s".', $since, $current['id'] ?? $index), Export::diagnostics($status));
                 set_transient('sitessaver_export_stall_ref_' . $uid, $ref, DAY_IN_SECONDS);
             }
-            $error = Errors::payload('export_stalled', sprintf('No progress for %ds during "%s".', $since, $current['label'] ?? ''), $ref);
+            $detail = is_array($status['detail'] ?? null) ? $status['detail'] : [];
+            if (!empty($detail['file']) && isset($detail['size'])) {
+                $error = Errors::payload('export_stalled_file', sprintf(
+                    'No progress for %ds while copying %s (%s, %s copied).',
+                    $since,
+                    $detail['file'],
+                    size_format((int) $detail['size']),
+                    size_format((int) ($detail['copied'] ?? 0))
+                ), $ref);
+            } else {
+                $error = Errors::payload('export_stalled', sprintf('No progress for %ds during "%s".', $since, $current['label'] ?? ''), $ref);
+            }
         } elseif (($status['status'] ?? '') === 'error') {
-            $error = Errors::payload('export_failed', (string) ($status['message'] ?? ''), $status['ref'] ?? null);
+            $error = Errors::payload((string) ($status['error_code'] ?? 'export_failed'), (string) ($status['message'] ?? ''), $status['ref'] ?? null);
         }
 
         wp_send_json_success([

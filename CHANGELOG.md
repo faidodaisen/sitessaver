@@ -6,6 +6,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.4.9] — 2026-10-07
+
+### Fixed — backup stopped at "Copying uploads..." with "No progress for 301s"
+
+The media step copied each file with a single `copy()` call and only reported that it was alive after a
+file finished. One very large file in `wp-content/uploads` (a video, or another plugin's backup archive)
+on a slow shared-host disk took longer than the 5-minute stall limit, and the export was reported dead
+while it was still working. Excluded folders were also walked file by file without reporting progress.
+
+- Files of 16 MB and more are copied in 8 MB pieces, reporting progress after each piece. The progress
+  line names the file and shows how much of it is done.
+- Excluded folders are skipped as a whole instead of being walked.
+- Other backup plugins' archives inside uploads (`ai1wm-backups`, `updraft`, `backwpup-*`, `wpvividbackups`,
+  `*.wpress` and similar) are left out of the backup and listed in the log. A backup of a backup is never
+  needed and is usually the file that made the media step too slow.
+- A stalled export is restarted automatically up to 3 times. The new worker continues from the step it
+  was on and skips files already copied, and the old worker stops if it was only slow.
+- A server that kills the export outright (time or memory limit) is now reported with its real reason.
+- Stall and failure log entries record the file being copied, its size, how long the export ran, and
+  the host's limits (`max_execution_time`, memory, free disk, server software), so a problem can be
+  diagnosed from the downloaded log alone.
+- New plain-language messages: "The backup got stuck on one large file" (names the file) and "Your
+  server stopped the backup". The hints point to Help → Troubleshooting Log.
+- A file that cannot be read or written is still left out as before, but now listed in the log; running
+  out of disk space stops the backup with a clear reason instead of producing an incomplete archive.
+
 ## [1.4.8] — 2026-10-05
 
 ### Fixed — uploading a large backup failed at 100% with "An error occurred."

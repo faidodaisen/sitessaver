@@ -113,6 +113,55 @@ final class Export {
     /** Seconds between persisted ticks. */
     private const TICK_INTERVAL = 10;
 
+    /**
+     * Files at or above this size are copied in COPY_CHUNK pieces with a
+     * liveness tick between pieces. A single copy() of a multi-gigabyte file
+     * on a throttled shared-host disk (~4 MB/s) runs for minutes without any
+     * chance to report progress, and the stall detector then declares a
+     * healthy export dead ("No progress for 301s during Copying uploads").
+     */
+    public const COPY_STREAM_MIN = 16 * 1024 * 1024;
+    public const COPY_CHUNK      = 8 * 1024 * 1024;
+
+    /**
+     * Folders other backup plugins keep inside wp-content/uploads. Their
+     * archives are often larger than the site itself, a backup of a backup
+     * is never useful, and copying them is the usual reason a media step
+     * takes longer than the host allows. Matched at the top of the uploads
+     * folder only; logged when skipped.
+     */
+    public const FOREIGN_BACKUP_DIRS = [
+        'ai1wm-backups',
+        'backwpup-*',
+        'backupbuddy_backups',
+        'pb_backupbuddy',
+        'updraft',
+        'wp-clone',
+        'wpvividbackups',
+        'wp-staging',
+        'backups-dup-lite',
+        'backups-dup-pro',
+    ];
+
+    /** Archive type another backup plugin produces; skipped inside uploads. */
+    public const FOREIGN_BACKUP_FILES = ['*.wpress'];
+
+    /**
+     * Identifies the worker request that currently owns this export. A
+     * resumed export gets a new worker; the old one, if it was only slow and
+     * not dead, notices on its next tick and stops instead of racing it.
+     */
+    private static string $worker_id = '';
+
+    /** Times a stalled export is restarted automatically before giving up. */
+    public const AUTO_RESUMES = 3;
+
+    /** Exception code used to unwind a superseded worker quietly. */
+    public const SUPERSEDED = 7301;
+
+    /** File currently being copied, for the stall report. */
+    private static array $current_item = [];
+
     public static function begin_ticks(string $uid): void {
         self::$tick_uid  = $uid;
         self::$tick_last = 0;
@@ -144,9 +193,22 @@ final class Export {
             return;
         }
 
+        self::assert_owner($status);
+
         $status['last_update'] = self::$tick_last;
         $status['detail']      = ['note' => $note, 'done' => 0];
         self::save_status(self::$tick_uid, $status);
+    }
+
+    /**
+     * Stop this worker if a newer one has taken the export over.
+     *
+     * @param array<string, mixed> $status
+     */
+    private static function assert_owner(array $status): void {
+        if (self::$worker_id !== '' && ($status['worker'] ?? '') !== self::$worker_id) {
+            throw new \RuntimeException('This export was taken over by a newer worker.', self::SUPERSEDED);
+        }
     }
 
     /**
@@ -171,8 +233,10 @@ final class Export {
             return;
         }
 
+        self::assert_owner($status);
+
         $status['last_update'] = $now;
-        $status['detail']      = ['note' => $note, 'done' => $done];
+        $status['detail']      = ['note' => $note, 'done' => $done] + self::$current_item;
         self::save_status(self::$tick_uid, $status);
     }
 
@@ -200,6 +264,38 @@ final class Export {
 
         $steps = self::get_steps((string) ($status['options']['export_destination'] ?? 'local'));
 
+        // Claim the export. A previous worker that is still alive sees the
+        // new id on its next tick and steps aside.
+        self::$worker_id       = wp_generate_password(12, false, false);
+        $status['worker']      = self::$worker_id;
+        $status['workers']     = (int) ($status['workers'] ?? 0) + 1;
+        $status['last_update'] = time();
+        self::save_status($uid, $status);
+
+        // A host that kills PHP outright (a max_execution_time it will not
+        // let us lift, the memory limit) skips every catch block. Record the
+        // real reason on the way out, so the user gets "the server stopped it
+        // because ..." instead of a stall guess five minutes later.
+        $worker = self::$worker_id;
+        register_shutdown_function(static function () use ($uid, $worker): void {
+            $err = error_get_last();
+            if (!$err || !in_array($err['type'], [E_ERROR, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR], true)) {
+                return;
+            }
+            $st = self::get_status($uid);
+            if (empty($st) || ($st['status'] ?? '') !== 'running' || ($st['worker'] ?? '') !== $worker) {
+                return;
+            }
+            $tech = sprintf('%s in %s:%d', $err['message'], basename((string) $err['file']), (int) $err['line']);
+            $ref  = Log::error('export_killed', $tech, self::diagnostics($st));
+            $st['status']     = 'error';
+            $st['message']    = $tech;
+            $st['ref']        = $ref;
+            $st['error_code'] = 'export_killed';
+            self::save_status($uid, $st);
+            delete_transient('sitessaver_active_export_id');
+        });
+
         // Nothing is waiting on this response, so steps may run to completion
         // rather than slicing themselves against a gateway timeout.
         self::set_unbounded(true);
@@ -219,15 +315,57 @@ final class Export {
                     return ['success' => true];
                 }
 
+                if (($status['worker'] ?? '') !== self::$worker_id) {
+                    return ['success' => true, 'superseded' => true];
+                }
+
                 $res = self::run_step($uid, $index);
                 if (empty($res['success'])) {
                     return ['success' => false, 'message' => $res['message'] ?? ''];
                 }
             }
+        } catch (\RuntimeException $e) {
+            if ($e->getCode() === self::SUPERSEDED) {
+                return ['success' => true, 'superseded' => true];
+            }
+            throw $e;
         } finally {
             self::set_unbounded(false);
             self::end_ticks();
+            self::$worker_id    = '';
+            self::$current_item = [];
         }
+    }
+
+    /**
+     * Everything useful for diagnosing a stopped export without access to
+     * the site: what it was doing, for how long, and the host's limits.
+     *
+     * @param array<string, mixed> $status
+     * @return array<string, mixed>
+     */
+    public static function diagnostics(array $status): array {
+        $detail = is_array($status['detail'] ?? null) ? $status['detail'] : [];
+        $free   = @disk_free_space(sitessaver_storage_dir());
+
+        return [
+            'uid'                => $status['uid'] ?? '',
+            'step_index'         => $status['step_index'] ?? null,
+            'note'               => $detail['note'] ?? '',
+            'done'               => $detail['done'] ?? null,
+            'file'               => $detail['file'] ?? null,
+            'file_size'          => isset($detail['size']) ? size_format((int) $detail['size']) : null,
+            'file_copied'        => isset($detail['copied']) ? size_format((int) $detail['copied']) : null,
+            'running_for'        => isset($status['start_time']) ? (time() - (int) $status['start_time']) . 's' : null,
+            'workers'            => $status['workers'] ?? null,
+            'resumes'            => $status['resumes'] ?? 0,
+            'max_execution_time' => ini_get('max_execution_time'),
+            'memory_limit'       => ini_get('memory_limit'),
+            'peak_memory'        => size_format(memory_get_peak_usage(true)),
+            'disk_free'          => $free !== false ? size_format((int) $free) : 'unknown',
+            'server'             => isset($_SERVER['SERVER_SOFTWARE']) ? substr((string) $_SERVER['SERVER_SOFTWARE'], 0, 60) : '',
+            'php'                => PHP_VERSION,
+        ];
     }
 
     /**
@@ -355,6 +493,11 @@ final class Export {
         set_transient("sitessaver_export_{$uid}", $status, HOUR_IN_SECONDS);
     }
 
+    /** save_status() for the AJAX layer (auto-resume bookkeeping). */
+    public static function save_status_public(string $uid, array $status): void {
+        self::save_status($uid, $status);
+    }
+
     /**
      * Fetch export status from transient store.
      */
@@ -446,7 +589,13 @@ final class Export {
                         $uploads_exclude = (is_multisite() && get_current_blog_id() === 1)
                             ? ['sites', 'sites/*']
                             : [];
-                        self::copy_area('uploads', wp_upload_dir()['basedir'], $temp_dir, $uploads_exclude, $plan);
+                        $uploads_dir = wp_upload_dir()['basedir'];
+                        $foreign     = self::foreign_backups_in($uploads_dir);
+                        if ($foreign) {
+                            Log::info('export_skipped_foreign_backups', 'Left other backup plugins\' archives out of the backup.', ['items' => $foreign]);
+                        }
+                        $uploads_exclude = array_merge($uploads_exclude, self::FOREIGN_BACKUP_DIRS, self::FOREIGN_BACKUP_FILES);
+                        self::copy_area('uploads', $uploads_dir, $temp_dir, $uploads_exclude, $plan);
                     }
                     break;
 
@@ -604,6 +753,10 @@ final class Export {
             return ['success' => true, 'step' => $step['id']];
 
         } catch (\Throwable $e) {
+            if ($e->getCode() === self::SUPERSEDED) {
+                throw $e;
+            }
+
             $ref = Log::error('export_failed', $e->getMessage(), [
                 'step'   => $step['id'] ?? $index,
                 'at'     => basename($e->getFile()) . ':' . $e->getLine(),
@@ -869,49 +1022,61 @@ final class Export {
 
         wp_mkdir_p($dest);
 
-        $iterator = new \RecursiveDirectoryIterator(
-            $source,
-            \RecursiveDirectoryIterator::SKIP_DOTS
-        );
-
-        $files = new \RecursiveIteratorIterator(
-            $iterator,
-            \RecursiveIteratorIterator::SELF_FIRST
-        );
-
-        $copied = 0;
-
-        foreach ($files as $file) {
-            $relative  = str_replace($source, '', $file->getPathname());
-            $relative  = ltrim(str_replace(['\\', '/'], '/', $relative), '/');
-            $dest_path = $dest . '/' . $relative;
-
-            // Check exclusions.
-            //
-            // The historic implementation only compared patterns against the
-            // full relative path and its basename via fnmatch, which is NOT
-            // recursive — `fnmatch('sitessaver', 'sitessaver/foo.php')` is
-            // false. That let the plugin's own folder slip into backups and
-            // subsequently self-cannibalise on restore. We now also:
-            //
-            //   - Treat `pattern/*` (or bare `pattern` when it's a top-level
-            //     directory name) as a directory-prefix match.
-            //   - Split the relative path and check if the FIRST segment
-            //     matches the pattern — this covers the common case of
-            //     excluding a whole top-level directory by name.
-            $skip = false;
+        // Decide once per entry whether the exclude list skips it, and whether
+        // a skipped DIRECTORY can be pruned (not descended into at all).
+        // Pruning only happens when every descendant would also be skipped
+        // under the historic rules (first-segment / prefix match, or a
+        // trailing-* pattern that matches the folder itself); a folder that
+        // is merely skipped by basename (e.g. a nested `cache` dir inside a
+        // plugin) is still walked so its files keep being copied exactly as
+        // before. Before pruning, a huge excluded tree was walked file by file
+        // with no liveness tick, which alone could trip the stall detector.
+        $match = static function (string $relative) use ($exclude): array {
             $first_segment = strtok($relative, '/');
             foreach ($exclude as $pattern) {
                 $base_pattern = rtrim($pattern, '/*');
-                if (fnmatch($pattern, $relative)
-                    || fnmatch($pattern, basename($relative))
-                    || $first_segment === $base_pattern
-                    || str_starts_with($relative, $base_pattern . '/')
-                ) {
-                    $skip = true;
-                    break;
+                $by_prefix    = $first_segment === $base_pattern || str_starts_with($relative, $base_pattern . '/');
+                $by_glob      = fnmatch($pattern, $relative);
+                if ($by_prefix || $by_glob || fnmatch($pattern, basename($relative))) {
+                    return [true, $by_prefix || ($by_glob && str_ends_with($pattern, '*'))];
                 }
             }
+            return [false, false];
+        };
+
+        $source_norm = str_replace('\\', '/', $source);
+        $relative_of = static function (\SplFileInfo $file) use ($source_norm): string {
+            $relative = str_replace('\\', '/', $file->getPathname());
+            if (str_starts_with($relative, $source_norm)) {
+                $relative = substr($relative, strlen($source_norm));
+            }
+            return ltrim($relative, '/');
+        };
+
+        $copied   = 0;
+        $iterator = new \RecursiveCallbackFilterIterator(
+            new \RecursiveDirectoryIterator($source, \RecursiveDirectoryIterator::SKIP_DOTS),
+            static function (\SplFileInfo $file) use ($match, $relative_of, &$copied): bool {
+                // Liveness while walking, including long runs of entries
+                // that are skipped and never reach the copy below.
+                self::tick('copy', $copied);
+                if (!$file->isDir()) {
+                    return true;
+                }
+                [, $prune] = $match($relative_of($file));
+                return !$prune;
+            }
+        );
+
+        $files = new \RecursiveIteratorIterator($iterator, \RecursiveIteratorIterator::SELF_FIRST);
+
+        $skipped = [];
+
+        foreach ($files as $file) {
+            $relative  = $relative_of($file);
+            $dest_path = $dest . '/' . $relative;
+
+            [$skip] = $match($relative);
             if ($skip) {
                 continue;
             }
@@ -926,24 +1091,155 @@ final class Export {
                 if ($mirror_dirs) {
                     wp_mkdir_p($dest_path);
                 }
-            } else {
-                // The filter both indexes the file and decides whether it
-                // needs archiving. It is called for every file that survived
-                // the exclude list, INCLUDING ones it then declines — an
-                // incremental backup must still index a file it skipped, or
-                // the next run would see it as deleted.
-                if ($filter !== null && !$filter($relative, $file->getPathname())) {
-                    continue;
-                }
+                continue;
+            }
 
-                $parent = dirname($dest_path);
-                if (!is_dir($parent)) {
-                    wp_mkdir_p($parent);
-                }
-                @copy($file->getPathname(), $dest_path);
+            // The filter both indexes the file and decides whether it
+            // needs archiving. It is called for every file that survived
+            // the exclude list, INCLUDING ones it then declines — an
+            // incremental backup must still index a file it skipped, or
+            // the next run would see it as deleted.
+            if ($filter !== null && !$filter($relative, $file->getPathname())) {
+                continue;
+            }
+
+            $parent = dirname($dest_path);
+            if (!is_dir($parent)) {
+                wp_mkdir_p($parent);
+            }
+
+            $size = (int) $file->getSize();
+
+            // A resumed export reuses its temp folder: a file already copied
+            // completely by the previous worker is not copied again. Partial
+            // copies never sit under the final name (see copy_file()).
+            if (is_file($dest_path) && (int) @filesize($dest_path) === $size) {
                 self::tick('copy', ++$copied);
+                continue;
+            }
+
+            $result = self::copy_file($file->getPathname(), $dest_path, $relative, $size);
+            if ($result === 'unreadable') {
+                // Same as before: a file PHP cannot read is left out rather
+                // than failing the whole backup — but it is now on record.
+                if (count($skipped) < 20) {
+                    $skipped[] = $relative;
+                }
+            } elseif ($result === 'write_failed') {
+                // Running out of disk is fatal: every following file would
+                // fail too and the backup would be silently incomplete. Any
+                // other write failure (odd file name, permissions) is left
+                // out and logged, as copy() failures always were.
+                $free = @disk_free_space($dest);
+                if ($free !== false && (float) $free < max(64 * 1024 * 1024, $size)) {
+                    throw new \RuntimeException(sprintf(
+                        'No space left on device while copying %s (%s). Free disk space: %s.',
+                        $relative,
+                        size_format($size),
+                        size_format((int) $free)
+                    ));
+                }
+                if (count($skipped) < 20) {
+                    $skipped[] = $relative . ' (write failed)';
+                }
+            }
+
+            self::tick('copy', ++$copied);
+        }
+
+        if ($skipped) {
+            Log::warning('export_unreadable_files', 'Some files could not be read and were left out of the backup.', ['files' => $skipped]);
+        }
+    }
+
+    /**
+     * Copy one file, in pieces with liveness ticks when it is large.
+     *
+     * Large files go to `<dest>.part` and are renamed when complete, so a
+     * worker killed mid-file never leaves a truncated file under the real
+     * name for a resumed run to mistake as done.
+     *
+     * @return string 'ok' | 'unreadable' | 'write_failed'
+     */
+    public static function copy_file(string $src, string $dst, string $relative = '', int $size = -1): string {
+        if ($size < 0) {
+            $size = (int) @filesize($src);
+        }
+
+        if ($size < self::COPY_STREAM_MIN) {
+            if (@copy($src, $dst)) {
+                return 'ok';
+            }
+            return is_readable($src) ? 'write_failed' : 'unreadable';
+        }
+
+        $in = @fopen($src, 'rb');
+        if (!$in) {
+            return 'unreadable';
+        }
+
+        $part = $dst . '.part';
+        $out  = @fopen($part, 'wb');
+        if (!$out) {
+            fclose($in);
+            return 'write_failed';
+        }
+
+        self::$current_item = ['file' => $relative, 'size' => $size, 'copied' => 0];
+        $copied = 0;
+        $ok     = true;
+
+        try {
+            // Loop on the known size, not feof(): at end of file PHP's
+            // stream_copy_to_stream() returns false before feof() turns true.
+            while ($copied < $size) {
+                $n = @stream_copy_to_stream($in, $out, min(self::COPY_CHUNK, $size - $copied));
+                if ($n === false || $n === 0) {
+                    $ok = false;
+                    break;
+                }
+                $copied += $n;
+                self::$current_item['copied'] = $copied;
+                self::tick('copy-large', $copied);
+            }
+        } finally {
+            fclose($in);
+            fclose($out);
+            self::$current_item = [];
+        }
+
+        if (!$ok || $copied !== $size || !@rename($part, $dst)) {
+            @unlink($part);
+            return 'write_failed';
+        }
+
+        return 'ok';
+    }
+
+    /**
+     * Which known foreign-backup folders/archives sit at the top of uploads.
+     *
+     * @return array<int, string> e.g. ["ai1wm-backups (2.1 GB)"]
+     */
+    private static function foreign_backups_in(string $uploads_dir): array {
+        $found = [];
+        $items = @scandir($uploads_dir);
+        if (!is_array($items)) {
+            return $found;
+        }
+        foreach ($items as $item) {
+            if ($item === '.' || $item === '..') {
+                continue;
+            }
+            foreach (array_merge(self::FOREIGN_BACKUP_DIRS, self::FOREIGN_BACKUP_FILES) as $pattern) {
+                if (fnmatch($pattern, $item)) {
+                    $path    = $uploads_dir . '/' . $item;
+                    $found[] = is_file($path) ? $item . ' (' . size_format((int) @filesize($path)) . ')' : $item . '/';
+                    break;
+                }
             }
         }
+        return $found;
     }
 
     /**
