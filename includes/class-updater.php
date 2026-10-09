@@ -63,6 +63,8 @@ final class Updater {
         add_filter('site_transient_update_plugins', [$this, 'inject_update']);
         add_filter('plugins_api', [$this, 'plugin_info'], 20, 3);
         add_filter('upgrader_source_selection', [$this, 'fix_source_dir'], 10, 4);
+        // Verify the downloaded ZIP against GitHub's SHA-256 for the asset.
+        add_filter('upgrader_pre_download', [$this, 'verify_download'], 10, 4);
 
         // A private repo needs the token on the download request too.
         add_filter('http_request_args', [$this, 'authorize_download'], 10, 2);
@@ -211,6 +213,7 @@ final class Updater {
             // Prefer the built artefact over GitHub's generated zipball.
             $package   = '';
             $has_asset = false;
+            $sha256    = '';
             foreach ($release['assets'] ?? [] as $asset) {
                 if (!is_array($asset) || !str_ends_with(strtolower((string) ($asset['name'] ?? '')), '.zip')) {
                     continue;
@@ -221,6 +224,13 @@ final class Updater {
                     ? (string) ($asset['url'] ?? '')
                     : (string) ($asset['browser_download_url'] ?? '');
                 $has_asset = $package !== '';
+                // GitHub publishes a digest for every uploaded asset
+                // ("sha256:<hex>"). Releases without one install unverified,
+                // exactly as before.
+                $digest = strtolower((string) ($asset['digest'] ?? ''));
+                if (preg_match('/^sha256:([0-9a-f]{64})$/', $digest, $dm)) {
+                    $sha256 = $dm[1];
+                }
                 break;
             }
 
@@ -238,6 +248,7 @@ final class Updater {
                 'notes'     => (string) ($release['body'] ?? ''),
                 'published' => (string) ($release['published_at'] ?? ''),
                 'asset'     => $has_asset,
+                'sha256'    => $sha256,
             ];
         }
 
@@ -535,6 +546,56 @@ final class Updater {
         );
 
         return $args;
+    }
+
+    /**
+     * Download OUR update package and check it against the SHA-256 GitHub
+     * published for the release asset. A mismatch (truncated download,
+     * a proxy or mirror altering the file) stops the update before anything
+     * is unpacked, so the installed plugin stays as it is.
+     *
+     * @param bool|string|\WP_Error $reply
+     * @param string                $package
+     * @param mixed                 $upgrader
+     * @param array<string, mixed>  $hook_extra
+     * @return bool|string|\WP_Error
+     */
+    public function verify_download($reply, $package, $upgrader = null, $hook_extra = []) {
+        if ($reply !== false || !is_string($package) || $package === '') {
+            return $reply;
+        }
+
+        $release = self::latest_release();
+        if ($release === null || ($release['package'] ?? '') !== $package || empty($release['sha256'])) {
+            return $reply;
+        }
+
+        if (!function_exists('download_url')) {
+            require_once ABSPATH . 'wp-admin/includes/file.php';
+        }
+
+        $file = download_url($package, 300);
+        if (is_wp_error($file)) {
+            return $file;
+        }
+
+        $actual = (string) hash_file('sha256', $file);
+        if (!hash_equals((string) $release['sha256'], $actual)) {
+            @unlink($file);
+            if (class_exists(Log::class)) {
+                Log::error('update_checksum_mismatch', 'The downloaded update does not match the checksum GitHub published; the update was stopped.', [
+                    'version'  => $release['version'] ?? '',
+                    'expected' => $release['sha256'],
+                    'actual'   => $actual,
+                ]);
+            }
+            return new \WP_Error(
+                'sitessaver_checksum_mismatch',
+                __('The SitesSaver update download is damaged or was altered on the way (checksum mismatch). Nothing was changed; please try the update again.', 'sitessaver')
+            );
+        }
+
+        return $file;
     }
 
     /**

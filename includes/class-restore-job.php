@@ -332,7 +332,24 @@ final class Restore_Job {
      */
     public static function run(string $id, string $mode): void {
         $job = self::get($id);
-        if ($job === null || !in_array($job['status'] ?? '', ['queued', 'running'], true)) {
+        if ($job === null || !in_array($job['status'] ?? '', ['queued', 'running', 'rolling_back'], true)) {
+            return;
+        }
+
+        if (($job['status'] ?? '') === 'rolling_back') {
+            @ignore_user_abort(true);
+            Export::begin_slice($mode === 'background' ? Export::slice_budget(['slice' => (int) ($job['slice'] ?? 0)]) : Export::browser_budget());
+            try {
+                $done = self::finish_rollback($id);
+            } finally {
+                Export::end_slice();
+                self::release();
+            }
+            if (!$done && $mode === 'background') {
+                self::spawn_next($id);
+            } else {
+                self::update($id, static fn(array $j): array => $j); // heartbeat
+            }
             return;
         }
 
@@ -449,6 +466,11 @@ final class Restore_Job {
             self::$slice_clean = true;
             $now = self::get($id);
             self::fail($id, $e->getMessage() . ' @ ' . basename($e->getFile()) . ':' . $e->getLine(), (string) ($now['phase'] ?? ''));
+            $after = self::get($id);
+            if (($after['status'] ?? '') === 'rolling_back' && $mode === 'background') {
+                self::release();
+                self::spawn_next($id);
+            }
         } finally {
             self::$slice_clean = true;
             Export::end_slice();
@@ -484,6 +506,11 @@ final class Restore_Job {
         if ($job === null || in_array($job['status'] ?? '', ['failed', 'completed'], true)) {
             return;
         }
+        if (($job['status'] ?? '') === 'rolling_back') {
+            self::finish_rollback($id);
+            return;
+        }
+        $files_touched = !empty($job['cursor']['fl']['rb']);
 
         // The restored database may already be switched in while the rest
         // of the restore stopped. Put the previous one back.
@@ -491,6 +518,9 @@ final class Restore_Job {
         if (is_array($db) && !empty($db['stage'])) {
             if (Database::rollback_swap($db) && !empty($db['swapped'])) {
                 $technical .= ' ' . __('The previous database was put back.', 'sitessaver');
+                if ($files_touched) {
+                    $technical .= ' ' . __('The files it had replaced were put back too.', 'sitessaver');
+                }
                 $code       = $code ?? 'restore_rolled_back';
             } elseif (empty($db['swapped']) && $phase === 'database') {
                 // Staged and never switched in: the live site was not touched.
@@ -510,16 +540,51 @@ final class Restore_Job {
             'server'   => isset($_SERVER['SERVER_SOFTWARE']) ? sanitize_text_field(wp_unslash($_SERVER['SERVER_SOFTWARE'])) : '',
         ]);
 
+        // Put the replaced files back before reporting the failure. This is
+        // renames, normally seconds; on a slow host it continues in the
+        // next request (status `rolling_back`).
         self::update($id, static function (array $j) use ($payload): array {
-            $j['status'] = 'failed';
+            $j['status'] = 'rolling_back';
+            $j['phase']  = 'rollback';
+            $j['label']  = __('Putting your previous site back...', 'sitessaver');
             $j['error']  = $payload;
             return $j;
         });
+        self::finish_rollback($id);
+    }
 
-        $temp = $job['cursor']['temp'] ?? '';
+    /**
+     * Continue putting files back; mark the job failed when done.
+     */
+    public static function finish_rollback(string $id): bool {
+        $job = self::get($id);
+        if ($job === null || ($job['status'] ?? '') !== 'rolling_back') {
+            return true;
+        }
+        $cursor = is_array($job['cursor'] ?? null) ? $job['cursor'] : [];
+
+        if (!empty($cursor['fl']['rb']) && !Import::rollback_files($cursor, [Export::class, 'out_of_time'])) {
+            return false;
+        }
+        if (!empty($cursor['fl']['rb'])) {
+            Log::warning('restore_files_rolled_back', 'The restore did not finish; the files it had replaced were put back.', ['job' => $id]);
+        }
+
+        self::update($id, static function (array $j): array {
+            $j['status'] = 'failed';
+            return $j;
+        });
+
+        $temp = $cursor['temp'] ?? '';
         if (is_string($temp) && $temp !== '') {
             sitessaver_cleanup_temp($temp);
+            foreach ([$temp . '.files', $temp . '.new'] as $f) {
+                if (is_file($f)) {
+                    unlink($f);
+                }
+            }
         }
+        return true;
     }
 
     // ------------------------------------------------------------------
@@ -608,11 +673,12 @@ final class Restore_Job {
         $status = (string) ($job['status'] ?? '');
         $now    = time();
 
-        $since = $now - (int) ($job['updated'] ?? $now);
-        $busy  = $status === 'running' && self::is_busy((string) $job['id']);
+        $since  = $now - (int) ($job['updated'] ?? $now);
+        $moving = $status === 'running' || $status === 'rolling_back';
+        $busy   = $moving && self::is_busy((string) $job['id']);
 
         // Silent and nobody working on it: the host stopped the worker.
-        if ($status === 'running' && !$busy && $since > self::RESPAWN_SECONDS && ($job['driver'] ?? '') !== 'browser') {
+        if ($moving && !$busy && $since > self::RESPAWN_SECONDS && ($job['driver'] ?? '') !== 'browser') {
             if (($job['mode'] ?? '') === 'background' && (int) ($job['resumes'] ?? 0) < self::AUTO_RESUMES) {
                 $job = self::update((string) $job['id'], static function (array $j): array {
                     $j['resumes'] = (int) ($j['resumes'] ?? 0) + 1;
@@ -649,7 +715,7 @@ final class Restore_Job {
             'mode'            => $job['mode'] ?? null,
             'seconds_since'   => $now - (int) ($job['updated'] ?? $now),
             'not_started'     => $status === 'queued' && $now - (int) ($job['created'] ?? $now) > self::START_GRACE_SECONDS,
-            'drive'           => $status === 'running' && ($job['driver'] ?? '') === 'browser',
+            'drive'           => in_array($status, ['running', 'rolling_back'], true) && ($job['driver'] ?? '') === 'browser',
             'result'          => $status === 'completed' ? $job['result'] : null,
             'error'           => $status === 'failed' ? $job['error'] : null,
         ];

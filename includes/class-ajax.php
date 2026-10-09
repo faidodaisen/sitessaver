@@ -1622,7 +1622,8 @@ final class Ajax {
         }
 
         $status  = (string) ($job['status'] ?? '');
-        $allowed = $status === 'queued' || ($status === 'running' && ($job['driver'] ?? '') === 'browser');
+        $allowed = $status === 'queued'
+            || (in_array($status, ['running', 'rolling_back'], true) && ($job['driver'] ?? '') === 'browser');
         if (!$allowed) {
             wp_send_json_success(['message' => 'nothing to do', 'state' => $status]);
         }

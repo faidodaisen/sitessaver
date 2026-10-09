@@ -6,6 +6,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.5.1] — 2026-10-09
+
+Closes the gaps left open in 1.5.0.
+
+### A failed restore now puts your files back too
+
+- Before a restore overwrites a file, it moves the site's current copy aside (a rename, so no extra
+  disk space or copy time is needed). It also records every file it creates.
+- If the restore fails after it has started replacing files, it deletes the files it created and
+  moves the originals back, along with the database switch-back added in 1.5.0. The site is left
+  exactly as it was before the restore, and the message now says so ("your site was put back").
+- On a slow host the file roll-back continues across requests, like the restore itself.
+- If a single file cannot be copied during an otherwise successful restore, the site keeps its own
+  copy of that file instead of losing it.
+- The kept copies are deleted once the restore has finished.
+
+### Scheduled backups upload to Google Drive in slices
+
+- The Drive upload now runs inside the backup's own chain of time slices and resumes from the last
+  byte Google confirmed. Before, it was one long request after the backup that a 30-second host
+  limit cut off.
+- Background workers also obey the slice limit for Drive uploads (manual exports included).
+
+### Updates are checked against GitHub's checksum
+
+- An update download is checked against the SHA-256 that GitHub publishes for the release file. A
+  truncated or altered download stops the update before anything is unpacked, and the installed
+  version stays as it is. Releases without a published checksum install as before.
+
+### Warning when the backup folder is reachable from the web
+
+- Nginx (and some LiteSpeed/IIS setups) ignore the `.htaccess` file that blocks the backup folder.
+  SitesSaver now checks once a day by requesting a test file over HTTP. If the folder is reachable,
+  the Backups page shows a warning with the exact Nginx rule to give the host.
+- Backup names now end in 16 random characters (was 6), so they cannot be guessed even where the
+  folder is reachable.
+
 ## [1.5.0] — 2026-10-09
 
 This release fixes the four highest risks found in a full audit of the plugin.

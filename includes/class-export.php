@@ -760,6 +760,14 @@ final class Export {
      * instead of letting the gateway replace it with a 504 HTML page.
      */
     private static function request_deadline(): ?int {
+        // Inside a time slice the slice decides, for the background worker
+        // too: a host that stops requests after ~30 s stops an "unbounded"
+        // Drive upload just the same. At least a few seconds, so every slice
+        // moves the upload forward by one chunk.
+        if (self::$deadline !== null) {
+            return max(time() + 5, (int) floor(self::$deadline));
+        }
+
         if (self::$unbounded) {
             return null;
         }

@@ -105,8 +105,8 @@ final class Errors {
                 'hint'    => __('Try again. If it happens again, share the reference code below with whoever looks after your site.', 'sitessaver'),
             ],
             'restore_rolled_back' => [
-                'title'   => __('The restore didn’t finish — your database was put back', 'sitessaver'),
-                'message' => __('Something went wrong after the backup’s database was loaded, so SitesSaver switched your previous database back in. Your posts, pages, users and settings are as they were. Some files (images, plugins, themes) may already have been replaced by the backup’s copies.', 'sitessaver'),
+                'title'   => __('The restore didn’t finish — your site was put back', 'sitessaver'),
+                'message' => __('Something went wrong part-way through, so SitesSaver switched your previous database back in and returned the files it had replaced. Your posts, pages, users, settings, images, plugins and themes are as they were before the restore.', 'sitessaver'),
                 'hint'    => __('Run the restore again. If it fails a second time, download the log from Help → Troubleshooting Log and send it to SitesSaver support.', 'sitessaver'),
             ],
             'restore_failed' => [

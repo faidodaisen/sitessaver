@@ -572,8 +572,15 @@ final class Schedule {
         // `track_chain` is what separates a scheduled backup from a manual
         // one. Only scheduled runs build a file index and join a chain;
         // the Export screen still produces standalone full backups.
+        // Drive upload happens inside the export's last step, in slices that
+        // resume from the confirmed byte offset — not afterwards in one long
+        // request that a 30-second host limit would cut off.
+        $to_drive = !empty($settings['storage_gdrive']) && GDrive::is_connected();
+        $dest     = $to_drive ? (empty($settings['storage_local']) ? 'gdrive' : 'both') : 'local';
+
         $result = Export::run_bounded([
-            'schedule'        => ['frequency' => $frequency],
+            'schedule'           => ['frequency' => $frequency],
+            'export_destination' => $dest,
             'include_db'      => $settings['include_db'] ?? true,
             'include_media'   => $settings['include_media'] ?? true,
             'include_plugins' => $settings['include_plugins'] ?? true,
@@ -604,7 +611,13 @@ final class Schedule {
                 $this->finalize_backup(['success' => false, 'message' => (string) ($status['message'] ?? __('The scheduled backup did not finish.', 'sitessaver'))], $settings, $frequency);
                 return;
             }
-            $this->after_export((array) ($status['result'] ?? []), $settings, $frequency);
+            $result = (array) ($status['result'] ?? []);
+            // A Drive-only export has already removed its local copy and
+            // blanked the file; the log and email still name the backup.
+            if (empty($result['file'])) {
+                $result['file'] = (string) ($status['backup_name'] ?? '');
+            }
+            $this->after_export($result, $settings, $frequency);
         } finally {
             delete_transient(self::LOCK_TRANSIENT);
         }
@@ -619,7 +632,15 @@ final class Schedule {
         $file_uploaded = false;
 
         // 2. Handle Google Drive Storage.
-        if (!empty($settings['storage_gdrive'])) {
+        if (isset($result['gdrive']) && is_array($result['gdrive'])) {
+            // Uploaded by the export itself (1.5.1+).
+            $file_uploaded             = !empty($result['gdrive']['success']);
+            $result['gdrive_uploaded'] = $file_uploaded;
+            if (!$file_uploaded) {
+                $result['gdrive_error'] = (string) ($result['gdrive']['message'] ?? '');
+                $result['message']     .= ' (GDrive Upload Failed: ' . $result['gdrive_error'] . ')';
+            }
+        } elseif (!empty($settings['storage_gdrive'])) {
             $up_res = GDrive::upload($result['path'], $result['file']);
             if ($up_res['success']) {
                 $file_uploaded = true;
@@ -634,8 +655,11 @@ final class Schedule {
 
         // 3. Handle Local Storage.
         if (empty($settings['storage_local']) && $file_uploaded) {
-            // User only wants GDrive and it succeeded — delete local file.
-            @unlink($result['path']);
+            // User only wants GDrive and it succeeded — delete local file
+            // (already gone when the export uploaded it as gdrive-only).
+            if (!empty($result['path']) && is_file($result['path'])) {
+                @unlink($result['path']);
+            }
             $result['local_kept'] = false;
             $result['message'] .= ' ' . __('(Local copy removed as per settings)', 'sitessaver');
         } else {

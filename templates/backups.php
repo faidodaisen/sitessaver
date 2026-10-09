@@ -38,6 +38,18 @@ $stats   = [
         </div>
     </header>
 
+    <?php if (sitessaver_storage_exposure() === 'exposed') : ?>
+        <?php $sitessaver_rel = '/' . ltrim(wp_make_link_relative(content_url('sitessaver-backups')), '/'); ?>
+        <div class="ss-notice ss-notice-warning" role="alert">
+            <i class="ri-alert-line" aria-hidden="true"></i>
+            <div>
+                <strong><?php esc_html_e('Your backup folder can be downloaded from the web.', 'sitessaver'); ?></strong>
+                <?php esc_html_e('This server ignores the .htaccess file that normally blocks it (common on Nginx). Backup names are long and random, so they are hard to guess, but the folder should be closed. Ask your host to add this rule to the site’s Nginx configuration:', 'sitessaver'); ?>
+                <code class="ss-notice-code">location ^~ <?php echo esc_html($sitessaver_rel); ?>/ { deny all; return 403; }</code>
+            </div>
+        </div>
+    <?php endif; ?>
+
     <div class="ss-stats-grid">
         <div class="ss-stat-card">
             <div class="ss-stat-icon blue">

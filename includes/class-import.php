@@ -671,6 +671,18 @@ final class Import {
             $save(true);
         }
 
+        // The restore can no longer fail in a way that needs the replaced
+        // files: drop them, a slice at a time.
+        if (!empty($c['fl']['rb']) && is_dir((string) $c['fl']['rb'])) {
+            if (!self::remove_tree_slice((string) $c['fl']['rb'], $should_stop)) {
+                $save(true);
+                return false;
+            }
+        }
+        if (!empty($c['fl']['new']) && is_file((string) $c['fl']['new'])) {
+            unlink((string) $c['fl']['new']);
+        }
+
         // 5. Post-import tasks + cleanup.
         self::tick('finalize');
         self::post_import((array) ($c['manifest'] ?? []));
@@ -721,7 +733,18 @@ final class Import {
                 }
             }
             fclose($fh);
-            $c['fl'] = ['lp' => 0, 'failures' => 0, 'failed' => []];
+            $c['fl'] = [
+                'lp'       => 0,
+                'failures' => 0,
+                'failed'   => [],
+                // Every file this restore replaces is MOVED here first (a
+                // rename: no extra disk, no copy time), and every file it
+                // creates is listed in `new`. A restore that fails later
+                // puts both back (rollback_files()).
+                'rb'       => (string) $c['temp'] . '-prev',
+                'new'      => (string) $c['temp'] . '.new',
+            ];
+            wp_mkdir_p($c['fl']['rb']);
             $save(true);
         }
 
@@ -749,6 +772,7 @@ final class Import {
                         if (!is_dir($parent)) {
                             wp_mkdir_p($parent);
                         }
+                        self::keep_previous($c, $name . '/' . $relative, $dest_path);
                         $use_rewrite = $cfg['rewrite'] && $pairs !== [] && self::is_rewritable_text_file($src_path, $relative);
                         if ($use_rewrite) {
                             $ok = self::copy_with_url_rewrite($src_path, $dest_path, $pairs);
@@ -768,6 +792,14 @@ final class Import {
                                 $c['fl']['failed'][] = $name . '/' . $relative;
                             }
                             error_log('[SitesSaver] restore: copy failed for ' . $name . '/' . $relative);
+                            // Keep the site's own copy rather than leave a gap.
+                            $kept = (string) ($c['fl']['rb'] ?? '') . '/' . $name . '/' . $relative;
+                            if (!empty($c['fl']['rb']) && is_file($kept)) {
+                                if (is_file($dest_path)) {
+                                    @unlink($dest_path);
+                                }
+                                @rename($kept, $dest_path);
+                            }
                         }
                     }
                 }
@@ -791,6 +823,129 @@ final class Import {
                 ['first_paths' => $c['fl']['failed']]
             );
         }
+        return true;
+    }
+
+    /**
+     * Before a restore writes $dest, move the file already there aside (or
+     * note that $dest is new). Idempotent: a replayed line finds the file
+     * already moved and leaves it.
+     *
+     * @param array<string, mixed> $c
+     */
+    private static function keep_previous(array $c, string $key, string $dest): void {
+        $rb = (string) ($c['fl']['rb'] ?? '');
+        if ($rb === '') {
+            return;
+        }
+        $kept = $rb . '/' . $key;
+        if (file_exists($kept)) {
+            return; // moved by an earlier slice
+        }
+        if (is_file($dest)) {
+            $dir = dirname($kept);
+            if (!is_dir($dir)) {
+                wp_mkdir_p($dir);
+            }
+            if (!@rename($dest, $kept) && !@copy($dest, $kept)) {
+                error_log('[SitesSaver] restore: could not keep the previous copy of ' . $key);
+            }
+            return;
+        }
+        @file_put_contents((string) $c['fl']['new'], $dest . "\n", FILE_APPEND | LOCK_EX);
+    }
+
+    /**
+     * Undo the files step: delete files the restore created, move the kept
+     * originals back. Resumable and idempotent (each original leaves the
+     * keep folder as it is moved back).
+     *
+     * @param array<string, mixed> $c
+     * @return bool True when done.
+     */
+    public static function rollback_files(array $c, callable $should_stop): bool {
+        $fl = is_array($c['fl'] ?? null) ? $c['fl'] : [];
+        $rb = (string) ($fl['rb'] ?? '');
+        if ($rb === '') {
+            return true;
+        }
+
+        $new = (string) ($fl['new'] ?? '');
+        if ($new !== '' && is_file($new)) {
+            $fh = fopen($new, 'rb');
+            if ($fh !== false) {
+                while (($line = fgets($fh)) !== false) {
+                    $path = rtrim($line, "\r\n");
+                    if ($path !== '' && is_file($path)) {
+                        @unlink($path);
+                    }
+                }
+                fclose($fh);
+            }
+            unlink($new);
+            if ($should_stop()) {
+                return false;
+            }
+        }
+
+        if (!is_dir($rb)) {
+            return true;
+        }
+
+        [$dirs] = self::content_targets('', '');
+        $n  = 0;
+        $it = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($rb, \RecursiveDirectoryIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::LEAVES_ONLY
+        );
+        foreach ($it as $file) {
+            $rel  = ltrim(str_replace('\\', '/', substr($file->getPathname(), strlen($rb))), '/');
+            $name = (string) strtok($rel, '/');
+            if (!isset($dirs[$name])) {
+                continue;
+            }
+            $dest = $dirs[$name]['dest'] . '/' . substr($rel, strlen($name) + 1);
+            $dir  = dirname($dest);
+            if (!is_dir($dir)) {
+                wp_mkdir_p($dir);
+            }
+            if (is_file($dest)) {
+                @unlink($dest);
+            }
+            if (!@rename($file->getPathname(), $dest) && @copy($file->getPathname(), $dest)) {
+                @unlink($file->getPathname());
+            }
+            if ((++$n % 200) === 0) {
+                do_action('sitessaver_heartbeat');
+                if ($should_stop()) {
+                    return false;
+                }
+            }
+        }
+
+        return self::remove_tree_slice($rb, $should_stop);
+    }
+
+    /** Delete a directory tree, stopping between files when asked. */
+    public static function remove_tree_slice(string $dir, callable $should_stop): bool {
+        if (!is_dir($dir)) {
+            return true;
+        }
+        $n  = 0;
+        $it = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($dir, \RecursiveDirectoryIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::CHILD_FIRST
+        );
+        foreach ($it as $f) {
+            $f->isDir() ? @rmdir($f->getPathname()) : @unlink($f->getPathname());
+            if ((++$n % 300) === 0) {
+                do_action('sitessaver_heartbeat');
+                if ($should_stop()) {
+                    return false;
+                }
+            }
+        }
+        @rmdir($dir);
         return true;
     }
 

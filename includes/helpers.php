@@ -38,7 +38,10 @@ function sitessaver_backup_filename(string $ext = 'zip'): string {
     $site = sanitize_file_name(wp_parse_url(home_url(), PHP_URL_HOST) ?? 'site');
     $date = gmdate('Ymd-His');
 
-    return sprintf('%s-%s-%s.%s', $site, $date, wp_generate_password(6, false), $ext);
+    // 16 random characters (~95 bits): even where the backup folder can be
+    // reached over the web (Nginx ignores .htaccess), a backup's name cannot
+    // be guessed from the site name and a rough date.
+    return sprintf('%s-%s-%s.%s', $site, $date, wp_generate_password(16, false), $ext);
 }
 
 /**
@@ -97,6 +100,56 @@ function sitessaver_protect_directory(string $dir): void {
     if (!file_exists($index)) {
         file_put_contents($index, '<?php // Silence is golden.');
     }
+}
+
+/**
+ * Can anyone on the internet download files from the backup folder?
+ *
+ * Apache honours the folder's .htaccess "deny"; Nginx, and some LiteSpeed
+ * and IIS setups, ignore it. A small file with a random body is placed in
+ * the folder and requested over HTTP: if the body comes back, the folder is
+ * web-readable. Checked at most once a day.
+ *
+ * @return string 'protected' | 'exposed' | 'unknown'
+ */
+function sitessaver_storage_exposure(bool $force = false): string {
+    $cached = get_transient('sitessaver_storage_exposure');
+    if (!$force && is_string($cached) && $cached !== '') {
+        return $cached;
+    }
+
+    $dir     = SITESSAVER_STORAGE_DIR;
+    $content = wp_normalize_path(WP_CONTENT_DIR);
+    if (!str_starts_with(wp_normalize_path($dir), $content)) {
+        set_transient('sitessaver_storage_exposure', 'unknown', DAY_IN_SECONDS);
+        return 'unknown';
+    }
+
+    wp_mkdir_p($dir);
+    sitessaver_protect_directory($dir);
+
+    $name  = 'ss-probe-' . wp_generate_password(12, false) . '.txt';
+    $token = wp_generate_password(24, false);
+    if (@file_put_contents($dir . '/' . $name, $token) === false) {
+        return 'unknown';
+    }
+
+    $url = content_url(substr(wp_normalize_path($dir), strlen($content))) . '/' . $name;
+    $res = wp_remote_get($url, ['timeout' => 4, 'sslverify' => false, 'redirection' => 0]);
+    @unlink($dir . '/' . $name);
+
+    if (is_wp_error($res)) {
+        $state = 'unknown';
+    } else {
+        $code  = (int) wp_remote_retrieve_response_code($res);
+        $state = ($code === 200 && trim((string) wp_remote_retrieve_body($res)) === $token) ? 'exposed' : 'protected';
+    }
+
+    set_transient('sitessaver_storage_exposure', $state, $state === 'unknown' ? HOUR_IN_SECONDS : DAY_IN_SECONDS);
+    if ($state === 'exposed' && class_exists(\SitesSaver\Log::class)) {
+        \SitesSaver\Log::warning('storage_exposed', 'The backup folder can be read over the web (the server ignores .htaccess).', ['url' => dirname($url) . '/']);
+    }
+    return $state;
 }
 
 /**
