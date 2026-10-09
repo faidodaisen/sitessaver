@@ -53,6 +53,7 @@ final class Schedule {
         // Older installs scheduled this hook with no args, so the parameter
         // has to stay optional or those pending events fatal on fire.
         add_action('sitessaver_scheduled_backup', [$this, 'run_scheduled_backup'], 10, 1);
+        add_action('sitessaver_scheduled_export_finished', [$this, 'on_export_finished'], 10, 2);
         add_filter('cron_schedules', [$this, 'add_custom_schedules']);
 
         // Must run early and on every request type — a server cron hitting the
@@ -467,6 +468,10 @@ final class Schedule {
 
         $label = implode(',', $due);
 
+        if (!empty($result['pending'])) {
+            self::respond(202, sprintf('sitessaver: backup started for [%s]; it continues in the background (call this URL every minute to keep it moving)', $label));
+        }
+
         if (!empty($result['success'])) {
             self::respond(200, sprintf(
                 'sitessaver: backup completed for [%s] (%s, %s)',
@@ -543,10 +548,15 @@ final class Schedule {
             self::record_run($key, $started);
         }
 
+        $result = null;
         try {
             $result = $this->perform_backup($settings, $frequency);
         } finally {
-            delete_transient(self::LOCK_TRANSIENT);
+            // A backup continuing in the background keeps the lock until it
+            // finishes (on_export_finished() releases it).
+            if (!is_array($result) || empty($result['pending'])) {
+                delete_transient(self::LOCK_TRANSIENT);
+            }
         }
 
         return $result;
@@ -562,7 +572,8 @@ final class Schedule {
         // `track_chain` is what separates a scheduled backup from a manual
         // one. Only scheduled runs build a file index and join a chain;
         // the Export screen still produces standalone full backups.
-        $result = Export::run([
+        $result = Export::run_bounded([
+            'schedule'        => ['frequency' => $frequency],
             'include_db'      => $settings['include_db'] ?? true,
             'include_media'   => $settings['include_media'] ?? true,
             'include_plugins' => $settings['include_plugins'] ?? true,
@@ -573,11 +584,38 @@ final class Schedule {
             'change_detection'=> ($settings['change_detection'] ?? 'fast') === 'thorough' ? 'thorough' : 'fast',
         ]);
 
-        if (!$result['success']) {
-            $this->finalize_backup($result, $settings, $frequency);
-            return $result;
-        }
+        // Drive upload, retention and the email run when the export finishes
+        // — in this request, or in a later slice (on_export_finished()).
+        return $result;
+    }
 
+    /**
+     * A scheduled export finished (in any request).
+     *
+     * @param array<string, mixed> $status Export status.
+     */
+    public function on_export_finished(array $status, bool $ok): void {
+        $settings  = get_option('sitessaver_schedule', []);
+        $settings  = is_array($settings) ? $settings : [];
+        $frequency = (string) ($status['options']['schedule']['frequency'] ?? '');
+
+        try {
+            if (!$ok) {
+                $this->finalize_backup(['success' => false, 'message' => (string) ($status['message'] ?? __('The scheduled backup did not finish.', 'sitessaver'))], $settings, $frequency);
+                return;
+            }
+            $this->after_export((array) ($status['result'] ?? []), $settings, $frequency);
+        } finally {
+            delete_transient(self::LOCK_TRANSIENT);
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $settings
+     */
+    private function after_export(array $result, array $settings, string $frequency): void {
+        $result['message'] = (string) ($result['message'] ?? __('Backup completed.', 'sitessaver'));
         $file_uploaded = false;
 
         // 2. Handle Google Drive Storage.
@@ -610,8 +648,6 @@ final class Schedule {
         }
 
         $this->finalize_backup($result, $settings, $frequency);
-
-        return $result;
     }
 
     /**
@@ -657,7 +693,14 @@ final class Schedule {
      */
     private static function apply_retention(int $keep): void {
         $backups = sitessaver_get_backups();
-        $points  = Index::restore_points($backups);
+
+        // Only restore points the SCHEDULE made. A backup made from the
+        // Export screen or uploaded for a migration is a chain-less "solo"
+        // point; the schedule's retention must never delete it.
+        $points = array_values(array_filter(
+            Index::restore_points($backups),
+            static fn(array $p): bool => !str_starts_with((string) $p['key'], 'solo:')
+        ));
 
         if (count($points) <= $keep) {
             return;

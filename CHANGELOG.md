@@ -6,6 +6,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.5.0] — 2026-10-09
+
+This release fixes the four highest risks found in a full audit of the plugin.
+
+### Restores work on hosts that stop requests after ~30 seconds
+
+Until now a restore ran in one long request. On hosts that cut every PHP request at ~30 s (the same
+hosts fixed for export in 1.4.10), a site of any size could never be restored.
+
+- A restore now runs as a chain of time slices, like export. Each slice saves its place in the job
+  file and the next one continues from there:
+  - **Archive extraction** goes entry by entry. A large file continues mid-file.
+  - **Database import** saves its byte position at a statement boundary, along with the active
+    `DELIMITER` and the session `SET`s. A slice killed after running statements but before saving its
+    position replays them as `INSERT IGNORE`, so no rows are lost or duplicated.
+  - **File copy** works from a list. A large file continues mid-file.
+- One request at a time: each slice holds an OS file lock (`flock`), so a slow worker and its
+  replacement never run together. A dead worker's lock is released by the OS.
+- If background requests keep dying, the open restore screen takes over and runs the slices itself.
+  This needs no login cookie, because the database switch invalidates it; the job's token
+  authorises the requests instead.
+- If PHP's own time limit is hit mid-slice, the restore continues with a shorter slice instead of
+  failing.
+
+### The previous database is kept until a restore has finished
+
+- The backup's tables are imported under a temporary prefix while the site keeps running on its own.
+  Only when the whole dump has gone in are they switched over in **one atomic `RENAME TABLE`**. The
+  previous tables are kept under another temporary prefix until the restore completes.
+- If a restore fails **before** the switch, the live site was never touched and the temporary tables
+  are dropped.
+- If a restore fails **after** the switch (while files are being copied), the previous database is
+  switched back in. The message says so plainly ("your database was put back"). Files already
+  copied are not reverted, and the message says that too.
+- Dumps that cannot be staged (a table outside the backup's prefix, or a name too long once
+  prefixed) fall back to the old direct import, and this is logged.
+- An abandoned restore's temporary tables are cleaned up after a day.
+
+### Scheduled backups survive a 30-second host limit
+
+- Scheduled backups now use the same chain of slices as a manual export: background worker, the
+  every-minute WP-Cron watchdog, and the server-cron URL.
+- Drive upload, retention and the notification email run when the backup finishes, in whichever
+  request that happens. The schedule lock is held until then.
+- "Run backup now" and the server-cron URL report "started, continues in the background" when the
+  backup does not finish within the first request.
+
+### Retention no longer deletes backups the schedule did not make
+
+- Schedule retention used to count every backup in the folder: manual exports and uploaded zips
+  (for example, a migration file) could be deleted after N scheduled runs. It now counts and prunes
+  only the schedule's own backup chains.
+
+### Also fixed
+
+- An export slice now holds an OS file lock. Two requests (a slow worker and the browser or cron that
+  replaced it) can no longer append to the same SQL or ZIP file at once.
+- Google Drive file list: file names and IDs are now HTML-escaped (XSS through a crafted file name in
+  the Drive folder).
+- Restore job file on Windows hosts: a save could delete the job file while another request had it
+  open. It now retries the rename and never deletes first.
+
 ## [1.4.11] — 2026-10-07
 
 ### Added — leave the Export page while a backup runs

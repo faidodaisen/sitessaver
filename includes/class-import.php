@@ -410,6 +410,7 @@ final class Import {
      * @return array{success: bool, message: string}
      */
     private static function run_from_dir(string $temp_dir, string $source_label): array {
+        $db_state = [];
         try {
             // 2. Read and validate manifest.
             self::tick('manifest');
@@ -435,9 +436,12 @@ final class Import {
                     $old_prefix = Database::detect_dump_prefix($db_file);
                 }
 
-                if (!Database::import($db_file, $old_url, $new_url, $old_prefix)) {
+                // Into staging tables first, switched in only when complete:
+                // a failure before the switch leaves the live site untouched.
+                if (!Database::import($db_file, $old_url, $new_url, $old_prefix, true)) {
                     throw new \RuntimeException(__('Failed to import database.', 'sitessaver'));
                 }
+                $db_state = Database::$last_import;
 
                 // The options table is now the backup's. Listeners (the
                 // background restore job) re-assert anything the rest of
@@ -460,6 +464,7 @@ final class Import {
 
             // 6. Cleanup — scoped to THIS import only.
             sitessaver_cleanup_temp($temp_dir);
+            Database::drop_previous_tables($db_state);
 
             delete_transient(self::PROGRESS_KEY);
             do_action('sitessaver_import_complete', $source_label);
@@ -473,11 +478,349 @@ final class Import {
             delete_transient(self::PROGRESS_KEY);
             sitessaver_cleanup_temp($temp_dir);
 
+            // Put the previous database back (or drop the half-staged copy).
+            $message = $e->getMessage();
+            if ($db_state === [] ) {
+                $db_state = Database::failed_state();
+            }
+            if (!empty($db_state['stage']) && Database::rollback_swap($db_state) && !empty($db_state['swapped'])) {
+                $message .= ' ' . __('The previous database was put back.', 'sitessaver');
+            }
+
             return [
                 'success' => false,
-                'message' => $e->getMessage(),
+                'message' => $message,
             ];
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Resumable restore (background jobs, any host time limit)
+    // ------------------------------------------------------------------
+
+    /**
+     * Run the restore in slices.
+     *
+     * A host that stops every request after ~30 s cannot restore a real site
+     * in one request. Each call does as much as $should_stop allows and
+     * leaves its place in $c (committed through $commit); the next call
+     * continues. Stages: extract (every chain member, entry by entry, large
+     * entries resumable mid-file) → manifest → database (staged, switched
+     * in atomically at the end) → files (from a list, one file at a time,
+     * large files resumable) → finalize.
+     *
+     * @param array<string, mixed> $c Cursor; [] to start.
+     * @return bool True when the restore is complete.
+     * @throws \RuntimeException On a failure. The caller rolls the database back.
+     */
+    public static function restore_slice(array &$c, string $backup_file, callable $should_stop, callable $commit): bool {
+        $storage = sitessaver_storage_dir();
+        $save    = static function (bool $force) use (&$c, $commit): void {
+            $commit($c, $force);
+        };
+
+        if (empty($c['stage'])) {
+            $file = sanitize_file_name($backup_file);
+            if (!file_exists($storage . '/' . $file)) {
+                throw new \RuntimeException(__('Backup file not found.', 'sitessaver'));
+            }
+            $set = self::chain_restore_set($storage . '/' . $file, $file);
+            $missing = array_values(array_filter($set, static fn($m) => !is_readable($storage . '/' . $m)));
+            if ($missing !== []) {
+                throw new \RuntimeException(sprintf(
+                    /* translators: %s: comma-separated list of backup filenames. */
+                    __('This incremental backup cannot be restored on its own — these earlier backups in its chain are missing: %s', 'sitessaver'),
+                    implode(', ', $missing)
+                ));
+            }
+            sitessaver_cleanup_temp();
+            $c = [
+                'stage' => 'extract',
+                'set'   => array_values($set),
+                'm'     => 0,
+                'x'     => [],
+                'temp'  => SITESSAVER_TEMP_DIR . '/import-' . wp_generate_password(8, false),
+                'label' => basename((string) end($set)),
+            ];
+            wp_mkdir_p($c['temp']);
+            $save(true);
+        }
+
+        $temp = (string) $c['temp'];
+
+        // 1. Extract (every member of a chain, oldest first).
+        if ($c['stage'] === 'extract') {
+            self::tick('extract');
+            $set = (array) $c['set'];
+            while ((int) $c['m'] < count($set)) {
+                $member = (string) $set[(int) $c['m']];
+                $x      = (array) $c['x'];
+                $done   = Archive::extract_resumable($storage . '/' . $member, $temp, $x, $should_stop, static function (bool $force) use (&$c, &$x, $save): void {
+                    $c['x'] = $x;
+                    $save($force);
+                });
+                $c['x'] = $x;
+                if (!$done) {
+                    return false;
+                }
+                // Apply this member's deletions now, not at the end: a path
+                // deleted in member 2 and recreated in member 3 must survive.
+                if (count($set) > 1) {
+                    $manifest = self::read_manifest($temp);
+                    if (is_array($manifest)) {
+                        self::apply_deletions($temp, $manifest['deleted'] ?? []);
+                    }
+                }
+                $c['m'] = (int) $c['m'] + 1;
+                $c['x'] = [];
+                $save(true);
+                if ($should_stop()) {
+                    return false;
+                }
+            }
+            $c['stage'] = 'manifest';
+            $save(true);
+        }
+
+        // 2. Manifest.
+        if ($c['stage'] === 'manifest') {
+            self::tick('manifest');
+            $manifest = self::read_manifest($temp);
+            if ($manifest === null) {
+                throw new \RuntimeException(__('Invalid backup: manifest.json not found.', 'sitessaver'));
+            }
+            if (!self::is_sitessaver_manifest($manifest)) {
+                throw new \RuntimeException(__('This ZIP is not a SitesSaver backup. Please upload a file created by the SitesSaver Export tool.', 'sitessaver'));
+            }
+            $c['manifest'] = [
+                'home_url'       => (string) ($manifest['home_url'] ?? ''),
+                'db_prefix'      => (string) ($manifest['db_prefix'] ?? ''),
+                'active_plugins' => $manifest['active_plugins'] ?? null,
+                'active_theme'   => $manifest['active_theme'] ?? null,
+            ];
+            $c['new_url'] = home_url();
+            $c['stage']   = 'database';
+            $save(true);
+        }
+
+        $old_url = (string) ($c['manifest']['home_url'] ?? '');
+        $new_url = (string) ($c['new_url'] ?? home_url());
+
+        // 3. Database (staged; switched in when complete).
+        if ($c['stage'] === 'database') {
+            $db_file = $temp . '/database.sql';
+            if (file_exists($db_file)) {
+                self::tick('database');
+                $old_prefix = (string) ($c['manifest']['db_prefix'] ?? '');
+                if ($old_prefix === '') {
+                    $old_prefix = Database::detect_dump_prefix($db_file);
+                }
+                $opt = ['old_url' => $old_url, 'new_url' => $new_url, 'old_prefix' => $old_prefix, 'stage' => empty($c['db_direct'])];
+                $db  = (array) ($c['db'] ?? []);
+                try {
+                    $db = Database::import_resumable($db_file, $db, $opt, $should_stop, static function (array $st, bool $force) use (&$c, $save): void {
+                        $c['db'] = $st;
+                        $save($force);
+                    });
+                } catch (\RuntimeException $e) {
+                    if ($e->getCode() !== Database::STAGING_UNSUPPORTED) {
+                        $c['db'] = Database::failed_state() ?: ($c['db'] ?? []);
+                        throw $e;
+                    }
+                    Database::discard_staging(Database::failed_state());
+                    Log::warning('restore_staging_skipped', $e->getMessage() . ' Restoring directly into the live tables instead.');
+                    $c['db']        = [];
+                    $c['db_direct'] = true;
+                    $save(true);
+                    return false;
+                }
+                $c['db'] = $db;
+                if (!empty($db['error'])) {
+                    throw new \RuntimeException(__('Failed to import database.', 'sitessaver'));
+                }
+                if (empty($db['done'])) {
+                    return false;
+                }
+                // The options table is now the backup's. Listeners (the
+                // background restore job) re-assert anything the rest of
+                // this restore depends on.
+                do_action('sitessaver_database_restored');
+            }
+            $c['stage'] = 'files';
+            $save(true);
+            if ($should_stop()) {
+                return false;
+            }
+        }
+
+        // 4. wp-content files.
+        if ($c['stage'] === 'files') {
+            $content_src = $temp . '/wp-content';
+            if (is_dir($content_src)) {
+                self::tick('files');
+                if (!self::restore_files_slice($c, $content_src, $old_url, $new_url, $should_stop, $save)) {
+                    return false;
+                }
+            }
+            self::flush_builder_caches();
+            self::ensure_uploads_mime_htaccess();
+            if (function_exists('opcache_reset')) {
+                @opcache_reset();
+            }
+            $c['stage'] = 'finalize';
+            $save(true);
+        }
+
+        // 5. Post-import tasks + cleanup.
+        self::tick('finalize');
+        self::post_import((array) ($c['manifest'] ?? []));
+        sitessaver_cleanup_temp($temp);
+        $list = $temp . '.files';
+        if (is_file($list)) {
+            unlink($list);
+        }
+        delete_transient(self::PROGRESS_KEY);
+        do_action('sitessaver_import_complete', (string) ($c['label'] ?? ''));
+
+        $c['stage'] = 'done';
+        return true;
+    }
+
+    /**
+     * The files step, from a list built once, one file per unit of work.
+     *
+     * @param array<string, mixed> $c
+     */
+    private static function restore_files_slice(array &$c, string $content_src, string $old_url, string $new_url, callable $should_stop, callable $save): bool {
+        [$dirs, $pairs] = self::content_targets($old_url, $new_url);
+        $list_file      = (string) $c['temp'] . '.files';
+
+        if (empty($c['fl'])) {
+            $fh = fopen($list_file, 'wb');
+            if ($fh === false) {
+                throw new \RuntimeException('Could not write the restore file list.');
+            }
+            foreach ($dirs as $name => $cfg) {
+                $src = $content_src . '/' . $name;
+                if (!is_dir($src)) {
+                    continue;
+                }
+                $it = new \RecursiveIteratorIterator(
+                    new \RecursiveDirectoryIterator($src, \RecursiveDirectoryIterator::SKIP_DOTS),
+                    \RecursiveIteratorIterator::SELF_FIRST
+                );
+                foreach ($it as $file) {
+                    $relative = ltrim(str_replace('\\', '/', substr($file->getPathname(), strlen($src))), '/');
+                    if ($relative === '' || str_contains($relative, "\n") || str_contains($relative, "\t")) {
+                        continue;
+                    }
+                    if (!empty($cfg['skip']) && in_array(strtok($relative, '/'), $cfg['skip'], true)) {
+                        continue;
+                    }
+                    fwrite($fh, $name . "\t" . ($file->isDir() ? 'D' : 'F') . "\t" . $relative . "\n");
+                }
+            }
+            fclose($fh);
+            $c['fl'] = ['lp' => 0, 'failures' => 0, 'failed' => []];
+            $save(true);
+        }
+
+        $fh = fopen($list_file, 'rb');
+        if ($fh === false) {
+            throw new \RuntimeException('Could not read the restore file list.');
+        }
+        fseek($fh, (int) $c['fl']['lp']);
+
+        try {
+            while (($line = fgets($fh)) !== false) {
+                $parts = explode("\t", rtrim($line, "\n"), 3);
+                if (count($parts) === 3 && isset($dirs[$parts[0]])) {
+                    [$name, $kind, $relative] = $parts;
+                    $cfg       = $dirs[$name];
+                    $src_path  = $content_src . '/' . $name . '/' . $relative;
+                    $dest_path = $cfg['dest'] . '/' . $relative;
+
+                    if ($kind === 'D') {
+                        if (!is_dir($dest_path)) {
+                            wp_mkdir_p($dest_path);
+                        }
+                    } elseif (is_file($src_path)) {
+                        $parent = dirname($dest_path);
+                        if (!is_dir($parent)) {
+                            wp_mkdir_p($parent);
+                        }
+                        $use_rewrite = $cfg['rewrite'] && $pairs !== [] && self::is_rewritable_text_file($src_path, $relative);
+                        if ($use_rewrite) {
+                            $ok = self::copy_with_url_rewrite($src_path, $dest_path, $pairs);
+                        } else {
+                            $res = Export::copy_file($src_path, $dest_path, $name . '/' . $relative);
+                            if ($res === 'paused') {
+                                // Large file, slice over: its .part is kept
+                                // and this same line runs again next time.
+                                $save(true);
+                                return false;
+                            }
+                            $ok = $res === 'ok';
+                        }
+                        if (!$ok) {
+                            $c['fl']['failures'] = (int) $c['fl']['failures'] + 1;
+                            if (count((array) $c['fl']['failed']) < 10) {
+                                $c['fl']['failed'][] = $name . '/' . $relative;
+                            }
+                            error_log('[SitesSaver] restore: copy failed for ' . $name . '/' . $relative);
+                        }
+                    }
+                }
+
+                $c['fl']['lp'] = (int) ftell($fh);
+                do_action('sitessaver_heartbeat');
+                $save(false);
+                if ($should_stop()) {
+                    $save(true);
+                    return false;
+                }
+            }
+        } finally {
+            fclose($fh);
+        }
+
+        if ((int) $c['fl']['failures'] > 0) {
+            Log::warning(
+                'restore_files_skipped',
+                sprintf('%d file(s) could not be copied while restoring.', (int) $c['fl']['failures']),
+                ['first_paths' => $c['fl']['failed']]
+            );
+        }
+        return true;
+    }
+
+    /**
+     * Where each wp-content folder of a backup is restored to, and the URL
+     * pairs used to rewrite text files. Shared by both restore paths.
+     *
+     * @return array{0: array<string, array{dest: string, skip: list<string>, rewrite: bool}>, 1: array<string, string>}
+     */
+    private static function content_targets(string $old_url, string $new_url): array {
+        // The running SitesSaver must never be overwritten by an older copy
+        // inside the backup (pre-1.1.7 backups contain one).
+        $running_plugin_dir = basename(dirname(SITESSAVER_FILE));
+        $uploads_skip = (is_multisite() && get_current_blog_id() === 1) ? ['sites'] : [];
+        $dirs = [
+            'uploads'    => ['dest' => wp_upload_dir()['basedir'], 'skip' => $uploads_skip, 'rewrite' => false],
+            'plugins'    => ['dest' => WP_PLUGIN_DIR,              'skip' => [$running_plugin_dir], 'rewrite' => true],
+            'themes'     => ['dest' => get_theme_root(),           'skip' => [], 'rewrite' => true],
+            'mu-plugins' => ['dest' => WPMU_PLUGIN_DIR,            'skip' => [], 'rewrite' => true],
+        ];
+        $pairs = [];
+        if ($old_url !== '' && $new_url !== '' && $old_url !== $new_url) {
+            $pairs = Database::build_replacement_pairs(
+                $old_url,
+                $new_url,
+                (string) preg_replace('#^https?://#', '', $old_url),
+                (string) preg_replace('#^https?://#', '', $new_url)
+            );
+        }
+        return [$dirs, $pairs];
     }
 
     /**

@@ -126,6 +126,182 @@ final class Archive {
      * Extract a ZIP archive to a directory with path validation.
      * Extracts file-by-file to prevent zip-slip attacks.
      */
+    /** Entries at or above this size are written in pieces (and can resume mid-file). */
+    public const EXTRACT_STREAM_MIN = 16 * 1024 * 1024;
+    private const EXTRACT_CHUNK     = 8 * 1024 * 1024;
+
+    /**
+     * extract(), one entry at a time, able to stop and continue later.
+     *
+     * Same fail-closed checks as extract() (path traversal, symlinks,
+     * zip-slip). A large entry is written in pieces; when a request stops
+     * mid-entry, the next one re-opens the entry, reads past what is already
+     * on disk (decompressing is fast; writing is the slow part on shared
+     * hosts) and continues from there.
+     *
+     * @param array<string, int> $cur ['i' => next entry, 'off' => bytes of it already written]
+     * @return bool True when every entry is extracted, false when stopped (cursor committed).
+     * @throws \RuntimeException When the archive cannot be opened or an entry is unsafe.
+     */
+    public static function extract_resumable(string $zip_path, string $dest_dir, array &$cur, callable $should_stop, callable $commit): bool {
+        if (!class_exists('ZipArchive')) {
+            throw new \RuntimeException('The PHP Zip extension is missing on this server.');
+        }
+
+        $zip = new \ZipArchive();
+        if ($zip->open($zip_path) !== true) {
+            throw new \RuntimeException('Failed to open the backup archive ' . basename($zip_path) . '.');
+        }
+
+        if (!is_dir($dest_dir)) {
+            wp_mkdir_p($dest_dir);
+        }
+        $real_dest = realpath($dest_dir);
+        if ($real_dest === false) {
+            $zip->close();
+            throw new \RuntimeException('Could not create the temporary restore folder.');
+        }
+        $real_dest = rtrim($real_dest, DIRECTORY_SEPARATOR);
+
+        $n   = $zip->numFiles;
+        $i   = (int) ($cur['i'] ?? 0);
+        $off = (int) ($cur['off'] ?? 0);
+
+        try {
+            for (; $i < $n; $i++) {
+                $entry = $zip->getNameIndex($i);
+                if ($entry === false || $entry === '') {
+                    continue;
+                }
+
+                do_action('sitessaver_heartbeat');
+
+                $entry = str_replace('\\', '/', $entry);
+                if (self::is_unsafe_relative_path($entry)) {
+                    throw new \RuntimeException('Failed to extract backup archive: unsafe path ' . $entry);
+                }
+
+                $stat = $zip->statIndex($i);
+                if (is_array($stat) && isset($stat['external_attr'])) {
+                    $unix_mode = ((int) $stat['external_attr']) >> 16;
+                    if (($unix_mode & 0xF000) === 0xA000) {
+                        throw new \RuntimeException('Failed to extract backup archive: symbolic link ' . $entry);
+                    }
+                }
+
+                $target = $real_dest . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $entry);
+                $parent = dirname($target);
+                if (!is_dir($parent)) {
+                    wp_mkdir_p($parent);
+                }
+                $parent_real = realpath($parent);
+                if ($parent_real === false
+                    || !str_starts_with($parent_real . DIRECTORY_SEPARATOR, $real_dest . DIRECTORY_SEPARATOR)
+                ) {
+                    throw new \RuntimeException('Failed to extract backup archive: path outside the restore folder ' . $entry);
+                }
+
+                if (substr($entry, -1) === '/') {
+                    wp_mkdir_p($target);
+                    continue;
+                }
+
+                $size   = is_array($stat) ? (int) ($stat['size'] ?? 0) : 0;
+                $source = $zip->getStream($entry);
+                if ($source === false) {
+                    throw new \RuntimeException('Failed to extract backup archive: cannot read ' . $entry);
+                }
+
+                if ($size < self::EXTRACT_STREAM_MIN) {
+                    $dest_file = fopen($target, 'w');
+                    if ($dest_file === false) {
+                        fclose($source);
+                        throw new \RuntimeException('Failed to extract backup archive: cannot write ' . $entry);
+                    }
+                    stream_copy_to_stream($source, $dest_file);
+                    fclose($source);
+                    fclose($dest_file);
+                } else {
+                    $done = self::extract_large($source, $target, $entry, $size, $off, $should_stop);
+                    if (!$done) {
+                        $cur = ['i' => $i, 'off' => $off];
+                        $commit(true);
+                        return false;
+                    }
+                }
+
+                $off = 0;
+                $cur = ['i' => $i + 1, 'off' => 0];
+                $commit(false);
+                if ($i + 1 < $n && $should_stop()) {
+                    $commit(true);
+                    return false;
+                }
+            }
+        } finally {
+            $zip->close();
+        }
+
+        $cur = ['i' => $n, 'off' => 0];
+        return true;
+    }
+
+    /**
+     * Write one large entry from byte $off on. Returns false when stopped.
+     *
+     * @param resource $source
+     */
+    private static function extract_large($source, string $target, string $entry, int $size, int &$off, callable $should_stop): bool {
+        // Re-read (and drop) what an earlier request already wrote.
+        $skip = $off;
+        while ($skip > 0) {
+            $part = fread($source, (int) min(1024 * 1024, $skip));
+            if ($part === false || $part === '') {
+                fclose($source);
+                throw new \RuntimeException('Failed to extract backup archive: ' . $entry . ' ended early.');
+            }
+            $skip -= strlen($part);
+        }
+
+        $out = @fopen($target, 'c');
+        if ($out === false) {
+            fclose($source);
+            throw new \RuntimeException('Failed to extract backup archive: cannot write ' . $entry);
+        }
+        ftruncate($out, $off);
+        fseek($out, $off);
+
+        try {
+            while ($off < $size) {
+                $want  = (int) min(self::EXTRACT_CHUNK, $size - $off);
+                $chunk = '';
+                while (strlen($chunk) < $want) {
+                    $part = fread($source, $want - strlen($chunk));
+                    if ($part === false || $part === '') {
+                        break;
+                    }
+                    $chunk .= $part;
+                }
+                if ($chunk === '') {
+                    throw new \RuntimeException('Failed to extract backup archive: ' . $entry . ' ended early.');
+                }
+                if (fwrite($out, $chunk) !== strlen($chunk)) {
+                    throw new \RuntimeException('Failed to extract backup archive: could not write ' . $entry . ' (disk full?).');
+                }
+                $off += strlen($chunk);
+                do_action('sitessaver_heartbeat');
+
+                if ($off < $size && $should_stop()) {
+                    return false;
+                }
+            }
+        } finally {
+            fclose($out);
+            fclose($source);
+        }
+        return true;
+    }
+
     public static function extract(string $zip_path, string $dest_dir): bool {
         if (!class_exists('ZipArchive')) {
             return false;

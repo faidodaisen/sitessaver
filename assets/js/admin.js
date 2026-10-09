@@ -1010,7 +1010,7 @@
             ajax('sitessaver_export_step', { uid: uid, auto: 1 }, function (r) {
                 if (ended) return;
                 if (r && r.state && r.state !== 'running') return; // the poll shows the outcome
-                setTimeout(function () { drive(0); }, 150);
+                setTimeout(function () { drive(0); }, r && r.busy ? 3000 : 150);
             }, function (err) {
                 if (ended) return;
                 // A step that failed for real marks the export as failed and
@@ -1403,16 +1403,36 @@
         var finished      = false;
         var poll;
 
-        function runInline() {
-            if (inlineStarted) return;
-            inlineStarted = true;
-            // Fire and forget: the outcome comes from the status poll.
+        // The restore runs in slices. When background requests do not
+        // survive on this host, this tab asks for one slice after another;
+        // each continues where the last saved its place. The outcome still
+        // comes from the status poll.
+        var driveFails = 0;
+        function runSlice() {
+            if (finished) return;
             $.ajax({
                 url: SS.ajaxUrl,
                 type: 'POST',
-                data: { action: 'sitessaver_restore_run', nonce: SS.nonce, job: job.job, token: job.token },
-                timeout: 0
+                dataType: 'json',
+                data: { action: 'sitessaver_restore_run', job: job.job, token: job.token },
+                timeout: 120000,
+                success: function (res) {
+                    driveFails = 0;
+                    var d = (res && res.data) || {};
+                    if (finished || (d.state && d.state !== 'running' && d.state !== 'queued')) return;
+                    setTimeout(runSlice, d.busy ? 3000 : 200);
+                },
+                error: function () {
+                    // Cut off by the host mid-slice: the work it saved is kept.
+                    driveFails++;
+                    if (!finished && driveFails < 40) setTimeout(runSlice, 3000);
+                }
             });
+        }
+        function runInline() {
+            if (inlineStarted) return;
+            inlineStarted = true;
+            runSlice();
         }
 
         if (!job.background) runInline();
@@ -1436,7 +1456,7 @@
                     misses = 0;
                     var s = res.data;
 
-                    if (s.status === 'queued' && s.not_started) runInline();
+                    if ((s.status === 'queued' && s.not_started) || s.drive) runInline();
 
                     if (s.phase && s.phase !== 'queued' && s.phase !== 'download' && s.phase !== 'done') {
                         ssModal.setActiveStep(s.phase);
@@ -1999,13 +2019,13 @@
             html += '<thead><tr><th>File</th><th>Size</th><th>Created</th><th style="text-align:right;">Actions</th></tr></thead><tbody>';
             res.files.forEach(function (f) {
                 html += '<tr>';
-                html += '<td><div class="cell-filename"><i class="ri-file-zip-line"></i> ' + f.name + '</div></td>';
-                html += '<td class="cell-meta">' + f.size + '</td>';
-                html += '<td class="cell-meta">' + f.created + '</td>';
+                html += '<td><div class="cell-filename"><i class="ri-file-zip-line"></i> ' + escapeHtml(f.name) + '</div></td>';
+                html += '<td class="cell-meta">' + escapeHtml(f.size) + '</td>';
+                html += '<td class="cell-meta">' + escapeHtml(f.created) + '</td>';
                 html += '<td><div class="action-btns" style="justify-content:flex-end;">';
-                html += '<button type="button" class="btn-icon sitessaver-gdrive-restore-btn" data-id="' + f.id + '" data-name="' + f.name + '" title="Restore from Drive"><i class="ri-history-line"></i></button>';
-                html += '<button type="button" class="btn-icon sitessaver-gdrive-dl-btn" data-id="' + f.id + '" title="Download"><i class="ri-download-cloud-2-line"></i></button>';
-                html += '<button type="button" class="btn-icon danger sitessaver-gdrive-delete-btn" data-id="' + f.id + '" title="Delete from Drive"><i class="ri-delete-bin-line"></i></button>';
+                html += '<button type="button" class="btn-icon sitessaver-gdrive-restore-btn" data-id="' + escapeHtml(f.id) + '" data-name="' + escapeHtml(f.name) + '" title="Restore from Drive"><i class="ri-history-line"></i></button>';
+                html += '<button type="button" class="btn-icon sitessaver-gdrive-dl-btn" data-id="' + escapeHtml(f.id) + '" title="Download"><i class="ri-download-cloud-2-line"></i></button>';
+                html += '<button type="button" class="btn-icon danger sitessaver-gdrive-delete-btn" data-id="' + escapeHtml(f.id) + '" title="Delete from Drive"><i class="ri-delete-bin-line"></i></button>';
                 html += '</div></td>';
                 html += '</tr>';
             });

@@ -80,6 +80,11 @@ final class Ajax {
         // proves possession of the job's own random token instead.
         add_action('wp_ajax_nopriv_sitessaver_restore_worker', [$this, 'handle_restore_worker']);
         add_action('wp_ajax_nopriv_sitessaver_restore_status', [$this, 'handle_restore_status']);
+        // The browser runs restore slices itself on hosts that stop
+        // background requests. After the database switch its login cookie
+        // and nonce no longer validate, so this is authorized by the job's
+        // own token (40 random chars, known only to the admin who started it).
+        add_action('wp_ajax_nopriv_sitessaver_restore_run', [$this, 'handle_restore_run']);
     }
 
     /**
@@ -208,6 +213,12 @@ final class Ajax {
 
         // This request now owns the export, and works in a slice short enough
         // to return before PHP's or the gateway's time limit.
+        // Someone else (a worker that is slow, not dead) is running a slice:
+        // never run two at once on the same files.
+        if (!Export::lock($uid)) {
+            wp_send_json_success(['success' => true, 'pending' => true, 'busy' => true, 'state' => (string) ($status['status'] ?? 'running')]);
+        }
+
         Export::claim_for_browser($uid);
         Export::begin_ticks($uid);
         Export::begin_slice(Export::browser_budget());
@@ -216,6 +227,7 @@ final class Ajax {
         } finally {
             Export::end_slice();
             Export::end_ticks();
+            Export::unlock();
         }
 
         $after           = Export::get_status($uid);
@@ -858,6 +870,13 @@ final class Ajax {
         if (empty($result['success'])) {
             wp_send_json_error([
                 'message' => $result['message'] ?? __('Backup failed.', 'sitessaver'),
+            ]);
+        }
+
+        if (!empty($result['pending'])) {
+            wp_send_json_success([
+                'message' => __('Test backup started. It continues in the background; you will find it under Backups when it is done, and the schedule notification is sent as usual.', 'sitessaver'),
+                'pending' => true,
             ]);
         }
 
@@ -1571,6 +1590,10 @@ final class Ajax {
             wp_send_json_error(['message' => 'Invalid worker key.'], 403);
         }
 
+        if (($job['driver'] ?? '') === 'browser') {
+            wp_send_json_success(['message' => 'browser-driven']);
+        }
+
         if (!Restore_Job::claim($id)) {
             wp_send_json_success(['message' => 'already running']);
         }
@@ -1588,27 +1611,36 @@ final class Ajax {
      * through the status poll, which tells the truth either way.
      */
     public function handle_restore_run(): void {
-        sitessaver_verify_ajax();
+        nocache_headers();
 
         $id    = sanitize_key(wp_unslash($_POST['job'] ?? ''));
         $token = sanitize_text_field(wp_unslash($_POST['token'] ?? ''));
 
         $job = Restore_Job::get($id);
-        if ($job === null || !Restore_Job::verify_token($job, $token)) {
+        if ($job === null || !Restore_Job::verify_token($job, $token) || (int) ($job['blog_id'] ?? 0) !== get_current_blog_id()) {
             wp_send_json_error(Errors::payload('upload_page_outdated', 'Unknown restore job.'), 403);
         }
 
-        if (($job['status'] ?? '') !== 'queued' || !Restore_Job::claim($id)) {
-            wp_send_json_success(['message' => 'already running']);
+        $status  = (string) ($job['status'] ?? '');
+        $allowed = $status === 'queued' || ($status === 'running' && ($job['driver'] ?? '') === 'browser');
+        if (!$allowed) {
+            wp_send_json_success(['message' => 'nothing to do', 'state' => $status]);
+        }
+        if (!Restore_Job::claim($id)) {
+            wp_send_json_success(['message' => 'busy', 'busy' => true, 'state' => $status]);
         }
 
-        Log::info('restore_inline', 'Background restore did not start; running it in the browser request.', ['job' => $id]);
+        if ($status === 'queued') {
+            Log::info('restore_inline', 'Background restore did not start; running it in the browser request.', ['job' => $id]);
+            Restore_Job::mark_browser_driven($id);
+        }
 
         ob_start();
         Restore_Job::run($id, 'inline');
         self::discard_output_buffer();
 
-        wp_send_json_success(['message' => 'ok']);
+        $after = Restore_Job::get($id);
+        wp_send_json_success(['message' => 'ok', 'state' => (string) ($after['status'] ?? 'gone')]);
     }
 
     /**

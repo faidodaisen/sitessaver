@@ -318,6 +318,80 @@ final class Export {
         return !is_wp_error($response);
     }
 
+    /** Open lock handle while this request works on an export. */
+    private static $lock_handle = null;
+
+    /**
+     * Only one request may work on an export at a time.
+     *
+     * Background worker, rescuer (WP-Cron / server cron) and the browser can
+     * all try to run the next slice. Two of them appending to the same SQL or
+     * ZIP file would corrupt it silently, even with the ownership check,
+     * because a slow worker only notices it was replaced at its next
+     * checkpoint. An OS file lock closes that window; the OS releases it
+     * when the request ends in any way, including the host killing PHP.
+     */
+    public static function lock(string $uid): bool {
+        if (self::$lock_handle !== null) {
+            return true;
+        }
+        if (!is_dir(SITESSAVER_TEMP_DIR)) {
+            wp_mkdir_p(SITESSAVER_TEMP_DIR);
+        }
+        $h = @fopen(SITESSAVER_TEMP_DIR . '/' . sanitize_file_name($uid) . '.lock', 'c');
+        if ($h === false) {
+            return true; // cannot lock on this filesystem: behave as before
+        }
+        if (!flock($h, LOCK_EX | LOCK_NB)) {
+            fclose($h);
+            return false;
+        }
+        self::$lock_handle = $h;
+        return true;
+    }
+
+    public static function unlock(): void {
+        if (self::$lock_handle !== null) {
+            flock(self::$lock_handle, LOCK_UN);
+            fclose(self::$lock_handle);
+            self::$lock_handle = null;
+        }
+    }
+
+    /**
+     * Start a scheduled backup and run as much of it as this request may.
+     *
+     * Scheduled backups used to run start-to-finish in one request, which a
+     * host that stops requests after ~30 s never allows. The rest now runs as
+     * the same chain of slices as a manual export (worker, watchdog, server
+     * cron). Drive upload, retention and the email happen when it finishes
+     * (action `sitessaver_scheduled_export_finished`).
+     *
+     * @return array<string, mixed> The result when finished in this request,
+     *                              else ['success' => true, 'pending' => true].
+     */
+    public static function run_bounded(array $options): array {
+        $status = self::start($options);
+        $uid    = (string) $status['uid'];
+        $res    = self::work($uid);
+
+        $now = self::get_status($uid);
+        if (($now['status'] ?? '') === 'completed') {
+            return (array) $now['result'];
+        }
+        if (($now['status'] ?? '') === 'error' || empty($res['success'])) {
+            return ['success' => false, 'message' => (string) ($now['message'] ?? $res['message'] ?? 'Unknown error')];
+        }
+
+        self::spawn_worker($uid);
+        return [
+            'success' => true,
+            'pending' => true,
+            'uid'     => $uid,
+            'message' => __('Backup started; it continues in the background.', 'sitessaver'),
+        ];
+    }
+
     /** Scratch dir for the ZIP builder — beside, never inside, temp_dir. */
     private static function zip_work_dir(string $temp_dir): string {
         return rtrim($temp_dir, '/\\') . '-zip';
@@ -443,6 +517,10 @@ final class Export {
 
         $steps = self::get_steps((string) ($status['options']['export_destination'] ?? 'local'));
 
+        if (!self::lock($uid)) {
+            return ['success' => true, 'busy' => true];
+        }
+
         // Claim the export. A previous worker that is still alive sees the
         // new id on its next tick and steps aside.
         self::$worker_id       = wp_generate_password(12, false, false);
@@ -489,6 +567,9 @@ final class Export {
             self::save_status($uid, $st);
             delete_transient('sitessaver_active_export_id');
             Background::notify($st, false);
+            if (!empty($st['options']['schedule'])) {
+                do_action('sitessaver_scheduled_export_finished', $st, false);
+            }
         });
 
         // Nothing is waiting on this response, so a Drive upload need not
@@ -540,6 +621,7 @@ final class Export {
             self::end_slice();
             self::$worker_id    = '';
             self::$current_item = [];
+            self::unlock();
         }
     }
 
@@ -611,9 +693,7 @@ final class Export {
 
         self::save_status($uid, $status);
         set_transient('sitessaver_active_export_id', $uid, HOUR_IN_SECONDS);
-        if (empty($options['track_chain'])) {
-            Background::arm_watchdog();
-        }
+        Background::arm_watchdog();
 
         return $status;
     }
@@ -706,9 +786,12 @@ final class Export {
 
         // A backup left to run on its own can take longer than an hour on a
         // slow host; keep the pointer to it alive while it is moving.
-        if (($status['status'] ?? '') === 'running' && empty($status['options']['track_chain'])
-            && get_transient('sitessaver_active_export_id') === $uid) {
+        if (($status['status'] ?? '') === 'running' && get_transient('sitessaver_active_export_id') === $uid) {
             set_transient('sitessaver_active_export_id', $uid, HOUR_IN_SECONDS);
+            // A scheduled backup holds the schedule lock while it moves.
+            if (!empty($status['options']['schedule'])) {
+                set_transient('sitessaver_schedule_running', 1, 2 * HOUR_IN_SECONDS);
+            }
         }
     }
 
@@ -1012,6 +1095,9 @@ final class Export {
                     self::save_status($uid, $status);
                     delete_transient('sitessaver_active_export_id');
                     Background::notify($status, true);
+                    if (!empty($status['options']['schedule'])) {
+                        do_action('sitessaver_scheduled_export_finished', $status, true);
+                    }
 
                     return $result;
             }
@@ -1058,6 +1144,9 @@ final class Export {
             delete_transient('sitessaver_active_export_id');
             self::discard_work($status);
             Background::notify($status, false);
+            if (!empty($status['options']['schedule'])) {
+                do_action('sitessaver_scheduled_export_finished', $status, false);
+            }
 
             return ['success' => false, 'message' => $e->getMessage(), 'ref' => $ref, 'error' => Errors::payload('export_failed', $e->getMessage(), $ref)];
         }

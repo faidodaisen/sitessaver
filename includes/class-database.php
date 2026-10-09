@@ -616,48 +616,242 @@ final class Database {
      *                           outside this site's own scope — see
      *                           assert_import_scope_is_safe().
      */
-    public static function import(string $sql_file, string $old_url = '', string $new_url = '', string $old_prefix = ''): bool {
+    public static function import(string $sql_file, string $old_url = '', string $new_url = '', string $old_prefix = '', bool $stage = false): bool {
+        $opt = ['old_url' => $old_url, 'new_url' => $new_url, 'old_prefix' => $old_prefix, 'stage' => $stage];
+        self::$last_import = [];
+
+        try {
+            $state = self::import_resumable($sql_file, [], $opt);
+        } catch (\RuntimeException $e) {
+            if ($e->getCode() !== self::STAGING_UNSUPPORTED) {
+                throw $e;
+            }
+            // This dump cannot be staged (a table outside the site's prefix,
+            // or a name too long once staged). Import it directly, exactly as
+            // before staging existed.
+            self::discard_staging(self::$failed_state);
+            Log::warning('restore_staging_skipped', $e->getMessage() . ' Restoring directly into the live tables instead.');
+            $opt['stage'] = false;
+            $state = self::import_resumable($sql_file, [], $opt);
+        }
+
+        self::$last_import = $state;
+        return !empty($state['done']);
+    }
+
+    /** State of the last finished import(), so the caller can keep or undo it. */
+    public static array $last_import = [];
+
+    /** State of an import that threw, for cleanup. */
+    private static array $failed_state = [];
+
+    /** @return array<string, mixed> */
+    public static function failed_state(): array {
+        return self::$failed_state;
+    }
+
+    /** Exception code: the dump cannot be imported into staging tables. */
+    public const STAGING_UNSUPPORTED = 7401;
+
+    /** Seconds between persisted import cursors inside a slice. */
+    private const IMPORT_COMMIT_INTERVAL = 2.0;
+
+    /**
+     * Import a SQL dump, optionally in slices and optionally into staging
+     * tables first.
+     *
+     * Staging (`stage` => true) is the safety net of a restore. Every table
+     * in the dump is created under a fresh, unused prefix (`srXX_posts`)
+     * while the live site keeps running on its own tables. Only when the
+     * whole dump has gone in are the tables switched over with ONE atomic
+     * `RENAME TABLE`, and the old tables are kept under another fresh prefix
+     * (`sbXX_posts`) until the restore has finished. A restore that stops
+     * before the switch has not changed the site at all; one that fails
+     * after it can switch back (rollback_swap()).
+     *
+     * Slicing: the position (byte offset at a statement boundary, current
+     * DELIMITER, session SETs) is handed to $commit; passing the state back
+     * continues from there. Statements that may have run already before a
+     * request was killed are replayed as INSERT IGNORE, so a resumed import
+     * never duplicates or drops rows.
+     *
+     * @param array<string, mixed> $state [] to start, or a committed state.
+     * @param array<string, mixed> $opt   old_url, new_url, old_prefix, stage.
+     * @return array<string, mixed> State; `done` when imported (and switched in, when staged).
+     * @throws \RuntimeException On a failure that must stop the restore.
+     */
+    public static function import_resumable(string $sql_file, array $state, array $opt, ?callable $should_stop = null, ?callable $commit = null): array {
         global $wpdb;
 
         if (!file_exists($sql_file)) {
-            return false;
+            return ['error' => 'missing'];
         }
+
+        if (empty($state['init'])) {
+            $state = self::init_import_state($sql_file, $opt);
+        }
+        self::$failed_state = $state;
 
         // Table-prefix migration. The dump carries the SOURCE site's table
         // names (`bzm_posts`), but this site's wp-config.php is not restored,
         // so WordPress keeps reading `$wpdb->prefix` (`wp_posts`). Without a
-        // rewrite the restore lands in a parallel set of tables nobody reads:
-        // files and the active theme switch over, while content, users and
-        // options stay the OLD site's — a half-migrated site.
-        self::$prefix_from = '';
-        self::$prefix_to   = '';
-        if (
-            $old_prefix !== ''
-            && !is_multisite()
-            && $old_prefix !== $wpdb->prefix
-            && preg_match('/^[A-Za-z0-9_]+$/', $old_prefix)
-            && preg_match('/^[A-Za-z0-9_]+$/', (string) $wpdb->prefix)
-        ) {
-            self::$prefix_from = $old_prefix;
-            self::$prefix_to   = (string) $wpdb->prefix;
+        // rewrite the restore lands in a parallel set of tables nobody reads.
+        // When staging, every table goes to the staging prefix instead and
+        // gets its final name in the switch.
+        if (!empty($state['stage'])) {
+            self::$prefix_from = (string) $state['src'];
+            self::$prefix_to   = (string) $state['S'];
+        } elseif ($state['src'] !== '' && $state['src'] !== $state['final']) {
+            self::$prefix_from = (string) $state['src'];
+            self::$prefix_to   = (string) $state['final'];
+        } else {
+            self::$prefix_from = '';
+            self::$prefix_to   = '';
         }
+
+        // import_statements() works on its own copy of the state and hands
+        // it in, so what is committed is always the position just reached.
+        $save = static function (bool $force, ?array $current = null) use (&$state, $commit): void {
+            if ($current !== null) {
+                $state = $current;
+            }
+            self::$failed_state = $state;
+            if ($commit !== null) {
+                $commit($state, $force);
+            }
+        };
+
+        // Record the staging prefix before any table is created under it, so
+        // a request killed straight away still leaves a way to clean up.
+        if ((int) $state['offset'] === 0 && empty($state['imported'])) {
+            $save(true);
+        }
+
+        try {
+            if (empty($state['imported'])) {
+                $state = self::import_statements($sql_file, $state, $opt, $should_stop, $save);
+                if (empty($state['imported'])) {
+                    return $state; // slice over; already committed
+                }
+            }
+
+            // Keys WordPress builds from the prefix (`wp_user_roles`, ...).
+            if ($state['src'] !== '' && $state['src'] !== $state['final'] && empty($state['keys'])) {
+                self::rename_prefixed_keys($wpdb, (string) $state['src'], (string) $state['final'], !empty($state['stage']) ? (string) $state['S'] : (string) $state['final']);
+                $state['keys'] = true;
+                $save(true);
+            }
+
+            if (!empty($state['stage']) && empty($state['swapped'])) {
+                self::swap_staged($state, $save);
+            }
+        } finally {
+            self::$prefix_from = '';
+            self::$prefix_to   = '';
+        }
+
+        $hw = $sql_file . '.hw';
+        if (is_file($hw)) {
+            unlink($hw);
+        }
+
+        $state['done'] = true;
+        self::$failed_state = $state;
+        return $state;
+    }
+
+    /**
+     * @param array<string, mixed> $opt
+     * @return array<string, mixed>
+     */
+    private static function init_import_state(string $sql_file, array $opt): array {
+        global $wpdb;
 
         if (is_multisite()) {
             self::assert_import_scope_is_safe($sql_file, $wpdb);
         }
 
-        $handle = fopen($sql_file, 'rb');
-        if ($handle === false) {
-            return false;
+        // A high-water mark left by an earlier, abandoned import of the same
+        // file would make this fresh one treat its first statements as replays.
+        if (is_file($sql_file . '.hw')) {
+            unlink($sql_file . '.hw');
         }
 
-        $do_replace = ($old_url !== '' && $new_url !== '' && $old_url !== $new_url);
+        $src   = (string) ($opt['old_prefix'] ?? '');
+        $valid = $src !== '' && preg_match('/^[A-Za-z0-9_]+$/', $src) && preg_match('/^[A-Za-z0-9_]+$/', (string) $wpdb->prefix);
+        if (!$valid) {
+            $src = '';
+        }
+
+        // Single site: the dump's tables become this site's prefix. On
+        // multisite the names are kept (assert_import_scope_is_safe() has
+        // already proved they belong to this site).
+        $final = ($src !== '' && !is_multisite()) ? (string) $wpdb->prefix : $src;
+        $stage = !empty($opt['stage']) && $src !== '';
+
+        $old_url = (string) ($opt['old_url'] ?? '');
+        $new_url = (string) ($opt['new_url'] ?? '');
+
+        return [
+            'init'      => true,
+            'offset'    => 0,
+            'delimiter' => ';',
+            'session'   => [],
+            'stage'     => $stage,
+            'S'         => $stage ? self::unused_prefix('sr') : '',
+            'src'       => $src,
+            'final'     => $final,
+            'tables'    => [],
+            'errors'    => 0,
+            'replayed'  => 0,
+            'old_url'   => $old_url,
+            'new_url'   => $new_url,
+        ];
+    }
+
+    /**
+     * The tokenizer loop. Memory is O(largest statement), not O(file).
+     *
+     * @param array<string, mixed> $state
+     * @param array<string, mixed> $opt
+     * @return array<string, mixed>
+     */
+    private static function import_statements(string $sql_file, array $state, array $opt, ?callable $should_stop, callable $save): array {
+        global $wpdb;
+
+        $handle = fopen($sql_file, 'rb');
+        if ($handle === false) {
+            throw new \RuntimeException('Could not open the database file of the backup.');
+        }
+
+        $old_url       = (string) $state['old_url'];
+        $new_url       = (string) $state['new_url'];
+        $do_replace    = ($old_url !== '' && $new_url !== '' && $old_url !== $new_url);
         $old_no_scheme = $do_replace ? (string) preg_replace('#^https?://#', '', $old_url) : '';
         $new_no_scheme = $do_replace ? (string) preg_replace('#^https?://#', '', $new_url) : '';
 
+        // High-water mark: the end offset of the last statement STARTED,
+        // written before each statement runs. A request killed after
+        // running statements but before committing its cursor leaves this
+        // ahead of the cursor; everything up to it is replayed with IGNORE.
+        $hw_path = $sql_file . '.hw';
+        $hw_prev = is_file($hw_path) ? (int) trim((string) file_get_contents($hw_path)) : 0;
+        $hwh     = @fopen($hw_path, 'c');
+
+        // A new request is a new MySQL session: re-apply the dump's SETs
+        // (FOREIGN_KEY_CHECKS = 0 above all, or child rows fail).
+        if ((int) $state['offset'] > 0) {
+            foreach ((array) $state['session'] as $set) {
+                $wpdb->query((string) $set);
+            }
+            fseek($handle, (int) $state['offset']);
+        }
+
         // Tokenizer state. All of it must persist across fread() boundaries —
         // a 64 KB chunk can end anywhere, including halfway through a quoted
-        // string, a comment, or a multi-character delimiter.
+        // string, a comment, or a multi-character delimiter. Between
+        // statements it is always empty, which is what makes the byte
+        // offset of a statement boundary a complete resume point.
         $current   = '';
         $in_string = false;   // inside a quoted literal / identifier
         $quote     = '';      // which quote char opened it: ' " or `
@@ -665,10 +859,22 @@ final class Database {
         $in_line_c = false;   // inside a `--` or `#` comment (ends at newline)
         $in_blk_c  = false;   // inside a /* ... */ comment
         $blk_star  = false;   // previous byte inside the block comment was `*`
-        $delimiter = ';';     // current statement delimiter (DELIMITER can change it)
+        $delimiter = (string) ($state['delimiter'] ?? ';');
+        $last_save = microtime(true);
+
+        $run = static function (string $statement, int $end) use (&$state, $wpdb, $do_replace, $old_url, $new_url, $old_no_scheme, $new_no_scheme, $hwh, $hw_prev): void {
+            if ($hwh) {
+                ftruncate($hwh, 0);
+                fseek($hwh, 0);
+                fwrite($hwh, (string) $end);
+                fflush($hwh);
+            }
+            self::execute_statement($wpdb, $statement, $do_replace, $old_url, $new_url, $old_no_scheme, $new_no_scheme, $state, $end <= $hw_prev);
+        };
 
         try {
             while (!feof($handle)) {
+                $base   = (int) ftell($handle);
                 $buffer = fread($handle, self::IMPORT_READ_CHUNK);
                 if ($buffer === false || $buffer === '') {
                     break;
@@ -790,9 +996,23 @@ final class Database {
                         && (strlen($delimiter) === 1
                             || self::matches_delimiter($buffer, $i, $delimiter, $handle))
                     ) {
-                        self::execute_statement($wpdb, $current, $do_replace, $old_url, $new_url, $old_no_scheme, $new_no_scheme);
+                        $end = $base + $i + strlen($delimiter);
+                        $run($current, $end);
                         $current = '';
                         $i      += strlen($delimiter) - 1;
+
+                        $state['offset']    = $end;
+                        $state['delimiter'] = $delimiter;
+
+                        $now = microtime(true);
+                        if ($now - $last_save >= self::IMPORT_COMMIT_INTERVAL) {
+                            $last_save = $now;
+                            $save(false, $state);
+                        }
+                        if ($should_stop !== null && $should_stop()) {
+                            $save(true, $state);
+                            return $state;
+                        }
                         continue;
                     }
 
@@ -802,19 +1022,165 @@ final class Database {
 
             // Trailing statement without a closing delimiter.
             if (trim($current) !== '') {
-                self::execute_statement($wpdb, $current, $do_replace, $old_url, $new_url, $old_no_scheme, $new_no_scheme);
+                $run($current, (int) ftell($handle));
             }
         } finally {
             fclose($handle);
+            if ($hwh) {
+                fclose($hwh);
+            }
         }
 
-        if (self::$prefix_from !== '') {
-            self::rename_prefixed_keys($wpdb, self::$prefix_from, self::$prefix_to);
-            self::$prefix_from = '';
-            self::$prefix_to   = '';
+        if ((int) $state['errors'] > 0) {
+            Log::warning('restore_sql_errors', sprintf('%d statement(s) of the database dump failed; see the PHP error log for each one.', (int) $state['errors']));
         }
 
-        return true;
+        $state['imported'] = true;
+        $save(true, $state);
+        return $state;
+    }
+
+    /**
+     * A table prefix no table in this database starts with yet.
+     */
+    private static function unused_prefix(string $lead): string {
+        global $wpdb;
+        $names = (array) $wpdb->get_col('SHOW TABLES');
+        $chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+        for ($try = 0; $try < 200; $try++) {
+            $p = $lead . $chars[random_int(0, 35)] . $chars[random_int(0, 35)] . '_';
+            $taken = false;
+            foreach ($names as $n) {
+                if (stripos((string) $n, $p) === 0) {
+                    $taken = true;
+                    break;
+                }
+            }
+            if (!$taken) {
+                return $p;
+            }
+        }
+        throw new \RuntimeException('Could not find a free temporary table prefix for the restore.');
+    }
+
+    /**
+     * Switch the staged tables in, keeping the live ones aside.
+     *
+     * The plan (which table goes where) is committed BEFORE the rename, and
+     * the rename is one atomic statement, so a request killed around it is
+     * resolved on the next call by looking at which names exist.
+     *
+     * @param array<string, mixed> $state
+     */
+    private static function swap_staged(array &$state, callable $save): void {
+        global $wpdb;
+
+        $existing = array_flip(array_map('strval', (array) $wpdb->get_col('SHOW TABLES')));
+
+        if (!isset($state['plan'])) {
+            $b    = self::unused_prefix('sb');
+            $plan = [];
+            foreach ((array) $state['tables'] as $staged => $final) {
+                $aside = null;
+                if (isset($existing[$final])) {
+                    $aside = $b . substr((string) $final, strlen((string) $state['final']));
+                    if (strlen($aside) > 64) {
+                        $aside = ''; // cannot keep it: dropped at the switch
+                    }
+                }
+                $plan[] = [(string) $staged, (string) $final, $aside];
+            }
+            $state['plan'] = $plan;
+            $state['B']    = $b;
+            $save(true);
+        }
+
+        $plan = (array) $state['plan'];
+        if ($plan !== [] && isset($existing[$plan[0][0]])) {
+            $renames = [];
+            foreach ($plan as [$staged, $final, $aside]) {
+                if ($aside === '') {
+                    $wpdb->query('DROP TABLE IF EXISTS `' . self::ident($final) . '`');
+                } elseif ($aside !== null) {
+                    $renames[] = '`' . self::ident($final) . '` TO `' . self::ident($aside) . '`';
+                }
+            }
+            foreach ($plan as [$staged, $final]) {
+                $renames[] = '`' . self::ident($staged) . '` TO `' . self::ident($final) . '`';
+            }
+            if ($wpdb->query('RENAME TABLE ' . implode(', ', $renames)) === false) {
+                throw new \RuntimeException('Could not switch the restored database in: ' . $wpdb->last_error);
+            }
+        }
+
+        $state['swapped'] = true;
+        wp_cache_flush();
+        $save(true);
+
+        Log::info('restore_db_switched', sprintf('Restored database switched in (%d tables). The previous tables are kept until the restore finishes.', count($plan)));
+    }
+
+    /**
+     * Undo a switch: the previous tables come back, the restored ones go.
+     * Safe to call on a state that never switched (it just cleans up).
+     *
+     * @param array<string, mixed> $state
+     */
+    public static function rollback_swap(array $state): bool {
+        global $wpdb;
+
+        if (empty($state['stage'])) {
+            return false;
+        }
+        if (empty($state['swapped'])) {
+            self::discard_staging($state);
+            return true;
+        }
+
+        $renames = [];
+        foreach ((array) ($state['plan'] ?? []) as [$staged, $final, $aside]) {
+            $renames[] = '`' . self::ident($final) . '` TO `' . self::ident($staged) . '`';
+            if ($aside !== null && $aside !== '') {
+                $renames[] = '`' . self::ident($aside) . '` TO `' . self::ident($final) . '`';
+            }
+        }
+        $ok = $renames === [] || $wpdb->query('RENAME TABLE ' . implode(', ', $renames)) !== false;
+        if ($ok) {
+            self::discard_staging($state);
+            wp_cache_flush();
+        }
+        Log::warning('restore_db_rolled_back', $ok
+            ? 'The restore did not finish; the previous database was switched back in.'
+            : 'The restore did not finish and switching the previous database back failed: ' . $wpdb->last_error);
+        return $ok;
+    }
+
+    /** Drop every table still under this import's staging prefix. */
+    public static function discard_staging(array $state): void {
+        self::drop_prefixed((string) ($state['S'] ?? ''));
+    }
+
+    /** The restore finished: drop the previous tables kept aside. */
+    public static function drop_previous_tables(array $state): void {
+        if (!empty($state['swapped'])) {
+            self::drop_prefixed((string) ($state['B'] ?? ''));
+        }
+    }
+
+    private static function drop_prefixed(string $prefix): void {
+        global $wpdb;
+        if (!preg_match('/^s[rb][a-z0-9]{2}_$/', $prefix)) {
+            return; // only ever drop names this class generated
+        }
+        $names = (array) $wpdb->get_col($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($prefix) . '%'));
+        foreach ($names as $n) {
+            $wpdb->query('DROP TABLE IF EXISTS `' . self::ident((string) $n) . '`');
+        }
+    }
+
+    /** Backtick-safe identifier. */
+    private static function ident(string $name): string {
+        return str_replace('`', '``', $name);
     }
 
     /**
@@ -837,22 +1203,41 @@ final class Database {
         'persisted_preferences',
     ];
 
-    private static function rename_prefixed_keys(\wpdb $wpdb, string $from, string $to): void {
-        $options  = $to . 'options';
-        $usermeta = $to . 'usermeta';
+    private static function rename_prefixed_keys(\wpdb $wpdb, string $from, string $to, ?string $tables = null): void {
+        // $tables: prefix of the tables to edit (the staging prefix while a
+        // restore is still staged), $to: prefix the KEYS must carry.
+        $tables   = $tables ?? $to;
+        $options  = $tables . 'options';
+        $usermeta = $tables . 'usermeta';
 
+        // Each rename only runs while a source key is still there, so running
+        // this twice (a request killed in between) cannot delete keys that
+        // were already renamed.
         // wp_options: `{prefix}user_roles` holds the whole role table.
-        $wpdb->query($wpdb->prepare(
-            "DELETE FROM `{$options}` WHERE option_name = %s",
-            $to . 'user_roles'
-        ));
-        $wpdb->query($wpdb->prepare(
-            "UPDATE `{$options}` SET option_name = %s WHERE option_name = %s",
-            $to . 'user_roles',
+        $has = $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM `{$options}` WHERE option_name = %s",
             $from . 'user_roles'
         ));
+        if ($has === null || (int) $has > 0) {
+            $wpdb->query($wpdb->prepare(
+                "DELETE FROM `{$options}` WHERE option_name = %s",
+                $to . 'user_roles'
+            ));
+            $wpdb->query($wpdb->prepare(
+                "UPDATE `{$options}` SET option_name = %s WHERE option_name = %s",
+                $to . 'user_roles',
+                $from . 'user_roles'
+            ));
+        }
 
         foreach (self::PREFIX_BOUND_USERMETA as $suffix) {
+            $has = $wpdb->get_var($wpdb->prepare(
+                "SELECT COUNT(*) FROM `{$usermeta}` WHERE meta_key = %s",
+                $from . $suffix
+            ));
+            if ($has !== null && (int) $has === 0) {
+                continue;
+            }
             $wpdb->query($wpdb->prepare(
                 "DELETE FROM `{$usermeta}` WHERE meta_key = %s",
                 $to . $suffix
@@ -1007,6 +1392,11 @@ final class Database {
      *   `str_starts_with('--')` skip would silently drop the DROP TABLE and
      *   cause "Table already exists" + duplicate-PK failures on restore.
      */
+    /**
+     * @param array<string, mixed> $state  Import state (tables, session, errors).
+     * @param bool                 $replay The statement may already have run
+     *                                     before the previous request died.
+     */
     private static function execute_statement(
         \wpdb $wpdb,
         string $statement,
@@ -1014,7 +1404,9 @@ final class Database {
         string $old_url,
         string $new_url,
         string $old_no_scheme,
-        string $new_no_scheme
+        string $new_no_scheme,
+        array &$state = [],
+        bool $replay = false
     ): void {
         $trimmed = self::strip_leading_comments($statement);
         if ($trimmed === '') {
@@ -1023,6 +1415,41 @@ final class Database {
 
         if (self::$prefix_from !== '') {
             $trimmed = self::rewrite_table_prefix($trimmed, self::$prefix_from, self::$prefix_to);
+        }
+
+        // Session settings are replayed at the start of every later slice.
+        if (preg_match('/^SET\s/i', $trimmed) && strlen($trimmed) < 512) {
+            $session   = (array) ($state['session'] ?? []);
+            $session[] = $trimmed;
+            $state['session'] = array_values(array_slice(array_unique($session), -20));
+        }
+
+        $staging = !empty($state['stage']);
+        $table   = null;
+        $is_create = false;
+        if (preg_match('/^\s*(DROP\s+TABLE(?:\s+IF\s+EXISTS)?|CREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?|ALTER\s+TABLE|LOCK\s+TABLES|INSERT\s+(?:IGNORE\s+)?INTO|REPLACE\s+INTO)\s+`((?:[^`]|``)+)`/i', $trimmed, $m)) {
+            $table     = str_replace('``', '`', $m[2]);
+            $is_create = stripos($m[1], 'CREATE') === 0;
+        }
+
+        if ($staging && $table !== null) {
+            $s_prefix = (string) $state['S'];
+            if (!str_starts_with($table, $s_prefix)) {
+                throw new \RuntimeException(sprintf('Table %s in the backup does not use the backup\'s table prefix.', $table), self::STAGING_UNSUPPORTED);
+            }
+            if ($is_create && strlen($table) > 64) {
+                throw new \RuntimeException(sprintf('Table name %s is too long to stage.', $table), self::STAGING_UNSUPPORTED);
+            }
+            if ($is_create) {
+                // Foreign key names are unique per database: the staged copy
+                // must not reuse the live table's. MySQL names them itself.
+                $trimmed = (string) preg_replace('/CONSTRAINT\s+`(?:[^`]|``)+`\s+FOREIGN\s+KEY/i', 'FOREIGN KEY', $trimmed);
+            }
+        }
+
+        if ($replay) {
+            $trimmed = (string) preg_replace('/^(\s*)INSERT\s+INTO\b/i', '${1}INSERT IGNORE INTO', $trimmed, 1);
+            $state['replayed'] = (int) ($state['replayed'] ?? 0) + 1;
         }
 
         if ($do_replace) {
@@ -1036,8 +1463,21 @@ final class Database {
         // surfacing only as "data missing after restore". wpdb returns false on
         // DDL/DML errors; last_error carries the MySQL message.
         if ($result === false && $wpdb->last_error !== '') {
+            $state['errors'] = (int) ($state['errors'] ?? 0) + 1;
             $preview = substr($trimmed, 0, 160);
             error_log('[SitesSaver] Import SQL failed: ' . $wpdb->last_error . ' | stmt: ' . $preview);
+
+            // A staged table that could not be created would silently keep
+            // the live table at the switch. Stop instead: nothing on the live
+            // site has changed yet.
+            if ($staging && $is_create) {
+                throw new \RuntimeException(sprintf('Could not create table %s while restoring: %s', (string) $table, $wpdb->last_error));
+            }
+            return;
+        }
+
+        if ($staging && $is_create && $table !== null) {
+            $state['tables'][$table] = (string) $state['final'] . substr($table, strlen((string) $state['S']));
         }
     }
 

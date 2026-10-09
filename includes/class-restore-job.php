@@ -40,6 +40,25 @@ final class Restore_Job {
     /** Persist a heartbeat at most this often. */
     private const BEAT_INTERVAL = 5;
 
+    /**
+     * A running job silent this long with nobody holding its lock: the
+     * host stopped the worker. Start a new one (it continues from the
+     * cursor), and after AUTO_RESUMES the open browser tab runs the slices.
+     */
+    public const RESPAWN_SECONDS = 60;
+    public const AUTO_RESUMES    = 2;
+
+    /** Persist the cursor at most this often (forced commits always write). */
+    private const CURSOR_INTERVAL = 2;
+
+    /** Open lock handle while this request owns a job (flock, see claim()). */
+    private static $lock_handle = null;
+
+    /** True once this request's slice ended normally. */
+    private static bool $slice_clean = true;
+
+    private static int $last_cursor_save = 0;
+
     private const GUARD = "<?php exit; ?>\n";
 
     /** Job id running in THIS process, if any. */
@@ -106,11 +125,18 @@ final class Restore_Job {
             return;
         }
         if (@file_put_contents($tmp, self::GUARD . $json, LOCK_EX) !== false) {
-            if (!@rename($tmp, $path)) {
-                // Windows refuses to rename over an existing file.
-                @unlink($path);
-                @rename($tmp, $path);
+            // Atomic on POSIX. On Windows the rename fails while another
+            // request (the status poll) has the file open; retry briefly,
+            // then write in place. Never delete first: a delete that lands
+            // while the file is open leaves NO job file behind.
+            for ($try = 0; $try < 20; $try++) {
+                if (@rename($tmp, $path)) {
+                    return;
+                }
+                usleep(25000);
             }
+            @file_put_contents($path, self::GUARD . $json, LOCK_EX);
+            @unlink($tmp);
         }
     }
 
@@ -213,24 +239,100 @@ final class Restore_Job {
      * restore must never run twice at once.
      */
     public static function claim(string $id): bool {
-        $lock = self::lock_path($id);
-        $h    = @fopen($lock, 'x');
+        // An OS file lock, held for the life of this request. The OS drops
+        // it when the request ends in any way — finished, fatal error, or
+        // the host killing PHP — so a dead worker can never wedge the job,
+        // and a slow-but-alive one can never be raced by a second runner.
+        $dir = self::dir();
+        if (!is_dir($dir)) {
+            wp_mkdir_p($dir);
+        }
+        $h = @fopen(self::lock_path($id), 'c');
         if ($h === false) {
             return false;
         }
-        fwrite($h, (string) getmypid());
-        fclose($h);
+        if (!flock($h, LOCK_EX | LOCK_NB)) {
+            fclose($h);
+            return false;
+        }
+        self::$lock_handle = $h;
         return true;
     }
 
+    public static function release(): void {
+        if (self::$lock_handle !== null) {
+            flock(self::$lock_handle, LOCK_UN);
+            fclose(self::$lock_handle);
+            self::$lock_handle = null;
+        }
+    }
+
+    /** Is some request working on this job right now? */
+    public static function is_busy(string $id): bool {
+        if (self::$lock_handle !== null && self::$current === $id) {
+            return true;
+        }
+        $h = @fopen(self::lock_path($id), 'c');
+        if ($h === false) {
+            return false;
+        }
+        $free = flock($h, LOCK_EX | LOCK_NB);
+        if ($free) {
+            flock($h, LOCK_UN);
+        }
+        fclose($h);
+        return !$free;
+    }
+
+    /** The open browser tab runs this job's slices from now on. */
+    public static function mark_browser_driven(string $id): void {
+        self::update($id, static function (array $j): array {
+            $j['driver'] = 'browser';
+            return $j;
+        });
+    }
+
+    /** Hand the next slice to a fresh background request (new single-use key). */
+    public static function spawn_next(string $id): bool {
+        $key = wp_generate_password(40, false, false);
+        self::update($id, static function (array $j) use ($key): array {
+            $j['worker_hash'] = hash('sha256', $key);
+            return $j;
+        });
+        return self::spawn($id, $key);
+    }
+
     /**
-     * Run the claimed job to completion in this request.
+     * Save the restore position into the job file.
+     *
+     * @param array<string, mixed> $cursor
+     */
+    private static function save_cursor(string $id, array $cursor, bool $force): void {
+        $now = time();
+        if (!$force && $now - self::$last_cursor_save < self::CURSOR_INTERVAL) {
+            return;
+        }
+        self::$last_cursor_save = $now;
+        self::$last_beat        = $now;
+        self::update($id, static function (array $j) use ($cursor): array {
+            $j['cursor'] = $cursor;
+            return $j;
+        });
+    }
+
+    /**
+     * Run ONE slice of the claimed job in this request.
+     *
+     * The restore is a chain of slices (see Import::restore_slice()): each
+     * request works until its time budget is used, saves its place in the
+     * job file, and — in a background worker — starts the next request. In
+     * the browser fallback ('inline') the open tab asks for the next slice.
      *
      * @param string $mode 'background' or 'inline' — recorded for diagnosis.
      */
     public static function run(string $id, string $mode): void {
         $job = self::get($id);
-        if ($job === null) {
+        if ($job === null || !in_array($job['status'] ?? '', ['queued', 'running'], true)) {
             return;
         }
 
@@ -239,72 +341,119 @@ final class Restore_Job {
         wp_raise_memory_limit('admin');
 
         // Load every class the rest of this request may need NOW, while the
-        // plugin's own files are known-good. (The restore skips the running
-        // plugin's folder, but a lazy autoload late in a long request is not
-        // worth the gamble.)
-        foreach ([Log::class, Errors::class, Import::class, Database::class, Archive::class, Index::class, GDrive::class] as $class) {
+        // plugin's own files are known-good.
+        foreach ([Log::class, Errors::class, Import::class, Database::class, Archive::class, Index::class, GDrive::class, Export::class] as $class) {
             class_exists($class);
         }
 
-        self::$current   = $id;
-        self::$last_beat = time();
+        self::$current          = $id;
+        self::$last_beat        = time();
+        self::$last_cursor_save = time();
+        self::$slice_clean      = false;
         self::add_hooks();
 
+        $budget = $mode === 'background'
+            ? Export::slice_budget(['slice' => (int) ($job['slice'] ?? 0)])
+            : Export::browser_budget();
+        Export::begin_slice($budget);
+
+        $first = ($job['status'] ?? '') === 'queued';
         self::update($id, static function (array $j) use ($mode): array {
             $j['status']      = 'running';
             $j['mode']        = $mode;
-            $j['started']     = time();
+            $j['started']     = $j['started'] ?? time();
             $j['worker_hash'] = null; // single use
+            $j['slices']      = (int) ($j['slices'] ?? 0) + 1;
             return $j;
         });
 
-        Log::info('restore_started', 'Restore started.', ['job' => $id, 'mode' => $mode, 'source' => $job['source'] ?? '']);
+        if ($first) {
+            Log::info('restore_started', 'Restore started.', ['job' => $id, 'mode' => $mode, 'source' => $job['source'] ?? '', 'slice_seconds' => $budget]);
+        }
 
-        // A fatal error (memory, a broken restored file pulled in by some
-        // hook) skips the catch below. Record it on the way out so the user
-        // gets an answer instead of an endless spinner.
-        register_shutdown_function(static function () use ($id): void {
+        // A fatal error skips the catch below. PHP's own time limit is not a
+        // failure: everything up to the last saved position is kept, so the
+        // next slice simply gets less time. Anything else is reported.
+        register_shutdown_function(static function () use ($id, $mode, $budget): void {
+            if (self::$slice_clean) {
+                return;
+            }
             $job = self::get($id);
             if ($job === null || ($job['status'] ?? '') !== 'running') {
                 return;
             }
-            $err  = error_get_last();
-            $tech = $err ? sprintf('%s in %s:%d', $err['message'], $err['file'], $err['line']) : 'The restore request ended unexpectedly.';
+            $err = error_get_last();
+            $fatal = $err && in_array($err['type'], [E_ERROR, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR], true);
+            if (!$fatal) {
+                return; // ended without an error (killed/exit): the poll restarts it
+            }
+            $tech = sprintf('%s in %s:%d', $err['message'], $err['file'], $err['line']);
+            if (stripos((string) $err['message'], 'Maximum execution time') !== false && (int) ($job['timeouts'] ?? 0) < 6) {
+                self::update($id, static function (array $j) use ($budget): array {
+                    $j['timeouts'] = (int) ($j['timeouts'] ?? 0) + 1;
+                    $j['slice']    = max(5, intdiv($budget, 2));
+                    return $j;
+                });
+                self::release();
+                Log::warning('restore_slice_timeout', $tech . ' — continuing with a shorter slice.', ['job' => $id]);
+                if ($mode === 'background') {
+                    self::spawn_next($id);
+                }
+                return;
+            }
             self::fail($id, $tech, (string) ($job['phase'] ?? ''));
         });
 
         try {
-            $file = (string) ($job['source'] ?? '');
+            $cursor = is_array($job['cursor'] ?? null) ? $job['cursor'] : [];
+            $file   = (string) ($cursor['file'] ?? $job['source'] ?? '');
 
-            if (($job['source_type'] ?? '') === 'gdrive') {
+            if (($job['source_type'] ?? '') === 'gdrive' && empty($cursor['file'])) {
                 self::phase('download', __('Downloading from Google Drive...', 'sitessaver'));
-                $dl = GDrive::download($file);
+                $dl = GDrive::download((string) ($job['source'] ?? ''));
                 if (empty($dl['success']) || empty($dl['file'])) {
                     $tech = (string) ($dl['message'] ?? 'Google Drive download failed.');
+                    self::$slice_clean = true;
                     self::fail($id, $tech, 'download', 'gdrive_download_failed');
                     return;
                 }
                 $file = (string) $dl['file'];
+                $cursor['file'] = $file;
+                self::save_cursor($id, $cursor, true);
             }
 
-            $result = Import::from_backup($file);
+            $done = Import::restore_slice($cursor, $file, [Export::class, 'out_of_time'], static function (array $c, bool $force) use ($id, $file): void {
+                $c['file'] = $file;
+                self::save_cursor($id, $c, $force);
+            });
+            $cursor['file'] = $file;
 
-            if (!empty($result['success'])) {
+            if ($done) {
+                Database::drop_previous_tables((array) ($cursor['db'] ?? []));
+                self::$slice_clean = true;
                 self::complete($id, [
-                    'message'        => (string) ($result['message'] ?? ''),
+                    'message'        => __('Site restored successfully. Please log in again.', 'sitessaver'),
                     'finalize_token' => Import::current_finalize_token(),
                     'finalize_url'   => Import::build_finalize_redirect_url(),
                 ]);
-            } else {
-                $now = self::get($id);
-                self::fail($id, (string) ($result['message'] ?? ''), (string) ($now['phase'] ?? ''));
+                return;
+            }
+
+            self::save_cursor($id, $cursor, true);
+            self::$slice_clean = true;
+            self::release();
+            if ($mode === 'background') {
+                self::spawn_next($id);
             }
         } catch (\Throwable $e) {
+            self::$slice_clean = true;
             $now = self::get($id);
             self::fail($id, $e->getMessage() . ' @ ' . basename($e->getFile()) . ':' . $e->getLine(), (string) ($now['phase'] ?? ''));
         } finally {
+            self::$slice_clean = true;
+            Export::end_slice();
             self::$current = null;
-            @unlink(self::lock_path($id));
+            self::release();
         }
     }
 
@@ -336,6 +485,19 @@ final class Restore_Job {
             return;
         }
 
+        // The restored database may already be switched in while the rest
+        // of the restore stopped. Put the previous one back.
+        $db = $job['cursor']['db'] ?? null;
+        if (is_array($db) && !empty($db['stage'])) {
+            if (Database::rollback_swap($db) && !empty($db['swapped'])) {
+                $technical .= ' ' . __('The previous database was put back.', 'sitessaver');
+                $code       = $code ?? 'restore_rolled_back';
+            } elseif (empty($db['swapped']) && $phase === 'database') {
+                // Staged and never switched in: the live site was not touched.
+                $code = $code ?? (Errors::classify_restore($technical, 'manifest'));
+            }
+        }
+
         $code    = $code ?? Errors::classify_restore($technical, $phase);
         $payload = Errors::report($code, $technical, [
             'job'      => $id,
@@ -354,7 +516,10 @@ final class Restore_Job {
             return $j;
         });
 
-        @unlink(self::lock_path($id));
+        $temp = $job['cursor']['temp'] ?? '';
+        if (is_string($temp) && $temp !== '') {
+            sitessaver_cleanup_temp($temp);
+        }
     }
 
     // ------------------------------------------------------------------
@@ -443,7 +608,30 @@ final class Restore_Job {
         $status = (string) ($job['status'] ?? '');
         $now    = time();
 
-        if ($status === 'running' && $now - (int) ($job['updated'] ?? $now) > self::STALL_SECONDS) {
+        $since = $now - (int) ($job['updated'] ?? $now);
+        $busy  = $status === 'running' && self::is_busy((string) $job['id']);
+
+        // Silent and nobody working on it: the host stopped the worker.
+        if ($status === 'running' && !$busy && $since > self::RESPAWN_SECONDS && ($job['driver'] ?? '') !== 'browser') {
+            if (($job['mode'] ?? '') === 'background' && (int) ($job['resumes'] ?? 0) < self::AUTO_RESUMES) {
+                $job = self::update((string) $job['id'], static function (array $j): array {
+                    $j['resumes'] = (int) ($j['resumes'] ?? 0) + 1;
+                    $j['slice']   = max(5, intdiv(Export::slice_budget(['slice' => (int) ($j['slice'] ?? 0)]), 2));
+                    return $j;
+                }) ?? $job;
+                Log::warning('restore_auto_resumed', sprintf('No progress for %ds during phase "%s"; started a new worker.', $since, (string) ($job['phase'] ?? '')), ['job' => $job['id']]);
+                self::spawn_next((string) $job['id']);
+            } else {
+                $job = self::update((string) $job['id'], static function (array $j): array {
+                    $j['driver'] = 'browser';
+                    return $j;
+                }) ?? $job;
+                Log::warning('restore_browser_takeover', 'Background restore requests keep stopping on this host; the browser continues the restore.', ['job' => $job['id']]);
+            }
+            $since = 0;
+        }
+
+        if ($status === 'running' && !$busy && $now - (int) ($job['updated'] ?? $now) > self::STALL_SECONDS) {
             self::fail(
                 (string) $job['id'],
                 sprintf('No progress for %ds during phase "%s" — the server stopped the restore request.', $now - (int) $job['updated'], (string) ($job['phase'] ?? '')),
@@ -461,6 +649,7 @@ final class Restore_Job {
             'mode'            => $job['mode'] ?? null,
             'seconds_since'   => $now - (int) ($job['updated'] ?? $now),
             'not_started'     => $status === 'queued' && $now - (int) ($job['created'] ?? $now) > self::START_GRACE_SECONDS,
+            'drive'           => $status === 'running' && ($job['driver'] ?? '') === 'browser',
             'result'          => $status === 'completed' ? $job['result'] : null,
             'error'           => $status === 'failed' ? $job['error'] : null,
         ];
@@ -475,10 +664,22 @@ final class Restore_Job {
             return;
         }
         $cutoff = time() - DAY_IN_SECONDS;
-        foreach ((array) glob($dir . '/restore-*') as $f) {
-            if (is_string($f) && @filemtime($f) < $cutoff) {
-                @unlink($f);
+        foreach ((array) glob($dir . '/restore-*.php') as $f) {
+            if (!is_string($f) || @filemtime($f) >= $cutoff) {
+                continue;
             }
+            // An abandoned job may have left staged tables (never switched
+            // in) or the previous tables (switched in, never finished).
+            // A day later the switched-in state is the site; keep it.
+            $id  = (string) preg_replace('/^restore-(.*)\.php$/', '$1', basename($f));
+            $job = self::get($id);
+            $db  = is_array($job['cursor']['db'] ?? null) ? $job['cursor']['db'] : [];
+            if (!empty($db['stage'])) {
+                Database::discard_staging($db);
+                Database::drop_previous_tables($db);
+            }
+            @unlink($f);
+            @unlink(self::lock_path($id));
         }
     }
 }

@@ -166,7 +166,7 @@ final class Background {
             return;
         }
         // Scheduled backups have their own notification settings.
-        if (!empty($status['options']['track_chain'])) {
+        if (!empty($status['options']['track_chain']) || !empty($status['options']['schedule'])) {
             return;
         }
 
