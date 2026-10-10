@@ -22,7 +22,7 @@
         </div>
         
         <div class="ss-section-content" style="padding: 30px;">
-            <div style="max-width: 800px; line-height: 1.6;">
+            <div style="line-height: 1.6;">
                 <h3 style="margin-top: 0;"><?php esc_html_e('1. How to create a backup?', 'sitessaver'); ?></h3>
                 <p><?php esc_html_e('Go to the main dashboard or the Export page. Select what you want to include (Database, Media, etc.) and click "Create Backup". The plugin will package everything into a single ZIP file.', 'sitessaver'); ?></p>
 
@@ -36,7 +36,7 @@
 
                 <h3 style="margin-top: 24px;"><?php esc_html_e('4. Scheduling automatic backups', 'sitessaver'); ?></h3>
                 <p><?php esc_html_e('Go to the Schedule page to enable automated backups. Tick as many frequencies as you need — they each run on their own timer, so Daily plus Monthly gives you recent restore points alongside a long-term archive. You also decide whether to keep them on your server, upload to Google Drive, or both.', 'sitessaver'); ?></p>
-                <p><?php esc_html_e('Retention controls how many backups stay on your server. After each scheduled run, anything beyond that count is deleted oldest-first so the disk does not fill up. Note that it counts every backup in the folder, including ones you created manually, so set it high enough to cover both. Files already uploaded to Google Drive are never deleted by retention.', 'sitessaver'); ?></p>
+                <p><?php esc_html_e('Retention controls how many backups stay on your server. After each scheduled run, anything beyond that count is deleted oldest-first so the disk does not fill up. It only counts backups the schedule made: backups you create yourself and files you upload are never deleted by it. Files already uploaded to Google Drive are never deleted by retention.', 'sitessaver'); ?></p>
                 <p><?php esc_html_e('Not sure the schedule works? Use "Run backup now" on the same page. It performs a real scheduled backup immediately using your saved settings, without waiting for the next cron window.', 'sitessaver'); ?></p>
 
                 <h3 style="margin-top: 24px;"><?php esc_html_e('5. My scheduled backups run late, or never', 'sitessaver'); ?></h3>

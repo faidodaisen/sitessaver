@@ -40,6 +40,7 @@ final class Ajax {
             'sitessaver_check_update'     => 'handle_check_update',
             'sitessaver_dismiss_update_notice' => 'handle_dismiss_update_notice',
             'sitessaver_dismiss_storage_notice' => 'handle_dismiss_storage_notice',
+            'sitessaver_save_export_notify'  => 'handle_save_export_notify',
             'sitessaver_gdrive_disconnect' => 'handle_gdrive_disconnect',
             'sitessaver_gdrive_upload'  => 'handle_gdrive_upload',
             'sitessaver_get_gdrive_upload_status' => 'handle_get_gdrive_upload_status',
@@ -903,6 +904,34 @@ final class Ajax {
         update_option('sitessaver_settings', $settings, false);
 
         wp_send_json_success(['message' => __('Settings saved.', 'sitessaver')]);
+    }
+
+    /**
+     * Save who (if anyone) is emailed when a manual backup finishes unwatched.
+     */
+    public function handle_save_export_notify(): void {
+        sitessaver_verify_ajax();
+
+        $enabled = empty($_POST['notify_enabled']) ? '0' : '1';
+        $email   = sanitize_email(wp_unslash($_POST['notify_email'] ?? ''));
+        $raw     = trim((string) wp_unslash($_POST['notify_email'] ?? ''));
+        if ($enabled === '1' && $raw !== '' && !is_email($email)) {
+            wp_send_json_error(['message' => __('That is not a valid email address.', 'sitessaver')]);
+        }
+        if (!is_email($email)) {
+            $email = ''; // switched off with a half-typed address: keep nothing
+        }
+        // The admin address is the default; store '' so a later change of
+        // the admin email is followed automatically.
+        if (strcasecmp($email, (string) get_option('admin_email')) === 0) {
+            $email = '';
+        }
+
+        update_option('sitessaver_export_notify', ['enabled' => $enabled, 'email' => $email], false);
+        wp_send_json_success([
+            'message' => $enabled === '1' ? __('Notification settings saved.', 'sitessaver') : __('Backup emails turned off.', 'sitessaver'),
+            'email'   => sitessaver_export_notify_email(),
+        ]);
     }
 
     /**

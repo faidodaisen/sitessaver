@@ -115,12 +115,18 @@
                     <i class="ri-information-line" aria-hidden="true"></i>
                     <p>
                         <?php
-                        printf(
-                            /* translators: %s: site admin email address */
-                            esc_html__('You can leave this page once the backup starts. It keeps running on your server, and we email %s when it is ready.', 'sitessaver'),
-                            '<strong>' . esc_html((string) get_option('admin_email')) . '</strong>'
-                        );
+                        $sitessaver_notify_to = sitessaver_export_notify_email();
+                        if ($sitessaver_notify_to !== '') {
+                            printf(
+                                /* translators: %s: email address */
+                                esc_html__('You can leave this page once the backup starts. It keeps running on your server, and we email %s when it is ready.', 'sitessaver'),
+                                '<strong>' . esc_html($sitessaver_notify_to) . '</strong>'
+                            );
+                        } else {
+                            esc_html_e('You can leave this page once the backup starts. It keeps running on your server. Email notifications are off.', 'sitessaver');
+                        }
                         ?>
+                        <a href="<?php echo esc_url(admin_url('admin.php?page=sitessaver-settings#ss-export-notify')); ?>"><?php esc_html_e('Change', 'sitessaver'); ?></a>
                         <?php if (!$sitessaver_has_cron) : ?>
                             <br>
                             <?php

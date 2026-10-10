@@ -170,7 +170,7 @@ final class Background {
             return;
         }
 
-        $to = (string) apply_filters('sitessaver_export_notify_email', get_option('admin_email'), $status, $ok);
+        $to = (string) apply_filters('sitessaver_export_notify_email', sitessaver_export_notify_email(), $status, $ok);
         if ($to === '' || !is_email($to)) {
             return;
         }

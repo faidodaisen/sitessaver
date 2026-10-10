@@ -6,6 +6,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.5.4] — 2026-10-11
+
+### Choose who gets the "backup is ready" email, or turn it off
+
+- New **Settings → Backup Notifications** section. Untick the checkbox to stop the email that is sent
+  when a backup you started finishes while the Export page is closed, or enter a different address.
+  Left empty, it uses the site admin email (as before) and follows it if that changes.
+- The note under "Start Export Process" and the progress window now show the address in use, or say
+  that email notifications are off, with a **Change** link to the setting.
+- Scheduled backups keep their own email setting on the Schedule page.
+
+### Also fixed
+
+- Help → User Manual: paragraphs now use the full width of the panel instead of stopping at about
+  800 px. The same width cap was removed from the Troubleshooting Log intro and error messages.
+- Help: the retention text now says that retention only deletes backups the schedule made (changed
+  in 1.5.0).
+- Seven icons that did not show (Email Branding header, "Send test email", Help folder status and
+  others) are now included in the plugin's icon set.
+
 ## [1.5.3] — 2026-10-10
 
 ### Backups page counts Google Drive backups

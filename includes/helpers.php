@@ -103,6 +103,23 @@ function sitessaver_protect_directory(string $dir): void {
 }
 
 /**
+ * Who is emailed when a backup started from the Export page finishes while
+ * nobody has the page open. '' = notifications are switched off.
+ *
+ * Option sitessaver_export_notify: ['enabled' => '1'|'0', 'email' => string]
+ * (an empty email means the site admin email, the behaviour before 1.5.4).
+ */
+function sitessaver_export_notify_email(): string {
+    $opt = get_option('sitessaver_export_notify', []);
+    $opt = is_array($opt) ? $opt : [];
+    if (($opt['enabled'] ?? '1') === '0') {
+        return '';
+    }
+    $email = (string) ($opt['email'] ?? '');
+    return is_email($email) ? $email : (string) get_option('admin_email');
+}
+
+/**
  * Can anyone on the internet download files from the backup folder?
  *
  * Apache honours the folder's .htaccess "deny"; Nginx, and Nginx-in-front

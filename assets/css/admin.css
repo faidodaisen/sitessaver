@@ -526,7 +526,6 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-    max-width: 68ch;
 }
 
 .ss-error-message {
@@ -599,7 +598,6 @@
 .ss-log-intro {
     margin: 0;
     padding: 18px 24px 4px;
-    max-width: 75ch;
     color: var(--ss-text-muted);
     line-height: 1.6;
 }

@@ -87,6 +87,54 @@ $update_error     = \SitesSaver\Updater::last_error();
         </div>
     </div>
 
+    <?php
+    $sitessaver_en = get_option('sitessaver_export_notify', []);
+    $sitessaver_en = is_array($sitessaver_en) ? $sitessaver_en : [];
+    $sitessaver_en_on = ($sitessaver_en['enabled'] ?? '1') !== '0';
+    ?>
+    <div class="ss-section" id="ss-export-notify">
+        <div class="ss-section-header">
+            <h2 class="ss-section-title">
+                <i class="ri-notification-3-line"></i>
+                <?php esc_html_e('Backup Notifications', 'sitessaver'); ?>
+            </h2>
+        </div>
+
+        <div class="ss-section-content">
+            <p class="description" style="margin-top: 0;">
+                <?php esc_html_e('When you start a backup and leave the Export page, SitesSaver can email you once it has finished or stopped. Scheduled backups have their own email setting on the Schedule page.', 'sitessaver'); ?>
+            </p>
+
+            <form id="sitessaver-export-notify-form" novalidate>
+                <table class="form-table">
+                    <tr>
+                        <th><?php esc_html_e('Email when done', 'sitessaver'); ?></th>
+                        <td>
+                            <label>
+                                <input type="checkbox" name="notify_enabled" value="1" <?php checked($sitessaver_en_on); ?> />
+                                <?php esc_html_e('Email me when a backup I started finishes and the page is closed', 'sitessaver'); ?>
+                            </label>
+                        </td>
+                    </tr>
+                    <tr class="ss-notify-email-row"<?php echo $sitessaver_en_on ? '' : ' hidden'; ?>>
+                        <th><label for="ss-notify-email"><?php esc_html_e('Send to', 'sitessaver'); ?></label></th>
+                        <td>
+                            <input type="email" id="ss-notify-email" name="notify_email" value="<?php echo esc_attr((string) ($sitessaver_en['email'] ?? '')); ?>" class="ss-input-text" placeholder="<?php echo esc_attr((string) get_option('admin_email')); ?>" />
+                            <p class="description"><?php esc_html_e('Leave empty to use the site admin email shown in the box.', 'sitessaver'); ?></p>
+                        </td>
+                    </tr>
+                </table>
+
+                <p class="submit" style="margin-top: 16px; padding: 0;">
+                    <button type="submit" class="btn btn-primary">
+                        <i class="ri-save-line"></i>
+                        <?php esc_html_e('Save Notifications', 'sitessaver'); ?>
+                    </button>
+                </p>
+            </form>
+        </div>
+    </div>
+
     <div class="ss-section">
         <div class="ss-section-header">
             <h2 class="ss-section-title">

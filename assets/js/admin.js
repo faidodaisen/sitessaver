@@ -1901,6 +1901,27 @@
         };
     }
 
+    $(document).on('change', '#sitessaver-export-notify-form [name=notify_enabled]', function () {
+        $('#sitessaver-export-notify-form .ss-notify-email-row').prop('hidden', !this.checked);
+    });
+
+    $(document).on('submit', '#sitessaver-export-notify-form', function (e) {
+        e.preventDefault();
+        var $form = $(this);
+        var $btn = $form.find('button[type=submit]').prop('disabled', true);
+        ajax('sitessaver_save_export_notify', {
+            notify_enabled: $form.find('[name=notify_enabled]').is(':checked') ? 1 : 0,
+            notify_email: $form.find('[name=notify_email]').val()
+        }, function (res) {
+            $btn.prop('disabled', false);
+            SS.adminEmail = res.email || '';
+            ssNotify.success(res.message || SS.strings.done);
+        }, function (err) {
+            $btn.prop('disabled', false);
+            ssNotify.error((err && err.message) || SS.strings.error);
+        });
+    });
+
     $(document).on('submit', '#sitessaver-email-brand-form', function (e) {
         e.preventDefault();
         var $form = $(this);
@@ -2274,10 +2295,15 @@
     // on the server (worker chain, WP-Cron watchdog, server cron), so the
     // tab is a window onto it, not the engine.
     function backgroundNote(destination) {
-        var who = SS.adminEmail ? ' and we email ' + SS.adminEmail : '';
-        return destination === 'gdrive' || destination === 'both'
-            ? 'You can close this page. The backup keeps running on your server, uploads to Google Drive' + who + ' when it is done.'
-            : 'You can close this page. The backup keeps running on your server' + who + ' when it is ready.';
+        var drive = destination === 'gdrive' || destination === 'both';
+        if (!SS.adminEmail) {
+            return drive
+                ? 'You can close this page. The backup keeps running on your server and uploads to Google Drive.'
+                : 'You can close this page. The backup keeps running on your server.';
+        }
+        return drive
+            ? 'You can close this page. The backup keeps running on your server, uploads to Google Drive and we email ' + SS.adminEmail + ' when it is done.'
+            : 'You can close this page. The backup keeps running on your server, and we email ' + SS.adminEmail + ' when it is ready.';
     }
 
     // A backup that is still moving on its own: show it, offer to watch it.

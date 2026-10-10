@@ -251,7 +251,7 @@ final class Admin {
             )),
             'errors'        => \SitesSaver\Errors::for_js(),
             'logUrl'        => admin_url('admin.php?page=sitessaver-help#ss-log'),
-            'adminEmail'    => (string) get_option('admin_email'),
+            'adminEmail'    => sitessaver_export_notify_email(), // '' = notifications off
             'strings'       => [
                 'confirmDelete'  => __('Delete this backup? This cannot be undone.', 'sitessaver'),
                 'confirmRestore' => __('Restore this backup? Your current site will be overwritten.', 'sitessaver'),
