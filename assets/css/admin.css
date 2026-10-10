@@ -442,8 +442,14 @@
     }
 }
 
-.step-label { color: var(--ss-text-main); }
-.step-pct { color: var(--ss-primary); font-family: monospace; }
+.sitessaver-progress-text {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+}
+.step-label { color: var(--ss-text-main); min-width: 0; }
+.step-pct { color: var(--ss-primary); font-variant-numeric: tabular-nums; flex-shrink: 0; }
 
 /* Empty States */
 .ss-empty-state {

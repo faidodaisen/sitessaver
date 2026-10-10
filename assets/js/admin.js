@@ -933,6 +933,17 @@
     });
 
 
+    // "Uploading to Google Drive... — 57 of 61 MB". Sizes, not a second
+    // percentage: the bar already shows one and two numbers that disagree
+    // read as a bug.
+    function gdriveLabel(base, job) {
+        var sent  = Number(job && job.sent);
+        var total = Number(job && job.total);
+        if (!isFinite(sent) || !isFinite(total) || total <= 0 || sent <= 0 || sent >= total) return base;
+        var mb = function (b) { return (b >= 10485760 ? Math.round(b / 1048576) : (b / 1048576).toFixed(1)) + ' MB'; };
+        return base + ' — ' + mb(sent).replace(' MB', '') + ' of ' + mb(total);
+    }
+
     // ---- Live Google Drive upload progress ----
     //
     // A Drive upload runs inside ONE long export-step request, so the browser
@@ -943,7 +954,6 @@
     // declared complete.
     //
     // Shared by the fresh-export and resume-export flows so they cannot drift.
-
     function pollGdriveInto(modal, jobId, step, existing) {
         if (!jobId || existing) return existing;
 
@@ -966,12 +976,9 @@
                 if (overall < last) return;
                 last = overall;
 
-                var label = step.label;
-                if (uploaded > 0 && uploaded < 100) {
-                    label = 'Uploading to Google Drive... (' + uploaded + '%)';
-                }
-
-                modal.setProgress(Math.min(overall, to), label);
+                // One percentage only (the bar's, on the right); the label
+                // carries the upload's own progress as sizes instead.
+                modal.setProgress(Math.min(overall, to), gdriveLabel(step.label, jobRes));
             });
         }, 1500);
 
@@ -1083,16 +1090,14 @@
                 // During the Drive upload the byte-level job transient is a
                 // far better progress signal than the coarse step table.
                 if (s.poll === 'gdrive') {
+                    ssModal.setActiveStep(s.step_index);
                     ssModal.disableCancel('Uploading to Drive…');
                     ajax('sitessaver_get_gdrive_upload_status', { job_id: gdriveJob }, function (jobRes) {
                         var uploaded = Number(jobRes.progress);
                         var from     = s.step_from || 0;
                         var span     = Math.max(0, s.step_pct - from);
                         var overall  = isFinite(uploaded) ? Math.round(from + span * (uploaded / 100)) : from;
-                        var label    = (isFinite(uploaded) && uploaded > 0 && uploaded < 100)
-                            ? 'Uploading to Google Drive... (' + uploaded + '%)'
-                            : s.step_label;
-                        ssModal.setProgress(Math.min(overall, s.step_pct), label);
+                        ssModal.setProgress(Math.min(overall, s.step_pct), gdriveLabel(s.step_label, jobRes));
                     }, function () {
                         ssModal.setProgress(s.step_from || 0, s.step_label);
                     });

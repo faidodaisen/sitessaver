@@ -502,7 +502,7 @@ final class GDrive {
                     if (!empty($job_id)) {
                         set_transient(
                             'sitessaver_gdrive_job_' . $job_id,
-                            ['progress' => $pct($offset), 'status' => 'uploading'],
+                            ['progress' => $pct($offset), 'status' => 'uploading', 'sent' => $offset, 'total' => $file_size],
                             HOUR_IN_SECONDS
                         );
                     }

@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.5.2] — 2026-10-09
+
+### Google Drive upload progress shows one percentage
+
+- While a backup uploads to Google Drive, the progress label showed the upload's own percentage
+  ("(93%)") right next to the overall percentage ("97%"). The label now shows sizes instead
+  ("— 57 of 61 MB") and the overall percentage stays on the right.
+- The step checklist now moves to "Uploading to Google Drive..." during the upload. Before, it stayed
+  on "Creating ZIP archive..." when the page followed a backup running in the background.
+- The progress label and the percentage no longer run together; the percentage sits on the right.
+
 ## [1.5.1] — 2026-10-09
 
 Closes the gaps left open in 1.5.0.
