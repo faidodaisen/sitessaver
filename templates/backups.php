@@ -1,5 +1,6 @@
 <?php defined('ABSPATH') || exit; 
 $backups = sitessaver_get_backups();
+$sitessaver_drive_on = class_exists('SitesSaver\\GDrive') && \SitesSaver\GDrive::is_connected();
 $stats   = [
     'count'      => count($backups),
     'total_size' => sitessaver_format_size(array_sum(array_column($backups, 'size'))),
@@ -38,15 +39,33 @@ $stats   = [
         </div>
     </header>
 
-    <?php if (sitessaver_storage_exposure() === 'exposed') : ?>
-        <?php $sitessaver_rel = '/' . ltrim(wp_make_link_relative(content_url('sitessaver-backups')), '/'); ?>
-        <div class="ss-notice ss-notice-warning" role="alert">
-            <i class="ri-alert-line" aria-hidden="true"></i>
+    <?php
+    // Only worth a word when it matters: the folder is reachable by direct
+    // link AND there are backups with the short pre-1.5.1 names, the only
+    // ones a stranger could realistically guess. Everything else lives in
+    // Help → "Where are my backups stored?".
+    $sitessaver_short = sitessaver_count_short_named_backups($backups);
+    if ($sitessaver_short > 0
+        && sitessaver_storage_exposure() === 'exposed'
+        && !get_user_meta(get_current_user_id(), 'sitessaver_dismissed_storage_notice', true)) : ?>
+        <div class="ss-notice ss-notice-info ss-notice-compact" id="ss-storage-notice">
+            <i class="ri-information-line" aria-hidden="true"></i>
             <div>
-                <strong><?php esc_html_e('Your backup folder can be downloaded from the web.', 'sitessaver'); ?></strong>
-                <?php esc_html_e('This server ignores the .htaccess file that normally blocks it (common on Nginx). Backup names are long and random, so they are hard to guess, but the folder should be closed. Ask your host to add this rule to the site’s Nginx configuration:', 'sitessaver'); ?>
-                <code class="ss-notice-code">location ^~ <?php echo esc_html($sitessaver_rel); ?>/ { deny all; return 403; }</code>
+                <?php
+                printf(
+                    /* translators: %d: number of older backups. */
+                    esc_html(_n(
+                        '%d older backup on this server has a short file name. Delete it if you no longer need it — newer backups have long, unguessable names.',
+                        '%d older backups on this server have short file names. Delete the ones you no longer need — newer backups have long, unguessable names.',
+                        $sitessaver_short,
+                        'sitessaver'
+                    )),
+                    (int) $sitessaver_short
+                );
+                ?>
+                <a href="<?php echo esc_url(admin_url('admin.php?page=sitessaver-help#ss-storage')); ?>"><?php esc_html_e('Why?', 'sitessaver'); ?></a>
             </div>
+            <button type="button" class="ss-notice-dismiss" id="ss-storage-notice-dismiss" aria-label="<?php esc_attr_e('Dismiss', 'sitessaver'); ?>"><i class="ri-close-line" aria-hidden="true"></i></button>
         </div>
     <?php endif; ?>
 
@@ -57,7 +76,10 @@ $stats   = [
             </div>
             <div class="ss-stat-content">
                 <span class="ss-stat-label"><?php esc_html_e('Backups Created', 'sitessaver'); ?></span>
-                <span class="ss-stat-value"><?php echo esc_html($stats['count']); ?></span>
+                <span class="ss-stat-value" id="ss-stat-count"><?php echo esc_html($stats['count']); ?></span>
+                <?php if ($sitessaver_drive_on) : ?>
+                    <span class="ss-stat-sub" id="ss-stat-count-sub"><?php esc_html_e('Checking Google Drive…', 'sitessaver'); ?></span>
+                <?php endif; ?>
             </div>
         </div>
         <div class="ss-stat-card">
@@ -66,7 +88,10 @@ $stats   = [
             </div>
             <div class="ss-stat-content">
                 <span class="ss-stat-label"><?php esc_html_e('Total Size', 'sitessaver'); ?></span>
-                <span class="ss-stat-value"><?php echo esc_html($stats['total_size']); ?></span>
+                <span class="ss-stat-value" id="ss-stat-size"><?php echo esc_html($stats['total_size']); ?></span>
+                <?php if ($sitessaver_drive_on) : ?>
+                    <span class="ss-stat-sub" id="ss-stat-size-sub">&nbsp;</span>
+                <?php endif; ?>
             </div>
         </div>
         <div class="ss-stat-card">
@@ -89,9 +114,9 @@ $stats   = [
         </div>
         
         <?php if (empty($backups)) : ?>
-            <div class="ss-empty-state">
+            <div class="ss-empty-state" id="ss-local-empty">
                 <i class="ri-folder-open-line ss-empty-icon"></i>
-                <p><?php esc_html_e('No backups found. Create your first backup to secure your site.', 'sitessaver'); ?></p>
+                <p data-drive-text="<?php esc_attr_e('No backups on this server. Your backups are in Google Drive below.', 'sitessaver'); ?>"><?php esc_html_e('No backups found. Create your first backup to secure your site.', 'sitessaver'); ?></p>
                 <a href="<?php echo esc_url(admin_url('admin.php?page=sitessaver-export')); ?>" class="btn btn-primary" style="margin-top: 20px;">
                     <?php esc_html_e('Take a Backup Now', 'sitessaver'); ?>
                 </a>
@@ -216,9 +241,11 @@ $stats   = [
                     </button>
                 </div>
             </div>
-            <div id="sitessaver-gdrive-files">
+            <div id="sitessaver-gdrive-files"
+                 data-autoload="1"
+                 data-local="<?php echo esc_attr(wp_json_encode(array_map(static fn($b) => ['name' => $b['file'], 'size' => (int) $b['size']], $backups))); ?>">
                 <p style="padding: 24px; text-align: center; color: var(--ss-text-muted);">
-                    <?php esc_html_e('Click refresh to load cloud backups.', 'sitessaver'); ?>
+                    <?php esc_html_e('Loading cloud backups…', 'sitessaver'); ?>
                 </p>
             </div>
         </div>

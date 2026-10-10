@@ -771,50 +771,75 @@ final class GDrive {
         }
 
         $settings  = self::settings();
-        $folder_id = $settings['gdrive_folder_id'] ?? '';
+        $folder_id = (string) ($settings['gdrive_folder_id'] ?? '');
 
-        $query = "mimeType='application/zip' and trashed=false";
-        if (!empty($folder_id)) {
-            $folder_id_q = self::drive_escape($folder_id);
-            $query .= " and '{$folder_id_q}' in parents";
+        // No SitesSaver folder yet means nothing has been uploaded. Listing
+        // without the folder filter would show every ZIP in the whole Drive.
+        if ($folder_id === '') {
+            return ['files' => [], 'connected' => true];
         }
 
-        $response = wp_remote_get(self::API_URL . '/files?' . http_build_query([
-            'q'        => $query,
-            'fields'   => 'files(id,name,size,createdTime)',
-            'orderBy'  => 'createdTime desc',
-            'pageSize' => 50,
-        ]), [
-            'headers' => ['Authorization' => 'Bearer ' . $token],
-            'timeout' => 20,
-        ]);
+        $query  = "mimeType='application/zip' and trashed=false and '" . self::drive_escape($folder_id) . "' in parents";
+        $prefix = sitessaver_backup_name_prefix();
+        $files  = [];
+        $page   = '';
 
-        if (is_wp_error($response)) {
-            return ['files' => [], 'connected' => true, 'error' => $response->get_error_message()];
-        }
-
-        // A non-2xx here means the listing failed. Returning an empty file list
-        // without an error made the Drive tab look like "no backups yet" when
-        // the real cause was an expired token or a permissions change.
-        $code = (int) wp_remote_retrieve_response_code($response);
-        if ($code < 200 || $code >= 300) {
-            return [
-                'files'     => [],
-                'connected' => true,
-                'error'     => self::api_error_message($response, $code),
+        // Follow nextPageToken so a long history is not cut off at one page.
+        for ($round = 0; $round < 10; $round++) {
+            $args = [
+                'q'        => $query,
+                'fields'   => 'nextPageToken,files(id,name,size,createdTime)',
+                'orderBy'  => 'createdTime desc',
+                'pageSize' => 100,
             ];
-        }
+            if ($page !== '') {
+                $args['pageToken'] = $page;
+            }
 
-        $body  = json_decode(wp_remote_retrieve_body($response), true);
-        $files = [];
+            $response = wp_remote_get(self::API_URL . '/files?' . http_build_query($args), [
+                'headers' => ['Authorization' => 'Bearer ' . $token],
+                'timeout' => 20,
+            ]);
 
-        foreach ($body['files'] ?? [] as $file) {
-            $files[] = [
-                'id'      => $file['id'],
-                'name'    => $file['name'],
-                'size'    => sitessaver_format_size((int) ($file['size'] ?? 0)),
-                'created' => $file['createdTime'] ?? '',
-            ];
+            if (is_wp_error($response)) {
+                return ['files' => $files, 'connected' => true, 'error' => $response->get_error_message()];
+            }
+
+            // A non-2xx here means the listing failed. Returning an empty file
+            // list without an error made the Drive tab look like "no backups
+            // yet" when the real cause was an expired token or a permissions
+            // change.
+            $code = (int) wp_remote_retrieve_response_code($response);
+            if ($code < 200 || $code >= 300) {
+                return ['files' => $files, 'connected' => true, 'error' => self::api_error_message($response, $code)];
+            }
+
+            $body = json_decode(wp_remote_retrieve_body($response), true);
+            foreach ($body['files'] ?? [] as $file) {
+                $bytes   = (int) ($file['size'] ?? 0);
+                $created = (string) ($file['createdTime'] ?? '');
+                $ts      = $created !== '' ? strtotime($created) : false;
+                $name    = (string) ($file['name'] ?? '');
+                $files[] = [
+                    'id'         => (string) ($file['id'] ?? ''),
+                    'name'       => $name,
+                    'size'       => sitessaver_format_size($bytes),
+                    'size_bytes' => $bytes,
+                    'created'    => $created,
+                    'created_h'  => $ts ? wp_date('M j, Y g:i A', $ts) : '',
+                    // The folder is named after the site title, so two sites
+                    // with the same title share it. Only this site's own
+                    // backups count towards its stats; the others stay listed
+                    // (restoring another site's backup is how a migration via
+                    // Drive works).
+                    'own'        => str_starts_with($name, $prefix),
+                ];
+            }
+
+            $page = (string) ($body['nextPageToken'] ?? '');
+            if ($page === '') {
+                break;
+            }
         }
 
         return ['files' => $files, 'connected' => true];

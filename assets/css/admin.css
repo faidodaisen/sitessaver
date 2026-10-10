@@ -1403,6 +1403,43 @@ body.ss-modal-open {
 
 .ss-notice-info i { color: var(--ss-primary); }
 
+.ss-notice-compact {
+    align-items: center;
+    padding: 10px 12px 10px 16px;
+}
+.ss-notice-compact a { margin-left: 4px; }
+.ss-notice-dismiss {
+    margin-left: auto;
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+}
+.ss-notice-dismiss:hover { background: rgba(0, 0, 0, 0.06); }
+.ss-notice-dismiss:focus-visible { outline: 2px solid var(--ss-primary); outline-offset: 1px; }
+.ss-notice-dismiss i { margin: 0; font-size: 16px; }
+
+.ss-stat-sub {
+    display: block;
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--ss-text-muted);
+    font-variant-numeric: tabular-nums;
+}
+.ss-stat-sub.is-error { color: var(--ss-danger); }
+
+.ss-storage-status p { display: flex; gap: 8px; align-items: flex-start; }
+.ss-storage-status i { margin-top: 3px; }
+.ss-storage-status details { margin: 4px 0 0 24px; }
+.ss-storage-status summary { cursor: pointer; color: var(--ss-primary); font-weight: 600; }
+
 .ss-notice-code {
     display: block;
     margin-top: 8px;

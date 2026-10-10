@@ -39,6 +39,7 @@ final class Ajax {
             'sitessaver_send_test_email'  => 'handle_send_test_email',
             'sitessaver_check_update'     => 'handle_check_update',
             'sitessaver_dismiss_update_notice' => 'handle_dismiss_update_notice',
+            'sitessaver_dismiss_storage_notice' => 'handle_dismiss_storage_notice',
             'sitessaver_gdrive_disconnect' => 'handle_gdrive_disconnect',
             'sitessaver_gdrive_upload'  => 'handle_gdrive_upload',
             'sitessaver_get_gdrive_upload_status' => 'handle_get_gdrive_upload_status',
@@ -1093,6 +1094,16 @@ final class Ajax {
                 SITESSAVER_VERSION
             ),
         ]);
+    }
+
+    /**
+     * Remember that this user dismissed the "older backups can be reached by
+     * direct link" note on the Backups page.
+     */
+    public function handle_dismiss_storage_notice(): void {
+        sitessaver_verify_ajax();
+        update_user_meta(get_current_user_id(), 'sitessaver_dismissed_storage_notice', 1);
+        wp_send_json_success();
     }
 
     /**

@@ -2010,13 +2010,55 @@
         }, 2000);
     });
 
+    // Backups page stats: local counts are rendered by PHP; once the Drive
+    // list arrives, add this site's Drive backups (a backup kept in both
+    // places counts once) and show where they are.
+    function fmtBytes(n) {
+        if (!n) return '0 B';
+        var u = ['B', 'KB', 'MB', 'GB', 'TB'], i = 0;
+        while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+        return (Math.round(n * 100) / 100) + ' ' + u[i]; // same as sitessaver_format_size()
+    }
+
+    function updateBackupStats(driveFiles, failed) {
+        var $countSub = $('#ss-stat-count-sub');
+        if (!$countSub.length) return;
+        var $sizeSub = $('#ss-stat-size-sub');
+        if (failed) {
+            $countSub.addClass('is-error').text('Google Drive unavailable');
+            $sizeSub.html('&nbsp;');
+            return;
+        }
+        var local = [];
+        try { local = JSON.parse($('#sitessaver-gdrive-files').attr('data-local') || '[]'); } catch (e) { local = []; }
+
+        var seen = {}, count = 0, total = 0, localBytes = 0, driveBytes = 0, driveCount = 0;
+        local.forEach(function (f) { seen[f.name] = true; count++; total += f.size; localBytes += f.size; });
+        (driveFiles || []).forEach(function (f) {
+            if (!f.own) return;
+            driveCount++;
+            driveBytes += Number(f.size_bytes) || 0;
+            if (seen[f.name]) return;
+            seen[f.name] = true; count++; total += Number(f.size_bytes) || 0;
+        });
+
+        $('#ss-stat-count').text(count);
+        $('#ss-stat-size').text(fmtBytes(total));
+        $countSub.removeClass('is-error').text(local.length + ' on server · ' + driveCount + ' on Google Drive');
+        $sizeSub.text(fmtBytes(localBytes) + ' on server · ' + fmtBytes(driveBytes) + ' on Drive');
+
+        var $empty = $('#ss-local-empty p[data-drive-text]');
+        if ($empty.length && driveCount > 0) $empty.text($empty.attr('data-drive-text'));
+    }
+
     $(document).on('click', '#sitessaver-gdrive-refresh', function () {
         var $container = $('#sitessaver-gdrive-files');
         $container.html('<p style="padding: 24px; text-align: center;">Loading...</p>');
 
         ajax('sitessaver_gdrive_list', {}, function (res) {
+            updateBackupStats(res.files || [], !!res.error);
             if (!res.files || res.files.length === 0) {
-                $container.html('<p style="padding: 24px; text-align: center;">No backups found on Google Drive.</p>');
+                $container.html('<p style="padding: 24px; text-align: center;">' + (res.error ? escapeHtml(res.error) : 'No backups found on Google Drive.') + '</p>');
                 return;
             }
 
@@ -2024,9 +2066,9 @@
             html += '<thead><tr><th>File</th><th>Size</th><th>Created</th><th style="text-align:right;">Actions</th></tr></thead><tbody>';
             res.files.forEach(function (f) {
                 html += '<tr>';
-                html += '<td><div class="cell-filename"><i class="ri-file-zip-line"></i> ' + escapeHtml(f.name) + '</div></td>';
+                html += '<td><div class="cell-filename"><i class="ri-file-zip-line"></i> ' + escapeHtml(f.name) + (f.own === false ? ' <span class="badge badge-gray">Other site</span>' : '') + '</div></td>';
                 html += '<td class="cell-meta">' + escapeHtml(f.size) + '</td>';
-                html += '<td class="cell-meta">' + escapeHtml(f.created) + '</td>';
+                html += '<td class="cell-meta">' + escapeHtml(f.created_h || f.created) + '</td>';
                 html += '<td><div class="action-btns" style="justify-content:flex-end;">';
                 html += '<button type="button" class="btn-icon sitessaver-gdrive-restore-btn" data-id="' + escapeHtml(f.id) + '" data-name="' + escapeHtml(f.name) + '" title="Restore from Drive"><i class="ri-history-line"></i></button>';
                 html += '<button type="button" class="btn-icon sitessaver-gdrive-dl-btn" data-id="' + escapeHtml(f.id) + '" title="Download"><i class="ri-download-cloud-2-line"></i></button>';
@@ -2038,8 +2080,21 @@
 
             $container.html(html);
         }, function (err) {
-            $container.html('<p style="padding: 24px; color: var(--ss-danger); text-align: center;">' + (err.message || SS.strings.error) + '</p>');
+            updateBackupStats([], true);
+            $container.html('<p style="padding: 24px; color: var(--ss-danger); text-align: center;">' + escapeHtml(err.message || SS.strings.error) + '</p>');
         });
+    });
+
+    // Load the Drive list (and with it the stats) as soon as the page opens.
+    $(function () {
+        if ($('#sitessaver-gdrive-files[data-autoload]').length) {
+            $('#sitessaver-gdrive-refresh').trigger('click');
+        }
+    });
+
+    $(document).on('click', '#ss-storage-notice-dismiss', function () {
+        $('#ss-storage-notice').remove();
+        ajax('sitessaver_dismiss_storage_notice', {}, function () {}, function () {});
     });
 
     $(document).on('click', '.sitessaver-gdrive-dl-btn', function () {

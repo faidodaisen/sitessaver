@@ -6,6 +6,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.5.3] — 2026-10-10
+
+### Backups page counts Google Drive backups
+
+- "Backups Created" and "Total Size" now include this site's backups in Google Drive. Below each
+  number, a line shows where the backups are ("0 on server · 1 on Google Drive"). A backup kept in
+  both places counts once. If Drive cannot be reached, the line says so instead of showing 0.
+- The Google Drive list loads by itself when the page opens.
+- When there are no backups on the server but there are some in Drive, the empty server list now
+  says so ("Your backups are in Google Drive below").
+- Drive dates use the same format as the server list.
+- Drive list: when no SitesSaver folder exists yet, the list no longer shows every ZIP in the whole
+  Drive. It now follows Drive's pages, so it is no longer cut off at 50 files. Backups from another
+  site that shares the folder are marked "Other site" and are not counted.
+
+### Calmer backup-folder check
+
+- The large warning about the backup folder has been removed from the Backups page. The folder's
+  status now appears in Help → "Where are my backups stored?". The instructions for closing the
+  folder match the server (RunCloud, Nginx, or other).
+- The Backups page shows a small, dismissible note only when the folder is reachable **and** there
+  are older backups with short file names (made before 1.5.1).
+- The check runs in the background (WP-Cron), so it no longer slows down opening the Backups page.
+
 ## [1.5.2] — 2026-10-09
 
 ### Google Drive upload progress shows one percentage

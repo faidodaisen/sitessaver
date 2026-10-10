@@ -57,9 +57,33 @@
                 <p><?php esc_html_e('Your backups, schedule, Google Drive connection, and email branding all survive an update. Backups are stored outside the plugin folder specifically so that updating can never touch them.', 'sitessaver'); ?></p>
                 <p><?php esc_html_e('Settings → Plugin Updates shows which version you are running, and has a button to check immediately instead of waiting for the next automatic check.', 'sitessaver'); ?></p>
 
-                <h3 style="margin-top: 24px;"><?php esc_html_e('9. Where are my backups stored?', 'sitessaver'); ?></h3>
-                <p><?php esc_html_e('In wp-content/sitessaver-backups/ on your server, deliberately outside the plugin folder so that updating or reinstalling SitesSaver never deletes them. The folder is protected from direct download by an .htaccess rule.', 'sitessaver'); ?></p>
-                <p><?php esc_html_e('On Nginx that .htaccess is ignored, so ask your host to deny public access to that path. Better still, keep a copy in Google Drive: a backup stored only on the server it is protecting will not help you when that server is the thing that fails.', 'sitessaver'); ?></p>
+                <h3 style="margin-top: 24px;" id="ss-storage"><?php esc_html_e('9. Where are my backups stored?', 'sitessaver'); ?></h3>
+                <p><?php esc_html_e('In wp-content/sitessaver-backups/ on your server, deliberately outside the plugin folder so that updating or reinstalling SitesSaver never deletes them. The folder cannot be listed, and backup files have long random names, so nobody can find them by browsing. A copy in Google Drive is still the best protection: a backup stored only on the server it is protecting will not help you when that server is the thing that fails.', 'sitessaver'); ?></p>
+                <?php
+                $ss_info = sitessaver_storage_exposure_info();
+                $ss_rel  = '/' . trim(wp_make_link_relative(content_url('sitessaver-backups')), '/') . '/';
+                $ss_rule = 'location ^~ ' . $ss_rel . ' { deny all; }';
+                ?>
+                <div class="ss-storage-status">
+                    <?php if ($ss_info === null || $ss_info['state'] === 'unknown') : ?>
+                        <p><i class="ri-time-line" aria-hidden="true"></i> <?php esc_html_e('Folder check: not run yet. It runs in the background; reload this page in a minute.', 'sitessaver'); ?></p>
+                    <?php elseif ($ss_info['state'] === 'protected') : ?>
+                        <p><i class="ri-shield-check-line" aria-hidden="true"></i> <?php esc_html_e('Folder check: closed to direct downloads.', 'sitessaver'); ?></p>
+                    <?php else : ?>
+                        <p><i class="ri-information-line" aria-hidden="true"></i> <?php esc_html_e('Folder check: a backup can be downloaded by someone who knows its exact file name. Names are long and random, so this is not something to worry about, but you can close the folder completely:', 'sitessaver'); ?></p>
+                        <details>
+                            <summary><?php esc_html_e('How to close it', 'sitessaver'); ?></summary>
+                            <?php if ($ss_info['server'] === 'runcloud') : ?>
+                                <p><?php esc_html_e('This site runs on RunCloud (Nginx in front of Apache). Nginx sends existing files straight to the visitor, before Apache reads the folder’s .htaccess. In RunCloud, open the web application → NGINX Config → add a new config (type location.main-before) with:', 'sitessaver'); ?></p>
+                            <?php elseif ($ss_info['server'] === 'nginx') : ?>
+                                <p><?php esc_html_e('This site runs on Nginx, which ignores .htaccess files. Ask your host to add this to the site’s Nginx configuration:', 'sitessaver'); ?></p>
+                            <?php else : ?>
+                                <p><?php esc_html_e('This server does not apply the folder’s .htaccess file. Ask your host to block web access to the folder, for example with this Nginx rule:', 'sitessaver'); ?></p>
+                            <?php endif; ?>
+                            <code class="ss-notice-code"><?php echo esc_html($ss_rule); ?></code>
+                        </details>
+                    <?php endif; ?>
+                </div>
             </div>
         </div>
     </div>

@@ -105,51 +105,104 @@ function sitessaver_protect_directory(string $dir): void {
 /**
  * Can anyone on the internet download files from the backup folder?
  *
- * Apache honours the folder's .htaccess "deny"; Nginx, and some LiteSpeed
- * and IIS setups, ignore it. A small file with a random body is placed in
- * the folder and requested over HTTP: if the body comes back, the folder is
- * web-readable. Checked at most once a day.
+ * Apache honours the folder's .htaccess "deny"; Nginx, and Nginx-in-front
+ * setups such as RunCloud's nginx-rc, serve existing files without asking
+ * Apache. A small file with a random body is placed in the folder and
+ * requested over HTTP: if the body comes back, the folder is web-readable.
  *
- * @return string 'protected' | 'exposed' | 'unknown'
+ * The probe is an HTTP request to the site itself, so it never runs while an
+ * admin page renders: pages read the cached answer and, when there is none,
+ * schedule the probe on WP-Cron (sitessaver_storage_probe).
+ *
+ * @return array{state: string, server: string, checked: int}|null
+ *         state: 'protected' | 'exposed' | 'unknown'; null = not checked yet.
  */
-function sitessaver_storage_exposure(bool $force = false): string {
+function sitessaver_storage_exposure_info(): ?array {
     $cached = get_transient('sitessaver_storage_exposure');
-    if (!$force && is_string($cached) && $cached !== '') {
+    if (is_array($cached) && isset($cached['state'])) {
         return $cached;
     }
+    if (!wp_next_scheduled('sitessaver_storage_probe')) {
+        wp_schedule_single_event(time(), 'sitessaver_storage_probe');
+    }
+    return null;
+}
+
+/** Run the probe now and cache the answer (a day; an hour when unsure). */
+function sitessaver_storage_probe(): array {
+    $info = ['state' => 'unknown', 'server' => '', 'checked' => time()];
 
     $dir     = SITESSAVER_STORAGE_DIR;
     $content = wp_normalize_path(WP_CONTENT_DIR);
-    if (!str_starts_with(wp_normalize_path($dir), $content)) {
-        set_transient('sitessaver_storage_exposure', 'unknown', DAY_IN_SECONDS);
-        return 'unknown';
+    if (str_starts_with(wp_normalize_path($dir), $content)) {
+        wp_mkdir_p($dir);
+        sitessaver_protect_directory($dir);
+
+        $name  = 'ss-probe-' . wp_generate_password(12, false) . '.txt';
+        $token = wp_generate_password(24, false);
+        if (@file_put_contents($dir . '/' . $name, $token) !== false) {
+            $url = content_url(substr(wp_normalize_path($dir), strlen($content))) . '/' . $name;
+            $res = wp_remote_get($url, ['timeout' => 8, 'sslverify' => false, 'redirection' => 0]);
+            @unlink($dir . '/' . $name);
+
+            if (!is_wp_error($res)) {
+                $code           = (int) wp_remote_retrieve_response_code($res);
+                $info['state']  = ($code === 200 && trim((string) wp_remote_retrieve_body($res)) === $token) ? 'exposed' : 'protected';
+                $info['server'] = sitessaver_server_kind((string) wp_remote_retrieve_header($res, 'server'));
+            }
+        }
     }
 
-    wp_mkdir_p($dir);
-    sitessaver_protect_directory($dir);
-
-    $name  = 'ss-probe-' . wp_generate_password(12, false) . '.txt';
-    $token = wp_generate_password(24, false);
-    if (@file_put_contents($dir . '/' . $name, $token) === false) {
-        return 'unknown';
+    set_transient('sitessaver_storage_exposure', $info, $info['state'] === 'unknown' ? HOUR_IN_SECONDS : DAY_IN_SECONDS);
+    if ($info['state'] === 'exposed' && class_exists(\SitesSaver\Log::class)) {
+        \SitesSaver\Log::info('storage_exposed', 'The backup folder can be read by direct link (the web server serves files without applying .htaccess).', ['server' => $info['server']]);
     }
+    return $info;
+}
+add_action('sitessaver_storage_probe', 'sitessaver_storage_probe');
 
-    $url = content_url(substr(wp_normalize_path($dir), strlen($content))) . '/' . $name;
-    $res = wp_remote_get($url, ['timeout' => 4, 'sslverify' => false, 'redirection' => 0]);
-    @unlink($dir . '/' . $name);
-
-    if (is_wp_error($res)) {
-        $state = 'unknown';
-    } else {
-        $code  = (int) wp_remote_retrieve_response_code($res);
-        $state = ($code === 200 && trim((string) wp_remote_retrieve_body($res)) === $token) ? 'exposed' : 'protected';
+/** 'runcloud' | 'nginx' | 'litespeed' | 'apache' | 'other' from a Server header. */
+function sitessaver_server_kind(string $header): string {
+    $h = strtolower(trim($header));
+    if ($h === '') {
+        $h = strtolower((string) ($_SERVER['SERVER_SOFTWARE'] ?? ''));
     }
-
-    set_transient('sitessaver_storage_exposure', $state, $state === 'unknown' ? HOUR_IN_SECONDS : DAY_IN_SECONDS);
-    if ($state === 'exposed' && class_exists(\SitesSaver\Log::class)) {
-        \SitesSaver\Log::warning('storage_exposed', 'The backup folder can be read over the web (the server ignores .htaccess).', ['url' => dirname($url) . '/']);
+    if (str_contains($h, 'nginx-rc')) {
+        return 'runcloud';
     }
-    return $state;
+    foreach (['nginx', 'litespeed', 'apache'] as $kind) {
+        if (str_contains($h, $kind)) {
+            return $kind;
+        }
+    }
+    return 'other';
+}
+
+/** Back-compat wrapper: the cached state only, never probes inline. */
+function sitessaver_storage_exposure(): string {
+    $info = sitessaver_storage_exposure_info();
+    return $info['state'] ?? 'unknown';
+}
+
+/**
+ * Backups named before 1.5.1 end in 6 random characters; those are the only
+ * ones a stranger could realistically guess on a folder that is reachable.
+ *
+ * @param array<int, array<string, mixed>> $backups From sitessaver_get_backups().
+ */
+function sitessaver_count_short_named_backups(array $backups): int {
+    $n = 0;
+    foreach ($backups as $b) {
+        if (preg_match('/-\d{8}-\d{6}-[A-Za-z0-9]{6}\.zip$/', (string) ($b['file'] ?? ''))) {
+            $n++;
+        }
+    }
+    return $n;
+}
+
+/** Host part every backup of THIS site starts with (matches the filename). */
+function sitessaver_backup_name_prefix(): string {
+    return sanitize_file_name(wp_parse_url(home_url(), PHP_URL_HOST) ?? 'site') . '-';
 }
 
 /**
