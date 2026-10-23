@@ -669,6 +669,7 @@ final class Export {
 
         // Ensure isolated temp directory exists.
         wp_mkdir_p($temp_dir);
+        sitessaver_protect_directory(SITESSAVER_TEMP_DIR);
 
         // Chain tracking is opt-in, and only the scheduler opts in. A manual
         // export from the Export screen therefore behaves EXACTLY as it did

@@ -312,6 +312,7 @@ final class Import {
         if (!is_dir(SITESSAVER_TEMP_DIR)) {
             wp_mkdir_p(SITESSAVER_TEMP_DIR);
         }
+        sitessaver_protect_directory(SITESSAVER_TEMP_DIR);
         $staged = SITESSAVER_TEMP_DIR . '/incoming-' . wp_generate_password(8, false, false) . '.zip';
         if (!move_uploaded_file($file['tmp_name'], $staged)) {
             return ['success' => false, 'message' => __('Failed to save uploaded file.', 'sitessaver')];
@@ -324,7 +325,7 @@ final class Import {
             // so the imported backup shows up in the Backups list. Do this
             // BEFORE cleanup so the staged file still exists.
             if (!empty($result['success'])) {
-                $final_name = self::unique_backup_filename(sanitize_file_name($file['name']));
+                $final_name = self::unique_backup_filename(sitessaver_safe_stored_name((string) $file['name']));
                 $final_path = sitessaver_storage_dir() . '/' . $final_name;
                 @copy($staged, $final_path);
             }

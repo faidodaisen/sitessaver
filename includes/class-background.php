@@ -234,7 +234,7 @@ final class Background {
      * .htaccess that does not exist and never touches one it cannot write.
      */
     public static function maybe_install_rules(): void {
-        if (!current_user_can('manage_options') || wp_doing_ajax()) {
+        if (!sitessaver_current_user_can() || wp_doing_ajax()) {
             return;
         }
         if (get_option(self::HTACCESS_OPTION) === self::HTACCESS_VERSION . ':' . (self::is_litespeed() ? 'ls' : 'other')) {

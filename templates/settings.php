@@ -2,7 +2,7 @@
 
 // Handle OAuth callback from proxy.
 $auth_msg = '';
-if (isset($_GET['sitessaver_gdrive_token']) && current_user_can('manage_options')) {
+if (isset($_GET['sitessaver_gdrive_token']) && sitessaver_current_user_can()) {
     $result    = \SitesSaver\GDrive::handle_callback();
     $auth_msg  = $result['message'] ?? '';
 }

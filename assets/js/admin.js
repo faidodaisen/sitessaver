@@ -1195,8 +1195,16 @@
     function generateUploadId() {
         var chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
         var id = '';
+        var bytes = null;
+        // The id names the folder the half-uploaded archive sits in, so it
+        // comes from the browser's cryptographic generator when there is one.
+        if (window.crypto && window.crypto.getRandomValues) {
+            bytes = new Uint8Array(16);
+            window.crypto.getRandomValues(bytes);
+        }
         for (var i = 0; i < 16; i++) {
-            id += chars.charAt(Math.floor(Math.random() * chars.length));
+            var r = bytes ? bytes[i] % chars.length : Math.floor(Math.random() * chars.length);
+            id += chars.charAt(r);
         }
         return id;
     }

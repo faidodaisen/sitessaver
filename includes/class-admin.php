@@ -89,7 +89,7 @@ final class Admin {
             }
         }
 
-        if (!current_user_can('manage_options')) {
+        if (!sitessaver_current_user_can()) {
             return;
         }
 
@@ -185,19 +185,19 @@ final class Admin {
         add_menu_page(
             __('SitesSaver', 'sitessaver'),
             __('SitesSaver', 'sitessaver'),
-            'manage_options',
+            sitessaver_capability(),
             'sitessaver',
             [$this, 'render_page'],
             'dashicons-backup',
             80
         );
 
-        add_submenu_page('sitessaver', __('Backups', 'sitessaver'), __('Backups', 'sitessaver'), 'manage_options', 'sitessaver', [$this, 'render_page']);
-        add_submenu_page('sitessaver', __('Export', 'sitessaver'), __('Export', 'sitessaver'), 'manage_options', 'sitessaver-export', [$this, 'render_export_page']);
-        add_submenu_page('sitessaver', __('Import', 'sitessaver'), __('Import', 'sitessaver'), 'manage_options', 'sitessaver-import', [$this, 'render_import_page']);
-        add_submenu_page('sitessaver', __('Schedule', 'sitessaver'), __('Schedule', 'sitessaver'), 'manage_options', 'sitessaver-schedule', [$this, 'render_schedule_page']);
-        add_submenu_page('sitessaver', __('Settings', 'sitessaver'), __('Settings', 'sitessaver'), 'manage_options', 'sitessaver-settings', [$this, 'render_settings_page']);
-        add_submenu_page('sitessaver', __('Help & Manual', 'sitessaver'), __('Help', 'sitessaver'), 'manage_options', 'sitessaver-help', [$this, 'render_help_page']);
+        add_submenu_page('sitessaver', __('Backups', 'sitessaver'), __('Backups', 'sitessaver'), sitessaver_capability(), 'sitessaver', [$this, 'render_page']);
+        add_submenu_page('sitessaver', __('Export', 'sitessaver'), __('Export', 'sitessaver'), sitessaver_capability(), 'sitessaver-export', [$this, 'render_export_page']);
+        add_submenu_page('sitessaver', __('Import', 'sitessaver'), __('Import', 'sitessaver'), sitessaver_capability(), 'sitessaver-import', [$this, 'render_import_page']);
+        add_submenu_page('sitessaver', __('Schedule', 'sitessaver'), __('Schedule', 'sitessaver'), sitessaver_capability(), 'sitessaver-schedule', [$this, 'render_schedule_page']);
+        add_submenu_page('sitessaver', __('Settings', 'sitessaver'), __('Settings', 'sitessaver'), sitessaver_capability(), 'sitessaver-settings', [$this, 'render_settings_page']);
+        add_submenu_page('sitessaver', __('Help & Manual', 'sitessaver'), __('Help', 'sitessaver'), sitessaver_capability(), 'sitessaver-help', [$this, 'render_help_page']);
     }
 
     public function enqueue_assets(string $hook): void {

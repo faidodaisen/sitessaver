@@ -6,6 +6,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.5.5] — 2026-10-23
+
+### Security: on multisite, only a super admin can use SitesSaver
+
+- On a WordPress network, SitesSaver used to open for anyone who could manage their own subsite. A
+  restore writes plugins, themes and must-use plugins and replays the backup's database, so a subsite
+  administrator could restore a specially made backup and take over every site on the network.
+  SitesSaver's pages, buttons and downloads now need a super admin (`manage_network_options`) on
+  multisite. Single-site installs are unchanged: administrators keep full access.
+- Developers can change the required capability with the `sitessaver_capability` filter.
+
+### Security: hardening
+
+- A backup you upload, or bring in from Google Drive, is now stored with a random tail on its name
+  (`backup.zip` becomes `backup-a1B2c3D4e5F6g7H8.zip`). On servers that ignore `.htaccess` (Nginx),
+  a plain name could be guessed and downloaded by direct link. Backups that already carry a
+  SitesSaver name keep it, so incremental chains still restore.
+- The temporary work folder (database dumps and uploads in progress) now has its own guard file, and
+  the clean-up of old temporary files no longer removes it.
+- Download, delete and Google Drive upload accept backup ZIP files only, never other files in the
+  backups folder.
+- The upload ID that names an upload's temporary folder now comes from the browser's cryptographic
+  random generator.
+
 ## [1.5.4] — 2026-10-11
 
 ### Choose who gets the "backup is ready" email, or turn it off

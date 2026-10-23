@@ -103,6 +103,51 @@ function sitessaver_protect_directory(string $dir): void {
 }
 
 /**
+ * Capability needed to use SitesSaver at all (pages, AJAX, downloads).
+ *
+ * Single site: manage_options, i.e. an administrator — unchanged.
+ *
+ * Multisite: manage_network_options, i.e. a super admin. A restore writes
+ * plugins, themes and mu-plugins and replays the backup's SQL; an export
+ * packs the network's plugin code. Those are network-level powers. A subsite
+ * administrator holds manage_options on their own site but may not install
+ * plugins or touch network tables, so with manage_options they could restore
+ * a crafted backup (an mu-plugin, or SQL against wp_users / wp_sitemeta) and
+ * take over every site on the network.
+ */
+function sitessaver_capability(): string {
+    $cap = is_multisite() ? 'manage_network_options' : 'manage_options';
+    return (string) apply_filters('sitessaver_capability', $cap);
+}
+
+/** Can the current user use SitesSaver? */
+function sitessaver_current_user_can(): bool {
+    return current_user_can(sitessaver_capability());
+}
+
+/**
+ * Name to store an uploaded or downloaded backup under.
+ *
+ * Backups SitesSaver writes carry a random tail (see
+ * sitessaver_backup_filename()) so they cannot be fetched by guessing the
+ * URL where the folder is web-readable (Nginx ignores .htaccess). An
+ * uploaded file keeps whatever name it had on the user's computer —
+ * "backup.zip", "mysite.zip" — which is trivially guessable. Names that
+ * already follow SitesSaver's pattern are kept as they are, because an
+ * incremental backup finds the other files of its chain by name.
+ */
+function sitessaver_safe_stored_name(string $filename): string {
+    $filename = sanitize_file_name($filename);
+    if ($filename === '' || strtolower((string) pathinfo($filename, PATHINFO_EXTENSION)) !== 'zip') {
+        $filename = 'imported.zip';
+    }
+    if (preg_match('/-\d{8}-\d{6}-[A-Za-z0-9]{6,}\.zip$/', $filename)) {
+        return $filename;
+    }
+    return pathinfo($filename, PATHINFO_FILENAME) . '-' . wp_generate_password(16, false, false) . '.zip';
+}
+
+/**
  * Who is emailed when a backup started from the Export page finishes while
  * nobody has the page open. '' = notifications are switched off.
  *
@@ -285,6 +330,10 @@ function sitessaver_cleanup_temp(?string $scope_dir = null): void {
         return;
     }
 
+    // The temp folder holds database dumps and whole uploaded archives while
+    // a job runs. Keep its own guard in place for servers that list folders.
+    sitessaver_protect_directory($tmp);
+
     if ($scope_dir !== null) {
         sitessaver_remove_scoped_temp($tmp, $scope_dir);
         return;
@@ -311,7 +360,7 @@ function sitessaver_cleanup_temp(?string $scope_dir = null): void {
     if ($top) {
         foreach ($top as $entry) {
             $name = basename($entry);
-            if ($name === 'chunks') {
+            if ($name === 'chunks' || $name === 'index.php' || $name === '.htaccess') {
                 continue;
             }
             if (filemtime($entry) >= $cutoff) {
@@ -382,7 +431,10 @@ function sitessaver_rm_recursive(string $path): void {
  */
 function sitessaver_resolve_backup_path(string $file): ?string {
     $file = sanitize_file_name($file);
-    if ($file === '') {
+    // Only backups. Without this the folder's own index.php guard (or any
+    // other non-backup file in it) could be downloaded, deleted or sent to
+    // Google Drive through these handlers.
+    if ($file === '' || strtolower((string) pathinfo($file, PATHINFO_EXTENSION)) !== 'zip') {
         return null;
     }
 
@@ -415,7 +467,7 @@ function sitessaver_verify_ajax(): bool {
         return false;
     }
 
-    if (!current_user_can('manage_options')) {
+    if (!sitessaver_current_user_can()) {
         wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
         return false;
     }

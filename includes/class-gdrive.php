@@ -888,14 +888,16 @@ final class GDrive {
         // Drive returns size as a string; 0 means "unknown" (rare, e.g. Docs).
         $expected_size = isset($meta['size']) ? (int) $meta['size'] : 0;
         if ($filename === '' || strtolower((string) pathinfo($filename, PATHINFO_EXTENSION)) !== 'zip') {
-            $filename = 'gdrive-' . wp_generate_password(6, false, false) . '.zip';
+            $filename = 'gdrive.zip';
         }
+        $filename = sitessaver_safe_stored_name($filename);
 
         // Stage into temp so a failed download can never clobber an existing
         // backup in the storage directory.
         if (!is_dir(SITESSAVER_TEMP_DIR)) {
             wp_mkdir_p(SITESSAVER_TEMP_DIR);
         }
+        sitessaver_protect_directory(SITESSAVER_TEMP_DIR);
         $staged = SITESSAVER_TEMP_DIR . '/gdrive-dl-' . wp_generate_password(8, false, false) . '.zip';
 
         /*

@@ -564,7 +564,7 @@ final class Ajax {
         $expected  = Import::current_finalize_token();
         $has_token = $expected !== '' && $supplied !== '' && hash_equals($expected, $supplied);
 
-        if (!$has_token && !current_user_can('manage_options')) {
+        if (!$has_token && !sitessaver_current_user_can()) {
             wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
             return;
         }
@@ -611,7 +611,7 @@ final class Ajax {
      * can resume interrupted downloads.
      */
     public function handle_download(): void {
-        if (!current_user_can('manage_options')) {
+        if (!sitessaver_current_user_can()) {
             wp_die(__('Permission denied.', 'sitessaver'));
         }
 
@@ -1334,6 +1334,9 @@ final class Ajax {
         if (!is_dir($chunk_dir)) {
             wp_mkdir_p($chunk_dir);
         }
+        // The half-uploaded archive lives here: no folder listing.
+        sitessaver_protect_directory(SITESSAVER_TEMP_DIR);
+        sitessaver_protect_directory(SITESSAVER_TEMP_DIR . '/chunks');
 
         // One request at a time per upload: a retried chunk can overlap the
         // original if the network hiccupped, and both must not append.
@@ -1505,9 +1508,10 @@ final class Ajax {
         }
 
         $dir  = sitessaver_storage_dir();
-        $dest = $dir . '/' . sanitize_file_name($filename);
+        $name = sitessaver_safe_stored_name($filename);
+        $dest = $dir . '/' . $name;
         if (file_exists($dest)) {
-            $dest = $dir . '/' . pathinfo($filename, PATHINFO_FILENAME) . '-' . wp_generate_password(4, false) . '.zip';
+            $dest = $dir . '/' . pathinfo($name, PATHINFO_FILENAME) . '-' . wp_generate_password(4, false) . '.zip';
         }
 
         if (@rename($part, $dest)) {
@@ -1733,7 +1737,7 @@ final class Ajax {
      * Download the troubleshooting log as a .txt file.
      */
     public function handle_log_download(): void {
-        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false) || !current_user_can('manage_options')) {
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false) || !sitessaver_current_user_can()) {
             wp_die(esc_html__('Permission denied.', 'sitessaver'), '', ['response' => 403]);
         }
 
