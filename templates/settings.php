@@ -2,15 +2,18 @@
 
 // Handle OAuth callback from proxy.
 $auth_msg = '';
+$auth_ok  = false;
 if (isset($_GET['sitessaver_gdrive_token']) && sitessaver_current_user_can()) {
     $result    = \SitesSaver\GDrive::handle_callback();
     $auth_msg  = $result['message'] ?? '';
+    $auth_ok   = !empty($result['success']);
 }
 // Same for addon destinations (OneDrive, ...): each names its own query arg.
 foreach (\SitesSaver\Destinations::extra() as $ss_dest) {
     if (isset($_GET[$ss_dest->callback_param()]) && sitessaver_current_user_can()) {
         $result   = $ss_dest->handle_callback();
         $auth_msg = $result['message'] ?? '';
+        $auth_ok  = !empty($result['success']);
     }
 }
 
@@ -44,7 +47,7 @@ $update_error     = \SitesSaver\Updater::last_error();
     </header>
 
     <?php if (!empty($auth_msg)) : ?>
-        <div style="margin: 20px 24px; padding: 12px 16px; border-radius: 6px; background: <?php echo $is_connected ? '#e6f4ea' : '#fce8e6'; ?>; color: <?php echo $is_connected ? '#137333' : '#c5221f'; ?>; border: 1px solid <?php echo $is_connected ? '#ceead6' : '#fad2cf'; ?>;">
+        <div style="margin: 20px 24px; padding: 12px 16px; border-radius: 6px; background: <?php echo $auth_ok ? '#e6f4ea' : '#fce8e6'; ?>; color: <?php echo $auth_ok ? '#137333' : '#c5221f'; ?>; border: 1px solid <?php echo $auth_ok ? '#ceead6' : '#fad2cf'; ?>;" role="<?php echo $auth_ok ? 'status' : 'alert'; ?>">
             <?php echo esc_html($auth_msg); ?>
         </div>
     <?php endif; ?>
