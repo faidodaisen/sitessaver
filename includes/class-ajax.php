@@ -109,6 +109,12 @@ final class Ajax {
         if (!Destinations::is_valid($destination)) {
             $destination = 'local';
         }
+        // The Export screen offers one remote at a time and its progress bar
+        // follows one upload job; several remotes are a Schedule feature.
+        $route = Destinations::parse($destination);
+        if (count($route['remotes']) > 1) {
+            $destination = Destinations::build([$route['remote']], $route['keep_local']);
+        }
 
         $options = [
             'include_db'         => (bool) ($_POST['include_db'] ?? true),

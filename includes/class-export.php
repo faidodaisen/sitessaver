@@ -1116,7 +1116,7 @@ final class Export {
                             'label'      => $remote->label(),
                             'success'    => $ok,
                             'message'    => (string) ($remote_result['message'] ?? ''),
-                            'folder_url' => $ok ? $remote->folder_url() : '',
+                            'folder_url' => $ok ? esc_url_raw($remote->folder_url(), ['http', 'https']) : '',
                         ];
                         // upload_to_remote() saved fresh state; carry it on.
                         $status                = self::get_status($uid) ?: $status;

@@ -153,7 +153,7 @@ abstract class Destination {
             'label'      => $this->label(),
             'icon'       => $this->icon(),
             'connected'  => $this->is_connected(),
-            'folder_url' => $this->is_connected() ? $this->folder_url() : '',
+            'folder_url' => $this->is_connected() ? esc_url_raw($this->folder_url(), ['http', 'https']) : '',
         ];
     }
 }

@@ -6,6 +6,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.6.0] — 2026-10-28
+
+### New: cloud storage add-ons can plug into SitesSaver
+
+- Google Drive now sits behind a general "storage destination" layer. Nothing changes for you: your
+  Drive connection, schedules and backups carry on exactly as before, with no settings to redo.
+- Add-on plugins can now add more cloud storage. A connected add-on gets its own card in Settings, a
+  choice on the Export page, a checkbox on the Schedule page and its own list on the Backups page
+  (restore, download, delete), the same way Google Drive works.
+- A scheduled backup can go to several cloud storages at once. When the schedule keeps no copy on
+  the server, the local copy is only removed after every cloud upload has succeeded.
+- If an add-on is switched off, backups that would have gone to it are kept on the server instead,
+  so a backup is never lost.
+- For developers: register a destination with the `sitessaver_destinations` filter by extending
+  `SitesSaver\Destination`. Uploads are resumable slice by slice, like Google Drive.
+
+### Security: hardening
+
+- Export step names and cloud folder links shown after a backup are now escaped, and a folder link
+  is only shown when it is a normal `http(s)` address.
+
 ## [1.5.5] — 2026-10-23
 
 ### Security: on multisite, only a super admin can use SitesSaver

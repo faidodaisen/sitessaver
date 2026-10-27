@@ -24,6 +24,12 @@ defined('ABSPATH') || exit;
  */
 final class Destinations {
 
+    /**
+     * Ids with a meaning of their own: destination strings ('local',
+     * 'both') and the restore source of a local file ('file').
+     */
+    private const RESERVED = ['local', 'both', 'file'];
+
     /** @var array<string, Destination>|null */
     private static ?array $cache = null;
 
@@ -40,7 +46,9 @@ final class Destinations {
 
         $clean = [];
         foreach ((array) $filtered as $dest) {
-            if ($dest instanceof Destination && preg_match('/^[a-z0-9]{2,20}$/', $dest->id())) {
+            if ($dest instanceof Destination
+                && preg_match('/^[a-z0-9]{2,20}$/', $dest->id())
+                && !in_array($dest->id(), self::RESERVED, true)) {
                 $clean[$dest->id()] = $dest;
             }
         }
@@ -105,9 +113,17 @@ final class Destinations {
         return implode(',', $remotes) . ($keep_local ? '+local' : '');
     }
 
-    /** Whether a destination string names a known value. */
+    /**
+     * Strict check for request input: the value must be in canonical form
+     * ('gdrive,,' or 'gdrive,local' are refused). parse() stays tolerant for
+     * values already saved in settings.
+     */
     public static function is_valid(string $value): bool {
-        return $value === 'local' || self::parse($value)['remote'] !== '';
+        if ($value === 'local' || $value === 'both') {
+            return true;
+        }
+        $p = self::parse($value);
+        return $p['remote'] !== '' && self::build($p['remotes'], $p['keep_local']) === $value;
     }
 
     /** @return list<array<string, mixed>> For wp_localize_script. */

@@ -413,6 +413,11 @@
         return errorFor(code, detail);
     }
 
+    // Only http(s) links from the server/remote provider become hrefs.
+    function safeUrl(u) {
+        return typeof u === 'string' && /^https?:\/\//i.test(u) ? u : '';
+    }
+
     function escapeHtml(s) {
         return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
             return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
@@ -686,9 +691,9 @@
             var html = '';
             for (var i = 0; i < steps.length; i++) {
                 html +=
-                    '<li class="ss-step is-pending" data-step-id="' + steps[i].id + '">' +
+                    '<li class="ss-step is-pending" data-step-id="' + escapeHtml(steps[i].id) + '">' +
                       '<span class="ss-step-icon"><i class="ri-checkbox-circle-line"></i></span>' +
-                      '<span class="ss-step-label">' + steps[i].label + '</span>' +
+                      '<span class="ss-step-label">' + escapeHtml(steps[i].label) + '</span>' +
                     '</li>';
             }
             $list.html(html).show();
@@ -1158,26 +1163,28 @@
             msg += '<a href="' + dlUrl + '" class="ss-download-link" target="_blank"><i class="ri-download-2-line"></i> Download backup</a>';
         }
 
-        if ((dest === 'gdrive' || dest === 'both') && result.gdrive) {
+        // 1.5.x response shape (no `remotes` list): Google Drive only.
+        if (!result.remotes && (dest === 'gdrive' || dest === 'both') && result.gdrive) {
             if (msg) msg += '<br><br>';
             if (result.gdrive.success) {
                 msg += '<i class="ri-google-line"></i> ' + (result.gdrive.message || 'Uploaded to Google Drive.');
-                if (result.gdrive_folder_url) {
-                    msg += ' <a href="' + result.gdrive_folder_url + '" target="_blank" rel="noopener"><i class="ri-external-link-line"></i> Open Drive folder</a>';
+                if (safeUrl(result.gdrive_folder_url)) {
+                    msg += ' <a href="' + escapeHtml(result.gdrive_folder_url) + '" target="_blank" rel="noopener"><i class="ri-external-link-line"></i> Open Drive folder</a>';
                 }
             } else {
                 msg += '<span style="color:var(--ss-danger)"><i class="ri-error-warning-line"></i> Google Drive upload failed: ' + (result.gdrive.message || 'Unknown error') + '</span>';
             }
         }
 
-        // Addon destinations (OneDrive, ...).
+        // Every remote (Google Drive included) when the server sends the list.
         (result.remotes || []).forEach(function (r) {
-            if (!r || r.id === 'gdrive') return;
+            if (!r) return;
             if (msg) msg += '<br><br>';
             var label = escapeHtml(r.label || r.id);
+            var icon  = r.id === 'gdrive' ? 'ri-google-line' : 'ri-cloud-line';
             if (r.success) {
-                msg += '<i class="ri-cloud-line"></i> ' + escapeHtml(r.message || ('Uploaded to ' + (r.label || r.id) + '.'));
-                if (r.folder_url) {
+                msg += '<i class="' + icon + '"></i> ' + escapeHtml(r.message || ('Uploaded to ' + (r.label || r.id) + '.'));
+                if (safeUrl(r.folder_url)) {
                     msg += ' <a href="' + escapeHtml(r.folder_url) + '" target="_blank" rel="noopener"><i class="ri-external-link-line"></i> Open ' + label + ' folder</a>';
                 }
             } else {
