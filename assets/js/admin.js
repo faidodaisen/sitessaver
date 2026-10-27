@@ -874,8 +874,8 @@
                 // real progress is reported separately. Show the START of its
                 // range and let the poller fill the rest, instead of jumping
                 // straight to the end percentage and freezing there.
-                if (step.poll === 'gdrive') {
-                    ssModal.disableCancel('Uploading to Drive…');
+                if (step.poll) {
+                    ssModal.disableCancel(uploadingNote(step.poll));
                     ssModal.setProgress(step.from || 0, step.label);
                     startGdrivePolling(step);
                 } else {
@@ -954,6 +954,20 @@
     // declared complete.
     //
     // Shared by the fresh-export and resume-export flows so they cannot drift.
+    // Progress of a remote upload job. Google Drive keeps its 1.5.x endpoint;
+    // addon destinations (step.poll = their id) use the generic one.
+    function remoteUploadStatus(poll, jobId, onOk, onFail) {
+        if (!poll || poll === 'gdrive') {
+            ajax('sitessaver_get_gdrive_upload_status', { job_id: jobId }, onOk, onFail);
+        } else {
+            ajax('sitessaver_remote_upload_status', { dest: poll, job_id: jobId }, onOk, onFail);
+        }
+    }
+
+    function uploadingNote(poll) {
+        return (!poll || poll === 'gdrive') ? 'Uploading to Drive…' : 'Uploading…';
+    }
+
     function pollGdriveInto(modal, jobId, step, existing) {
         if (!jobId || existing) return existing;
 
@@ -964,7 +978,7 @@
         var handle;
 
         handle = setInterval(function () {
-            ajax('sitessaver_get_gdrive_upload_status', { job_id: jobId }, function (jobRes) {
+            remoteUploadStatus(step.poll, jobId, function (jobRes) {
                 var uploaded = Number(jobRes.progress);
                 if (!isFinite(uploaded)) return;
 
@@ -1089,10 +1103,10 @@
 
                 // During the Drive upload the byte-level job transient is a
                 // far better progress signal than the coarse step table.
-                if (s.poll === 'gdrive') {
+                if (s.poll) {
                     ssModal.setActiveStep(s.step_index);
-                    ssModal.disableCancel('Uploading to Drive…');
-                    ajax('sitessaver_get_gdrive_upload_status', { job_id: gdriveJob }, function (jobRes) {
+                    ssModal.disableCancel(uploadingNote(s.poll));
+                    remoteUploadStatus(s.poll, gdriveJob, function (jobRes) {
                         var uploaded = Number(jobRes.progress);
                         var from     = s.step_from || 0;
                         var span     = Math.max(0, s.step_pct - from);
@@ -1137,7 +1151,8 @@
         var dest = result.destination || 'local';
         var msg  = '';
 
-        if ((dest === 'local' || dest === 'both') && result.file) {
+        var keepsLocal = dest === 'local' || dest === 'both' || /\+local$/.test(dest || '');
+        if (keepsLocal && result.file) {
             var dlUrl = SS.ajaxUrl + '?action=sitessaver_download_backup&file=' + encodeURIComponent(result.file) + '&nonce=' + SS.downloadNonce;
             msg += SS.strings.done + ' — ' + result.file + ' (' + result.size + ')<br><br>';
             msg += '<a href="' + dlUrl + '" class="ss-download-link" target="_blank"><i class="ri-download-2-line"></i> Download backup</a>';
@@ -1154,6 +1169,21 @@
                 msg += '<span style="color:var(--ss-danger)"><i class="ri-error-warning-line"></i> Google Drive upload failed: ' + (result.gdrive.message || 'Unknown error') + '</span>';
             }
         }
+
+        // Addon destinations (OneDrive, ...).
+        (result.remotes || []).forEach(function (r) {
+            if (!r || r.id === 'gdrive') return;
+            if (msg) msg += '<br><br>';
+            var label = escapeHtml(r.label || r.id);
+            if (r.success) {
+                msg += '<i class="ri-cloud-line"></i> ' + escapeHtml(r.message || ('Uploaded to ' + (r.label || r.id) + '.'));
+                if (r.folder_url) {
+                    msg += ' <a href="' + escapeHtml(r.folder_url) + '" target="_blank" rel="noopener"><i class="ri-external-link-line"></i> Open ' + label + ' folder</a>';
+                }
+            } else {
+                msg += '<span style="color:var(--ss-danger)"><i class="ri-error-warning-line"></i> ' + label + ' upload failed: ' + escapeHtml(r.message || 'Unknown error') + '</span>';
+            }
+        });
 
         return msg || SS.strings.done;
     }
@@ -1400,7 +1430,8 @@
 
     function runRestore(source, $form, onSuccessExtra) {
         ssModal.setSteps(SS.importPhases || []);
-        ssModal.setIndeterminate(source.gdrive_file_id ? 'Downloading from Google Drive...' : 'Preparing restore...');
+        ssModal.setIndeterminate(source.gdrive_file_id ? 'Downloading from Google Drive...'
+            : (source.remote_file_id ? 'Downloading from ' + (source.remote_label || 'cloud storage') + '...' : 'Preparing restore...'));
 
         ajax('sitessaver_restore_start', source, function (job) {
             followRestore(job, $form, onSuccessExtra);
@@ -1665,6 +1696,7 @@
             include_themes: $form.find('[name=include_themes]').is(':checked') ? 1 : 0,
             storage_local: $form.find('[name=storage_local]').is(':checked') ? 1 : 0,
             storage_gdrive: $form.find('[name=storage_gdrive]').is(':checked') ? 1 : 0,
+            storage_remotes: $form.find('[name="storage_remotes[]"]:checked').map(function () { return this.value; }).get(),
             notify_email: $form.find('[name=notify_email]').val()
         };
 
@@ -2192,6 +2224,159 @@
 
 
 
+    // ---------- ADDON DESTINATIONS (OneDrive, ...) ----------
+    //
+    // Same flows as the Google Drive block above, driven by data-dest so one
+    // set of handlers serves every registered destination.
+
+    $(document).on('click', '.sitessaver-remote-disconnect', function () {
+        var dest  = $(this).data('dest');
+        var label = $(this).data('label') || 'this storage';
+        ssNotify.confirm({
+            tone: 'warning',
+            title: 'Disconnect ' + label + '?',
+            message: 'SitesSaver will stop uploading backups to ' + label + '. Backups already stored there are not deleted, and you can reconnect at any time.',
+            confirmText: 'Disconnect',
+            cancelText: 'Stay connected',
+            onConfirm: function () {
+                ajax('sitessaver_remote_disconnect', { dest: dest }, function () {
+                    ssFlash('success', label + ' disconnected.');
+                    location.reload();
+                }, function (err) {
+                    ssNotify.error(err.message || SS.strings.error);
+                });
+            }
+        });
+    });
+
+    $(document).on('click', '.sitessaver-remote-upload-btn', function () {
+        var $btn  = $(this);
+        var dest  = $btn.data('dest');
+        var label = $btn.data('label') || dest;
+        var file  = $btn.data('file');
+        var jobId = generateUploadId();
+        var $wrap = $('#sitessaver-backups-page');
+        if (!$wrap.length) $wrap = $('.sitessaver-wrap');
+
+        $btn.prop('disabled', true).addClass('loading');
+        updateProgress($wrap, 0, 'Preparing upload...');
+
+        var pollInterval;
+        ajax('sitessaver_remote_upload', { dest: dest, file: file, job_id: jobId }, function (res) {
+            clearInterval(pollInterval);
+            hideProgress($wrap);
+            ssNotify.success(res.message || ('Backup uploaded to ' + label + '.'), { title: 'Upload complete' });
+            $btn.prop('disabled', false).removeClass('loading');
+            $('.sitessaver-remote-refresh[data-dest="' + dest + '"]').trigger('click');
+        }, function (err) {
+            clearInterval(pollInterval);
+            hideProgress($wrap);
+            ssNotify.error(err.message || SS.strings.error, { title: 'Upload failed' });
+            $btn.prop('disabled', false).removeClass('loading');
+        });
+
+        pollInterval = setInterval(function () {
+            remoteUploadStatus(dest, jobId, function (res) {
+                if (res.progress !== undefined) {
+                    updateProgress($wrap, res.progress, gdriveLabel('Uploading to ' + label, res));
+                }
+            });
+        }, 2000);
+    });
+
+    $(document).on('click', '.sitessaver-remote-refresh', function () {
+        var dest       = $(this).data('dest');
+        var $container = $('.sitessaver-remote-files[data-dest="' + dest + '"]');
+        var label      = $container.data('label') || dest;
+        $container.html('<p style="padding: 24px; text-align: center;">Loading...</p>');
+
+        ajax('sitessaver_remote_list', { dest: dest }, function (res) {
+            if (!res.files || res.files.length === 0) {
+                $container.html('<p style="padding: 24px; text-align: center;">' + (res.error ? escapeHtml(res.error) : 'No backups found on ' + escapeHtml(label) + '.') + '</p>');
+                return;
+            }
+            var html = '<table class="ss-table">';
+            html += '<thead><tr><th>File</th><th>Size</th><th>Created</th><th style="text-align:right;">Actions</th></tr></thead><tbody>';
+            res.files.forEach(function (f) {
+                var attrs = ' data-dest="' + escapeHtml(dest) + '" data-label="' + escapeHtml(label) + '" data-id="' + escapeHtml(f.id) + '" data-name="' + escapeHtml(f.name) + '"';
+                html += '<tr>';
+                html += '<td><div class="cell-filename"><i class="ri-file-zip-line"></i> ' + escapeHtml(f.name) + (f.own === false ? ' <span class="badge badge-gray">Other site</span>' : '') + '</div></td>';
+                html += '<td class="cell-meta">' + escapeHtml(f.size) + '</td>';
+                html += '<td class="cell-meta">' + escapeHtml(f.created_h || f.created) + '</td>';
+                html += '<td><div class="action-btns" style="justify-content:flex-end;">';
+                html += '<button type="button" class="btn-icon sitessaver-remote-restore-btn"' + attrs + ' title="Restore"><i class="ri-history-line"></i></button>';
+                html += '<button type="button" class="btn-icon sitessaver-remote-dl-btn"' + attrs + ' title="Download"><i class="ri-download-cloud-2-line"></i></button>';
+                html += '<button type="button" class="btn-icon danger sitessaver-remote-delete-btn"' + attrs + ' title="Delete"><i class="ri-delete-bin-line"></i></button>';
+                html += '</div></td></tr>';
+            });
+            html += '</tbody></table>';
+            $container.html(html);
+        }, function (err) {
+            $container.html('<p style="padding: 24px; color: var(--ss-danger); text-align: center;">' + escapeHtml(err.message || SS.strings.error) + '</p>');
+        });
+    });
+
+    $(function () {
+        $('.sitessaver-remote-files[data-autoload]').each(function () {
+            $('.sitessaver-remote-refresh[data-dest="' + $(this).data('dest') + '"]').trigger('click');
+        });
+    });
+
+    $(document).on('click', '.sitessaver-remote-dl-btn', function () {
+        var $btn = $(this);
+        $btn.prop('disabled', true);
+        ajax('sitessaver_remote_download', { dest: $btn.data('dest'), file_id: $btn.data('id') }, function (res) {
+            ssFlash('success', res.message || ('Backup downloaded from ' + $btn.data('label') + '.'));
+            location.reload();
+        }, function (err) {
+            ssNotify.error(err.message || SS.strings.error, { title: 'Download failed' });
+            $btn.prop('disabled', false);
+        });
+    });
+
+    $(document).on('click', '.sitessaver-remote-restore-btn', function () {
+        var $btn  = $(this);
+        var label = $btn.data('label');
+        var name  = $btn.data('name') || 'this backup';
+        ssNotify.confirm({
+            tone: 'danger',
+            title: 'Restore from ' + label + '?',
+            message: 'SitesSaver will download "' + name + '" and overwrite your current site with it. This cannot be undone.',
+            confirmText: 'Yes, restore',
+            cancelText: 'Cancel',
+            onConfirm: function () {
+                ssModal.open({
+                    title:      'Restoring from ' + label,
+                    subtitle:   'Downloading the backup and restoring your site. Please wait.',
+                    caution:    'Keep this tab open until the restore finishes. If it does close, the restore carries on on the server.',
+                    cancelable: false
+                });
+                runRestore({ remote: $btn.data('dest'), remote_file_id: $btn.data('id'), remote_label: label }, $('.sitessaver-wrap'));
+            }
+        });
+    });
+
+    $(document).on('click', '.sitessaver-remote-delete-btn', function () {
+        var $btn  = $(this);
+        var dest  = $btn.data('dest');
+        var label = $btn.data('label');
+        ssNotify.confirm({
+            tone: 'danger',
+            title: 'Delete from ' + label + '?',
+            message: 'This backup will be permanently removed from your ' + label + '. This cannot be undone.',
+            confirmText: 'Delete backup',
+            cancelText: 'Keep it',
+            onConfirm: function () {
+                ajax('sitessaver_remote_delete', { dest: dest, file_id: $btn.data('id') }, function () {
+                    ssNotify.success('Backup deleted from ' + label + '.');
+                    $('.sitessaver-remote-refresh[data-dest="' + dest + '"]').trigger('click');
+                }, function (err) {
+                    ssNotify.error(err.message || SS.strings.error);
+                });
+            }
+        });
+    });
+
     // ---------- ACTIVE-EXPORT DETECTION (opt-in resume, never auto-run) ----------
 
     function runExportLoop($form, uid, steps, startStep, gdriveJob) {
@@ -2266,8 +2451,8 @@
             var step = steps[currentStep];
             ssModal.setActiveStep(currentStep);
 
-            if (step.poll === 'gdrive') {
-                ssModal.disableCancel('Uploading to Drive…');
+            if (step.poll) {
+                ssModal.disableCancel(uploadingNote(step.poll));
                 ssModal.setProgress(step.from || 0, step.label);
                 gdrivePoll = pollGdriveInto(ssModal, gdriveJob, step, gdrivePoll);
             } else {
@@ -2303,7 +2488,13 @@
     // on the server (worker chain, WP-Cron watchdog, server cron), so the
     // tab is a window onto it, not the engine.
     function backgroundNote(destination) {
-        var drive = destination === 'gdrive' || destination === 'both';
+        var drive  = destination === 'gdrive' || destination === 'both';
+        var remote = !drive && destination && destination !== 'local';
+        if (remote) {
+            return SS.adminEmail
+                ? 'You can close this page. The backup keeps running on your server, uploads to your cloud storage and we email ' + SS.adminEmail + ' when it is done.'
+                : 'You can close this page. The backup keeps running on your server and uploads to your cloud storage.';
+        }
         if (!SS.adminEmail) {
             return drive
                 ? 'You can close this page. The backup keeps running on your server and uploads to Google Drive.'

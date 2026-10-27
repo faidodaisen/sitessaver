@@ -575,8 +575,19 @@ final class Schedule {
         // Drive upload happens inside the export's last step, in slices that
         // resume from the confirmed byte offset — not afterwards in one long
         // request that a 30-second host limit would cut off.
-        $to_drive = !empty($settings['storage_gdrive']) && GDrive::is_connected();
-        $dest     = $to_drive ? (empty($settings['storage_local']) ? 'gdrive' : 'both') : 'local';
+        $remotes = [];
+        if (!empty($settings['storage_gdrive']) && GDrive::is_connected()) {
+            $remotes[] = 'gdrive';
+        }
+        foreach ((array) ($settings['storage_remotes'] ?? []) as $rid) {
+            $d = Destinations::get((string) $rid);
+            if ($d !== null && $d->id() !== 'gdrive' && $d->is_connected()) {
+                $remotes[] = $d->id();
+            }
+        }
+        // Same strings as 1.5.x for Drive alone: 'gdrive' / 'gdrive+local'
+        // (== 'both') / 'local'.
+        $dest = Destinations::build($remotes, !empty($settings['storage_local']));
 
         $result = Export::run_bounded([
             'schedule'           => ['frequency' => $frequency],
@@ -631,7 +642,19 @@ final class Schedule {
         $result['message'] = (string) ($result['message'] ?? __('Backup completed.', 'sitessaver'));
         $file_uploaded = false;
 
-        // 2. Handle Google Drive Storage.
+        // 2. Handle remote storage. With addon remotes the local copy may
+        // only go once EVERY remote has the backup.
+        $remotes_all_ok = null;
+        if (!empty($result['remotes']) && is_array($result['remotes'])) {
+            $remotes_all_ok = true;
+            foreach ($result['remotes'] as $r) {
+                $remotes_all_ok = $remotes_all_ok && !empty($r['success']);
+                if (empty($r['success']) && ($r['id'] ?? '') !== 'gdrive') {
+                    $result['message'] .= ' (' . ($r['label'] ?? '') . ' Upload Failed: ' . ($r['message'] ?? '') . ')';
+                }
+            }
+        }
+
         if (isset($result['gdrive']) && is_array($result['gdrive'])) {
             // Uploaded by the export itself (1.5.1+).
             $file_uploaded             = !empty($result['gdrive']['success']);
@@ -651,6 +674,10 @@ final class Schedule {
                 $result['gdrive_error']    = $up_res['message'];
                 $result['message'] .= ' (GDrive Upload Failed: ' . $up_res['message'] . ')';
             }
+        }
+
+        if ($remotes_all_ok !== null) {
+            $file_uploaded = $remotes_all_ok;
         }
 
         // 3. Handle Local Storage.
@@ -869,6 +896,31 @@ final class Schedule {
                         ),
                     ];
                 }
+            }
+
+            foreach ((array) ($result['remotes'] ?? []) as $r) {
+                if (($r['id'] ?? '') === 'gdrive' || !is_array($r)) {
+                    continue;
+                }
+                $label     = (string) ($r['label'] ?? '');
+                $storage[] = !empty($r['success'])
+                    ? [
+                        'state'  => 'ok',
+                        'label'  => $label,
+                        /* translators: %s: provider name */
+                        'detail' => sprintf(__('Uploaded to the SitesSaver folder in your %s.', 'sitessaver'), $label),
+                        'url'    => (string) ($r['folder_url'] ?? ''),
+                    ]
+                    : [
+                        'state'  => 'warn',
+                        /* translators: %s: provider name */
+                        'label'  => sprintf(__('%s — upload failed', 'sitessaver'), $label),
+                        'detail' => sprintf(
+                            /* translators: %s: error message from the provider */
+                            __('%s The archive is still on the server. Retry the upload from the Backups page.', 'sitessaver'),
+                            (string) (($r['message'] ?? '') ?: __('Unknown error.', 'sitessaver'))
+                        ),
+                    ];
             }
 
             $retention = (int) ($settings['retention'] ?? 0);

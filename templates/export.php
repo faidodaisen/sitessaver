@@ -63,6 +63,27 @@
                                         <?php esc_html_e('Local + Google Drive', 'sitessaver'); ?>
                                     </span>
                                 </label>
+                                <?php foreach (\SitesSaver\Destinations::extra() as $ss_dest) :
+                                    $ss_on = $ss_dest->is_connected();
+                                    if (!$ss_on) { continue; } ?>
+                                <label class="ss-destination-option">
+                                    <input type="radio" name="export_destination" value="<?php echo esc_attr($ss_dest->id()); ?>" />
+                                    <span class="ss-destination-label">
+                                        <i class="<?php echo esc_attr($ss_dest->icon()); ?>"></i>
+                                        <?php echo esc_html($ss_dest->label()); ?>
+                                    </span>
+                                </label>
+                                <label class="ss-destination-option">
+                                    <input type="radio" name="export_destination" value="<?php echo esc_attr($ss_dest->id() . '+local'); ?>" />
+                                    <span class="ss-destination-label">
+                                        <i class="ri-layout-grid-line"></i>
+                                        <?php
+                                        /* translators: %s: provider name */
+                                        echo esc_html(sprintf(__('Local + %s', 'sitessaver'), $ss_dest->label()));
+                                        ?>
+                                    </span>
+                                </label>
+                                <?php endforeach; ?>
                             </div>
                             <?php if ( ! $gdrive_connected ) : ?>
                             <p class="description" style="margin-top:8px;">

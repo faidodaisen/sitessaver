@@ -264,6 +264,15 @@ $field_labels = [
                                         <span class="description" style="color: var(--ss-danger); font-size: 11px;">(<?php esc_html_e('Connect in Settings first', 'sitessaver'); ?>)</span>
                                     <?php endif; ?>
                                 </label>
+                                <?php foreach (\SitesSaver\Destinations::extra() as $ss_dest) : $ss_on = $ss_dest->is_connected(); ?>
+                                <label>
+                                    <input type="checkbox" name="storage_remotes[]" value="<?php echo esc_attr($ss_dest->id()); ?>" <?php checked(in_array($ss_dest->id(), (array) ($schedule['storage_remotes'] ?? []), true)); ?> <?php disabled(!$ss_on); ?> />
+                                    <?php echo esc_html($ss_dest->label()); ?>
+                                    <?php if (!$ss_on) : ?>
+                                        <span class="description" style="color: var(--ss-danger); font-size: 11px;">(<?php esc_html_e('Connect in Settings first', 'sitessaver'); ?>)</span>
+                                    <?php endif; ?>
+                                </label>
+                                <?php endforeach; ?>
                             </div>
                         </td>
                     </tr>

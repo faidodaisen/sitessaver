@@ -114,6 +114,11 @@ final class Errors {
                 'message' => __('Something went wrong while putting your site back, so it may be only partly restored.', 'sitessaver'),
                 'hint'    => __('Your backup file is still safe. Run the restore again. If it fails a second time, share the reference code below with whoever looks after your site.', 'sitessaver'),
             ],
+            'remote_download_failed' => [
+                'title'   => __('We couldn’t download the backup from cloud storage', 'sitessaver'),
+                'message' => __('The file didn’t come through from your cloud storage.', 'sitessaver') . ' ' . $nothing_changed,
+                'hint'    => __('Check that the storage account is still connected in Settings, then try again.', 'sitessaver'),
+            ],
             'gdrive_download_failed' => [
                 'title'   => __('We couldn’t download the backup from Google Drive', 'sitessaver'),
                 'message' => __('The file didn’t come through from Google Drive.', 'sitessaver') . ' ' . $nothing_changed,

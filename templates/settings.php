@@ -6,6 +6,13 @@ if (isset($_GET['sitessaver_gdrive_token']) && sitessaver_current_user_can()) {
     $result    = \SitesSaver\GDrive::handle_callback();
     $auth_msg  = $result['message'] ?? '';
 }
+// Same for addon destinations (OneDrive, ...): each names its own query arg.
+foreach (\SitesSaver\Destinations::extra() as $ss_dest) {
+    if (isset($_GET[$ss_dest->callback_param()]) && sitessaver_current_user_can()) {
+        $result   = $ss_dest->handle_callback();
+        $auth_msg = $result['message'] ?? '';
+    }
+}
 
 $settings = get_option('sitessaver_settings', []);
 $token    = get_option('sitessaver_gdrive_token', []);
@@ -86,6 +93,60 @@ $update_error     = \SitesSaver\Updater::last_error();
             <?php endif; ?>
         </div>
     </div>
+
+    <?php foreach (\SitesSaver\Destinations::extra() as $ss_dest) : $ss_on = $ss_dest->is_connected(); ?>
+    <div class="ss-section" id="ss-dest-<?php echo esc_attr($ss_dest->id()); ?>">
+        <div class="ss-section-header">
+            <h2 class="ss-section-title">
+                <i class="<?php echo esc_attr($ss_dest->icon()); ?>"></i>
+                <?php
+                /* translators: %s: provider name */
+                echo esc_html(sprintf(__('%s Integration', 'sitessaver'), $ss_dest->label()));
+                ?>
+            </h2>
+            <?php if ($ss_on) : ?>
+                <span class="badge badge-blue"><?php esc_html_e('Connected', 'sitessaver'); ?></span>
+            <?php endif; ?>
+        </div>
+        <div class="ss-section-content">
+            <?php if (!$ss_on) : ?>
+                <div style="text-align: center; padding: 40px 0; color: var(--ss-text-light);">
+                    <i class="<?php echo esc_attr($ss_dest->icon()); ?>" style="font-size: 48px; color: var(--ss-border); display: block; margin-bottom: 20px;"></i>
+                    <p style="margin-bottom: 24px; font-size: 16px; color: var(--ss-text-muted);"><?php echo esc_html($ss_dest->description()); ?></p>
+                    <a href="<?php echo esc_url($ss_dest->auth_url()); ?>" class="btn btn-success" style="padding: 12px 24px;">
+                        <i class="<?php echo esc_attr($ss_dest->icon()); ?>"></i>
+                        <?php
+                        /* translators: %s: provider name */
+                        echo esc_html(sprintf(__('Connect %s', 'sitessaver'), $ss_dest->label()));
+                        ?>
+                    </a>
+                </div>
+            <?php else : ?>
+                <div style="background: rgba(15, 157, 88, 0.05); border: 1px solid rgba(15, 157, 88, 0.2); padding: 24px; border-radius: var(--ss-radius-card); text-align: center;">
+                    <i class="ri-checkbox-circle-fill" style="font-size: 32px; color: #0F9D58; display: block; margin-bottom: 12px;"></i>
+                    <h3 style="margin: 0 0 8px 0; color: var(--ss-text-main);">
+                        <?php
+                        /* translators: %s: provider name */
+                        echo esc_html(sprintf(__('%s Connected Successfully', 'sitessaver'), $ss_dest->label()));
+                        ?>
+                    </h3>
+                    <p style="margin: 0; color: var(--ss-text-muted);">
+                        <a href="<?php echo esc_url($ss_dest->folder_url()); ?>" target="_blank" rel="noopener"><?php esc_html_e('Open the backup folder', 'sitessaver'); ?></a>
+                    </p>
+                </div>
+                <div style="margin-top: 32px; display: flex; justify-content: center; padding-top: 24px; border-top: 1px solid var(--ss-border-light);">
+                    <button type="button" class="btn btn-outline sitessaver-remote-disconnect" data-dest="<?php echo esc_attr($ss_dest->id()); ?>" data-label="<?php echo esc_attr($ss_dest->label()); ?>" style="color: var(--ss-danger); border-color: var(--ss-danger);">
+                        <i class="ri-logout-circle-line"></i>
+                        <?php
+                        /* translators: %s: provider name */
+                        echo esc_html(sprintf(__('Disconnect %s Account', 'sitessaver'), $ss_dest->label()));
+                        ?>
+                    </button>
+                </div>
+            <?php endif; ?>
+        </div>
+    </div>
+    <?php endforeach; ?>
 
     <?php
     $sitessaver_en = get_option('sitessaver_export_notify', []);

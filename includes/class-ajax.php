@@ -48,6 +48,12 @@ final class Ajax {
             'sitessaver_gdrive_download'=> 'handle_gdrive_download',
             'sitessaver_gdrive_restore' => 'handle_gdrive_restore',
             'sitessaver_gdrive_delete'  => 'handle_gdrive_delete',
+            'sitessaver_remote_disconnect'    => 'handle_remote_disconnect',
+            'sitessaver_remote_upload'        => 'handle_remote_upload',
+            'sitessaver_remote_upload_status' => 'handle_remote_upload_status',
+            'sitessaver_remote_list'          => 'handle_remote_list',
+            'sitessaver_remote_download'      => 'handle_remote_download',
+            'sitessaver_remote_delete'        => 'handle_remote_delete',
             'sitessaver_upload_chunk'   => 'handle_upload_chunk',
             'sitessaver_upload_status'  => 'handle_upload_status',
             'sitessaver_cleanup_chunks' => 'handle_cleanup_chunks',
@@ -98,9 +104,9 @@ final class Ajax {
         @set_time_limit(0);
         wp_raise_memory_limit('admin');
 
-        $allowed_destinations = ['local', 'gdrive', 'both'];
+        // 'local', 'gdrive', 'both' (1.5.x) or '<remote>[+local]' from an addon.
         $destination = sanitize_text_field(wp_unslash($_POST['export_destination'] ?? 'local'));
-        if (!in_array($destination, $allowed_destinations, true)) {
+        if (!Destinations::is_valid($destination)) {
             $destination = 'local';
         }
 
@@ -129,7 +135,9 @@ final class Ajax {
         wp_send_json_success([
             'status'        => $status,
             'steps'         => $steps,
-            'gdrive_job_id' => Export::gdrive_job_id($status['uid']),
+            // Progress-job id of the remote upload (name kept from 1.5.x;
+            // for Google Drive it is the same id as before).
+            'gdrive_job_id' => Export::remote_job_id($status['uid'], Destinations::parse($destination)['remote']),
             // False means the loopback request could not be made (some hosts
             // block self-requests); the client then drives the steps itself.
             'background'    => $spawned,
@@ -373,7 +381,7 @@ final class Ajax {
         wp_send_json_success([
             'status'        => $status,
             'steps'         => $steps,
-            'gdrive_job_id' => Export::gdrive_job_id($uid),
+            'gdrive_job_id' => Export::remote_job_id($uid, Destinations::parse($destination)['remote']),
             'step_index'    => $index,
             'step_id'       => $current['id'] ?? '',
             'step_label'    => $current['label'] ?? '',
@@ -804,6 +812,11 @@ final class Ajax {
             'include_themes'  => (bool) ($_POST['include_themes'] ?? true),
             'storage_local'   => (bool) ($_POST['storage_local'] ?? true),
             'storage_gdrive'  => (bool) ($_POST['storage_gdrive'] ?? false),
+            // Addon destinations ticked on the Schedule page (ids).
+            'storage_remotes' => array_values(array_filter(
+                array_map('sanitize_key', (array) wp_unslash($_POST['storage_remotes'] ?? [])),
+                static fn (string $id): bool => $id !== 'gdrive' && Destinations::get($id) !== null
+            )),
             'notify_email'    => sanitize_email(wp_unslash($_POST['notify_email'] ?? '')),
         ];
 
@@ -1004,7 +1017,7 @@ final class Ajax {
                 [__('Includes', 'sitessaver'), __('database, media, plugins, themes', 'sitessaver')],
                 $next > 0 ? [__('Next backup', 'sitessaver'), wp_date('j M Y, g:i a', $next)] : null,
             ])),
-            'storage' => [
+            'storage' => array_merge([
                 [
                     'state'  => 'ok',
                     'label'  => __('This server', 'sitessaver'),
@@ -1022,7 +1035,16 @@ final class Ajax {
                         : __('Not connected. Connect Google Drive to keep a copy off this server.', 'sitessaver'),
                     'url' => GDrive::is_connected() ? GDrive::get_folder_url() : '',
                 ],
-            ],
+            ], array_values(array_map(static fn (Destination $d): array => [
+                'state'  => $d->is_connected() ? 'ok' : 'muted',
+                'label'  => $d->label(),
+                'detail' => $d->is_connected()
+                    /* translators: %s: provider name */
+                    ? sprintf(__('Uploaded to the SitesSaver folder in your %s.', 'sitessaver'), $d->label())
+                    /* translators: %s: provider name */
+                    : sprintf(__('Not connected. Connect %s to keep a copy off this server.', 'sitessaver'), $d->label()),
+                'url'    => $d->is_connected() ? $d->folder_url() : '',
+            ], array_filter(Destinations::extra(), static fn (Destination $d): bool => $d->is_connected())))),
             'notes' => [
                 __('This is a test message sent from the SitesSaver settings page.', 'sitessaver'),
                 __('Keep at least one copy away from this server. A backup that only lives on the same host is lost with the host.', 'sitessaver'),
@@ -1146,6 +1168,84 @@ final class Ajax {
         update_user_meta(get_current_user_id(), 'sitessaver_dismissed_update', $version);
 
         wp_send_json_success();
+    }
+
+    // ---------------------------------------------------------------
+    // Generic remote destinations (addon providers). Google Drive keeps
+    // its own sitessaver_gdrive_* endpoints from 1.5.x; these take a
+    // `dest` id and work for every registered Destination.
+    // ---------------------------------------------------------------
+
+    private function remote_from_request(): Destination {
+        $dest = Destinations::get(sanitize_key(wp_unslash($_POST['dest'] ?? '')));
+        if ($dest === null) {
+            wp_send_json_error(['message' => __('Unknown storage destination.', 'sitessaver')], 400);
+        }
+        return $dest;
+    }
+
+    public function handle_remote_disconnect(): void {
+        sitessaver_verify_ajax();
+        $dest = $this->remote_from_request();
+        $dest->disconnect();
+        /* translators: %s: provider name */
+        wp_send_json_success(['message' => sprintf(__('%s disconnected.', 'sitessaver'), $dest->label())]);
+    }
+
+    public function handle_remote_upload(): void {
+        sitessaver_verify_ajax();
+        @set_time_limit(0);
+
+        $dest   = $this->remote_from_request();
+        $job_id = sanitize_text_field(wp_unslash($_POST['job_id'] ?? ''));
+        $file   = sanitize_file_name(wp_unslash($_POST['file'] ?? ''));
+        $path   = sitessaver_resolve_backup_path($file);
+        if ($path === null) {
+            wp_send_json_error(['message' => __('Backup not found.', 'sitessaver')]);
+        }
+
+        $result = $dest->upload($path, $file, $job_id);
+        $result['success'] ? wp_send_json_success($result) : wp_send_json_error($result);
+    }
+
+    public function handle_remote_upload_status(): void {
+        sitessaver_verify_ajax();
+        $dest   = $this->remote_from_request();
+        $job_id = sanitize_text_field(wp_unslash($_POST['job_id'] ?? ''));
+        if ($job_id === '') {
+            wp_send_json_error(['message' => __('Missing Job ID.', 'sitessaver')]);
+        }
+        wp_send_json_success($dest->upload_progress($job_id));
+    }
+
+    public function handle_remote_list(): void {
+        sitessaver_verify_ajax();
+        wp_send_json_success($this->remote_from_request()->list_files());
+    }
+
+    public function handle_remote_download(): void {
+        sitessaver_verify_ajax();
+        @set_time_limit(0);
+
+        $dest    = $this->remote_from_request();
+        $file_id = sanitize_text_field(wp_unslash($_POST['file_id'] ?? ''));
+        if ($file_id === '') {
+            wp_send_json_error(['message' => __('No file specified.', 'sitessaver')]);
+        }
+        $result = $dest->download($file_id);
+        $result['success'] ? wp_send_json_success($result) : wp_send_json_error($result);
+    }
+
+    public function handle_remote_delete(): void {
+        sitessaver_verify_ajax();
+
+        $dest    = $this->remote_from_request();
+        $file_id = sanitize_text_field(wp_unslash($_POST['file_id'] ?? ''));
+        if ($file_id === '') {
+            wp_send_json_error(['message' => __('No file specified.', 'sitessaver')]);
+        }
+        $result = $dest->delete($file_id);
+        $result['success'] ? wp_send_json_success($result) : wp_send_json_error($result);
     }
 
     /**
@@ -1599,8 +1699,24 @@ final class Ajax {
 
         $file     = sanitize_file_name(wp_unslash($_POST['file'] ?? ''));
         $drive_id = sanitize_text_field(wp_unslash($_POST['gdrive_file_id'] ?? ''));
+        $remote   = sanitize_key(wp_unslash($_POST['remote'] ?? ''));
+        $rfile_id = sanitize_text_field(wp_unslash($_POST['remote_file_id'] ?? ''));
 
-        if ($file === '' && $drive_id === '') {
+        // Generic remote restore: {remote, remote_file_id}. Google Drive may
+        // come either way.
+        if ($drive_id === '' && $remote !== '' && $rfile_id !== '') {
+            if (Destinations::get($remote) === null) {
+                wp_send_json_error(Errors::payload('remote_download_failed', 'Unknown restore source: ' . $remote), 400);
+            }
+            if ($remote === 'gdrive') {
+                $drive_id = $rfile_id;
+                $remote   = '';
+            }
+        } else {
+            $remote = '';
+        }
+
+        if ($file === '' && $drive_id === '' && $remote === '') {
             wp_send_json_error(Errors::payload('restore_file_missing', 'No file specified.'), 400);
         }
 
@@ -1608,9 +1724,13 @@ final class Ajax {
             wp_send_json_error(Errors::report('restore_file_missing', 'Backup file not found: ' . $file));
         }
 
-        $job = $file !== ''
-            ? Restore_Job::create('file', $file)
-            : Restore_Job::create('gdrive', $drive_id);
+        if ($file !== '') {
+            $job = Restore_Job::create('file', $file);
+        } elseif ($drive_id !== '') {
+            $job = Restore_Job::create('gdrive', $drive_id);
+        } else {
+            $job = Restore_Job::create($remote, $rfile_id);
+        }
 
         $spawned = Restore_Job::spawn($job['id'], $job['worker_key']);
 

@@ -161,13 +161,25 @@ final class Restore_Job {
     /**
      * Create a queued job.
      *
-     * @param string $source_type 'file' (backup already in storage) or 'gdrive'.
-     * @param string $source      Backup filename or Drive file id.
+     * @param string $source_type 'file' (backup already in storage) or a
+     *                            remote destination id ('gdrive', 'onedrive', ...).
+     * @param string $source      Backup filename or the remote file id.
      * @return array{id: string, token: string, worker_key: string}
      */
+    private static function download_label(Destination $remote): string {
+        return $remote->id() === 'gdrive'
+            ? __('Downloading from Google Drive...', 'sitessaver')
+            : sprintf(
+                /* translators: %s: provider name */
+                __('Downloading from %s...', 'sitessaver'),
+                $remote->label()
+            );
+    }
+
     public static function create(string $source_type, string $source): array {
         self::sweep();
 
+        $remote     = $source_type !== 'file' ? Destinations::get($source_type) : null;
         $id         = strtolower(wp_generate_password(16, false, false));
         $token      = wp_generate_password(40, false, false);
         $worker_key = wp_generate_password(40, false, false);
@@ -177,9 +189,9 @@ final class Restore_Job {
             'token_hash'  => hash('sha256', $token),
             'worker_hash' => hash('sha256', $worker_key),
             'status'      => 'queued',
-            'phase'       => $source_type === 'gdrive' ? 'download' : 'queued',
-            'label'       => $source_type === 'gdrive'
-                ? __('Downloading from Google Drive...', 'sitessaver')
+            'phase'       => $remote !== null ? 'download' : 'queued',
+            'label'       => $remote !== null
+                ? self::download_label($remote)
                 : __('Preparing restore...', 'sitessaver'),
             'mode'        => null,
             'source_type' => $source_type,
@@ -425,13 +437,20 @@ final class Restore_Job {
             $cursor = is_array($job['cursor'] ?? null) ? $job['cursor'] : [];
             $file   = (string) ($cursor['file'] ?? $job['source'] ?? '');
 
-            if (($job['source_type'] ?? '') === 'gdrive' && empty($cursor['file'])) {
-                self::phase('download', __('Downloading from Google Drive...', 'sitessaver'));
-                $dl = GDrive::download((string) ($job['source'] ?? ''));
-                if (empty($dl['success']) || empty($dl['file'])) {
-                    $tech = (string) ($dl['message'] ?? 'Google Drive download failed.');
+            $source_type = (string) ($job['source_type'] ?? 'file');
+            if ($source_type !== 'file' && empty($cursor['file'])) {
+                $remote = Destinations::get($source_type);
+                if ($remote === null) {
                     self::$slice_clean = true;
-                    self::fail($id, $tech, 'download', 'gdrive_download_failed');
+                    self::fail($id, 'Restore source "' . $source_type . '" is not available (addon deactivated?).', 'download', 'remote_download_failed');
+                    return;
+                }
+                self::phase('download', self::download_label($remote));
+                $dl = $remote->download((string) ($job['source'] ?? ''));
+                if (empty($dl['success']) || empty($dl['file'])) {
+                    $tech = (string) ($dl['message'] ?? $remote->label() . ' download failed.');
+                    self::$slice_clean = true;
+                    self::fail($id, $tech, 'download', $source_type === 'gdrive' ? 'gdrive_download_failed' : 'remote_download_failed');
                     return;
                 }
                 $file = (string) $dl['file'];

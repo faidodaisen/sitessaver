@@ -23,13 +23,14 @@ final class Export {
      * step of its own, which the client fills from real byte progress
      * reported by GDrive::upload().
      *
-     * @param string $destination local|gdrive|both
+     * @param string $destination local|gdrive|both|<remote>|<remote>+local
      * @return list<array{id: string, label: string, pct: int, poll?: string}>
      */
     public static function get_steps(string $destination = 'local'): array {
-        $uploads_to_drive = in_array($destination, ['gdrive', 'both'], true);
+        $remote = Destinations::parse($destination)['remote'];
+        $dest   = $remote !== '' ? Destinations::get($remote) : null;
 
-        if (!$uploads_to_drive) {
+        if ($dest === null) {
             return [
                 ['id' => 'init',      'label' => __('Initializing...', 'sitessaver'), 'pct' => 5],
                 ['id' => 'manifest',  'label' => __('Creating manifest...', 'sitessaver'), 'pct' => 10],
@@ -54,11 +55,18 @@ final class Export {
             ['id' => 'zip',       'label' => __('Creating ZIP archive...', 'sitessaver'), 'pct' => 60],
             [
                 'id'    => 'finalize',
-                'label' => __('Uploading to Google Drive...', 'sitessaver'),
+                'label' => $remote === 'gdrive'
+                    ? __('Uploading to Google Drive...', 'sitessaver')
+                    : sprintf(
+                        /* translators: %s: provider name, e.g. OneDrive */
+                        __('Uploading to %s...', 'sitessaver'),
+                        $dest->label()
+                    ),
                 'pct'   => 100,
                 // Tells the client to poll this job for real upload progress
                 // and to animate the bar from 'from' to 'pct' as bytes land.
-                'poll'  => 'gdrive',
+                // 'poll' is the destination id; Google Drive keeps 'gdrive'.
+                'poll'  => $remote,
                 'from'  => 60,
             ],
         ];
@@ -72,6 +80,19 @@ final class Export {
      */
     public static function gdrive_job_id(string $uid): string {
         return 'exp_gdrive_' . $uid;
+    }
+
+    /**
+     * Progress-job id for the remote upload of an export. Google Drive keeps
+     * its 1.5.x id so a tab opened before an update still polls the right key.
+     */
+    public static function remote_job_id(string $uid, string $remote): string {
+        return $remote === 'gdrive' || $remote === '' ? self::gdrive_job_id($uid) : 'exp_' . $remote . '_' . $uid;
+    }
+
+    /** Remote destination id of an export ('' = local only). */
+    public static function remote_of(array $status): string {
+        return Destinations::parse((string) ($status['options']['export_destination'] ?? 'local'))['remote'];
     }
 
     // ---------------------------------------------------------------
@@ -700,30 +721,34 @@ final class Export {
     }
 
     /**
-     * Upload the finished archive to Drive, resuming across requests.
+     * Upload the finished archive to a remote, resuming across requests.
      *
-     * The Drive transfer state (resumable session URL + confirmed byte offset)
+     * The transfer state (resumable session URL + confirmed byte offset)
      * lives in the export status, so it survives the request that started it.
      * When a deadline is in force and the slice expires, this returns
      * `pending` and the caller re-enters finalize later; with no deadline (the
      * background worker) it runs the upload to completion in one go.
      *
+     * Google Drive keeps its 1.5.x status key (`gdrive_state`) so an upload
+     * in flight across a plugin update resumes instead of restarting.
+     *
      * @param array<string, mixed> $status
      * @return array{success?: bool, message?: string, pending?: bool, progress?: int}
      */
-    private static function upload_to_drive(string $uid, array $status, string $zip_path, string $job_id): array {
-        $state    = is_array($status['gdrive_state'] ?? null) ? $status['gdrive_state'] : [];
+    private static function upload_to_remote(Destination $dest, string $uid, array $status, string $zip_path, string $job_id): array {
+        $key      = $dest->id() === 'gdrive' ? 'gdrive_state' : 'remote_state_' . $dest->id();
+        $state    = is_array($status[$key] ?? null) ? $status[$key] : [];
         $deadline = self::request_deadline();
 
-        $res = GDrive::upload_step($zip_path, (string) $status['backup_name'], $job_id, $state, $deadline);
+        $res = $dest->upload_step($zip_path, (string) $status['backup_name'], $job_id, $state, $deadline);
 
         if ($res['status'] === 'incomplete') {
             // Persist the offset so the next request continues instead of
             // restarting a multi-gigabyte upload from byte zero.
             $fresh = self::get_status($uid);
             if (!empty($fresh)) {
-                $fresh['gdrive_state'] = $res['state'];
-                $fresh['last_update']  = time();
+                $fresh[$key]          = $res['state'];
+                $fresh['last_update'] = time();
                 self::save_status($uid, $fresh);
             }
 
@@ -732,8 +757,8 @@ final class Export {
 
         // Terminal outcome — drop the carried state.
         $fresh = self::get_status($uid);
-        if (!empty($fresh) && !empty($fresh['gdrive_state'])) {
-            unset($fresh['gdrive_state']);
+        if (!empty($fresh) && !empty($fresh[$key])) {
+            unset($fresh[$key]);
             self::save_status($uid, $fresh);
         }
 
@@ -1060,37 +1085,76 @@ final class Export {
                         'chain_seq'   => (int) ($plan['seq'] ?? 0),
                     ];
 
-                    // Upload to Google Drive if requested.
-                    if (in_array($destination, ['gdrive', 'both'], true)) {
-                        $job_id        = self::gdrive_job_id($uid);
-                        $gdrive_result = self::upload_to_drive($uid, $status, $zip_path, $job_id);
+                    // Upload to each remote destination, one after another.
+                    // A finished remote is recorded in `remote_done`, so a
+                    // later slice skips it and continues with the next one.
+                    $route = Destinations::parse((string) $destination);
+                    $done  = is_array($status['remote_done'] ?? null) ? $status['remote_done'] : [];
+                    foreach ($route['remotes'] as $rid) {
+                        if (isset($done[$rid])) {
+                            continue;
+                        }
+                        $remote        = Destinations::get($rid);
+                        $remote_result = self::upload_to_remote($remote, $uid, $status, $zip_path, self::remote_job_id($uid, $rid));
 
                         // The slice ran out of time: the export is NOT finished
                         // and MUST NOT be marked completed. Report progress and
                         // leave step_index on finalize so the next request
                         // resumes this same upload from its byte offset.
-                        if (($gdrive_result['pending'] ?? false) === true) {
+                        if (($remote_result['pending'] ?? false) === true) {
                             return [
                                 'success'  => true,
                                 'step'     => 'finalize',
                                 'pending'  => true,
-                                'progress' => (int) ($gdrive_result['progress'] ?? 0),
+                                'progress' => (int) ($remote_result['progress'] ?? 0),
                             ];
                         }
 
-                        $result['gdrive'] = $gdrive_result;
+                        $ok         = !empty($remote_result['success']);
+                        $done[$rid] = [
+                            'id'         => $rid,
+                            'label'      => $remote->label(),
+                            'success'    => $ok,
+                            'message'    => (string) ($remote_result['message'] ?? ''),
+                            'folder_url' => $ok ? $remote->folder_url() : '',
+                        ];
+                        // upload_to_remote() saved fresh state; carry it on.
+                        $status                = self::get_status($uid) ?: $status;
+                        $status['remote_done'] = $done;
+                        self::save_status($uid, $status);
+                    }
 
-                        // If destination is gdrive-only and upload failed, surface the error.
-                        if ($destination === 'gdrive' && empty($gdrive_result['success'])) {
-                            throw new \RuntimeException($gdrive_result['message'] ?? __('Failed to upload to Google Drive.', 'sitessaver'));
+                    if ($route['remotes'] !== []) {
+                        $any_ok = false;
+                        $all_ok = true;
+                        $first  = '';
+                        foreach ($route['remotes'] as $rid) {
+                            $r = $done[$rid];
+                            $any_ok = $any_ok || $r['success'];
+                            $all_ok = $all_ok && $r['success'];
+                            if ($first === '' && !$r['success']) {
+                                $first = $r['message'];
+                            }
                         }
 
-                        if (!empty($gdrive_result['success'])) {
-                            $result['gdrive_folder_url'] = GDrive::get_folder_url();
+                        $result['remotes'] = array_values($done);
+                        $result['remote']  = $done[$route['remote']];
+                        // 1.5.x keys, still read by the Drive UI and the scheduler.
+                        if (isset($done['gdrive'])) {
+                            $result['gdrive'] = ['success' => $done['gdrive']['success'], 'message' => $done['gdrive']['message']];
+                            if ($done['gdrive']['success']) {
+                                $result['gdrive_folder_url'] = $done['gdrive']['folder_url'];
+                            }
                         }
 
-                        // gdrive-only: remove local copy after successful upload.
-                        if ($destination === 'gdrive' && !empty($gdrive_result['success'])) {
+                        // Remote-only and nothing got through: surface the error
+                        // (the local copy stays, nothing is deleted).
+                        if (!$route['keep_local'] && !$any_ok) {
+                            throw new \RuntimeException($first !== '' ? $first : __('Failed to upload the backup.', 'sitessaver'));
+                        }
+
+                        // Remote-only: remove the local copy once EVERY remote has it.
+                        if (!$route['keep_local'] && $all_ok) {
                             @unlink($zip_path);
                             $result['file'] = '';
                             $result['path'] = '';

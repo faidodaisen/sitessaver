@@ -203,6 +203,13 @@ $stats   = [
                                     <button class="btn-icon sitessaver-gdrive-upload-btn" data-file="<?php echo esc_attr($b['file']); ?>" title="<?php esc_attr_e('Upload to Drive', 'sitessaver'); ?>">
                                         <i class="ri-drive-fill"></i>
                                     </button>
+                                    <?php foreach (\SitesSaver\Destinations::extra() as $ss_dest) : if (!$ss_dest->is_connected()) { continue; } ?>
+                                    <button class="btn-icon sitessaver-remote-upload-btn" data-dest="<?php echo esc_attr($ss_dest->id()); ?>" data-label="<?php echo esc_attr($ss_dest->label()); ?>" data-file="<?php echo esc_attr($b['file']); ?>" title="<?php
+                                        /* translators: %s: provider name */
+                                        echo esc_attr(sprintf(__('Upload to %s', 'sitessaver'), $ss_dest->label())); ?>">
+                                        <i class="<?php echo esc_attr($ss_dest->icon()); ?>"></i>
+                                    </button>
+                                    <?php endforeach; ?>
 
                                     <button class="btn-icon danger sitessaver-delete-btn"
                                             data-file="<?php echo esc_attr($b['file']); ?>"
@@ -250,5 +257,32 @@ $stats   = [
             </div>
         </div>
     <?php endif; ?>
+
+    <?php foreach (\SitesSaver\Destinations::extra() as $ss_dest) : if (!$ss_dest->is_connected()) { continue; } ?>
+        <div class="ss-section">
+            <div class="ss-section-header">
+                <h2 class="ss-section-title">
+                    <i class="<?php echo esc_attr($ss_dest->icon()); ?>"></i>
+                    <?php
+                    /* translators: %s: provider name */
+                    echo esc_html(sprintf(__('%s Backups', 'sitessaver'), $ss_dest->label()));
+                    ?>
+                </h2>
+                <div class="ss-section-actions" style="display: flex; gap: 8px;">
+                    <a href="<?php echo esc_url($ss_dest->folder_url()); ?>" target="_blank" rel="noopener" class="btn btn-outline" style="padding: 4px 10px; font-size: 12px;">
+                        <i class="ri-external-link-line"></i> <?php esc_html_e('Open folder', 'sitessaver'); ?>
+                    </a>
+                    <button type="button" class="btn btn-outline sitessaver-remote-refresh" data-dest="<?php echo esc_attr($ss_dest->id()); ?>" style="padding: 4px 10px; font-size: 12px;">
+                        <i class="ri-refresh-line"></i> <?php esc_html_e('Refresh', 'sitessaver'); ?>
+                    </button>
+                </div>
+            </div>
+            <div class="sitessaver-remote-files" data-dest="<?php echo esc_attr($ss_dest->id()); ?>" data-label="<?php echo esc_attr($ss_dest->label()); ?>" data-autoload="1">
+                <p style="padding: 24px; text-align: center; color: var(--ss-text-muted);">
+                    <?php esc_html_e('Loading cloud backups…', 'sitessaver'); ?>
+                </p>
+            </div>
+        </div>
+    <?php endforeach; ?>
 
 </div>
