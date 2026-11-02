@@ -1,79 +1,49 @@
 # SitesSaver
 
-A free WordPress plugin for full-site backup and migration. No restrictions, no file size limits.
+Free WordPress plugin for full-site backup, restore and migration. No file size limit, and nothing is held back for a paid version.
 
-## What It Does
+Website and documentation: https://sitessaver.com
 
-- **One-Click Backup** — Creates a complete backup of your entire WordPress site (database + all files) as a single ZIP file
-- **Easy Restore** — Drag and drop a backup ZIP to restore your site, or pick from existing backups
-- **Scheduled Backups** — Set it and forget it — hourly through monthly automatic backups, several frequencies at once, with email notifications and a server-cron trigger for sites where WP-Cron is disabled
-- **Google Drive** — Automatically upload backups to your Google Drive for safe cloud storage
-- **Backup Manager** — Label, download, and manage all your backups from one dashboard
-- **Site Migration** — Move your WordPress site to a new domain — URLs are automatically updated everywhere, including in serialized data
+## Features
+
+- **Full backup.** The database and every file under your WordPress install go into one ZIP.
+- **Restore.** Drag a backup ZIP onto the Import screen, or restore one that is already on the server or in Google Drive. If a restore fails, the previous database and files are put back.
+- **Migration.** Restore onto a new domain and the URLs are rewritten everywhere, including inside serialized data. A different table prefix on the new site is handled too.
+- **Scheduled backups.** Hourly to monthly, with several frequencies running at once. Optional incremental mode, retention, and a private trigger URL for real server cron.
+- **Google Drive.** Send backups to your own Drive and restore straight from it. Add-on plugins can register more cloud storage through the `sitessaver_destinations` filter.
+- **Works on strict hosts.** Backups and restores run in short background slices, so a host that stops every request after 30 seconds cannot cut them short. You can close the page while a backup runs and get an email when it is done.
+- **Email reports.** A report after each scheduled run, with your own logo, colours and sender.
+- **Automatic updates** from GitHub releases, checked against the published SHA-256 checksum.
 
 ## Requirements
 
-- PHP 8.1+
-- WordPress 6.0+
-- ZipArchive PHP extension (enabled on most hosts)
+- PHP 8.1 or newer
+- WordPress 6.0 or newer
+- The ZipArchive PHP extension, needed to restore (enabled on most hosts)
 
 ## Installation
 
-**Option 1 — Download:**
-1. Download the [latest release](https://github.com/faidodaisen/sitessaver/releases)
-2. In WordPress admin, go to **Plugins > Add New > Upload Plugin**
-3. Upload the ZIP and activate
+1. Download the latest `SitesSaver-x.y.z.zip` from [Releases](https://github.com/faidodaisen/sitessaver/releases).
+2. In wp-admin, open **Plugins > Add New > Upload Plugin**, choose the ZIP and activate.
 
-**Option 2 — Manual:**
-1. Clone or copy this repo into `wp-content/plugins/sitessaver/`
-2. Activate via **Plugins > Installed Plugins**
+You can also copy this repository into `wp-content/plugins/sitessaver/`. There is no build step.
 
-No build step needed — just upload and activate.
+After activation, the **SitesSaver** menu has Backups, Export, Import, Schedule, Settings and Help. Updates then appear on the Plugins screen like any other plugin.
 
-## Usage
+## Good to know
 
-After activation, find **SitesSaver** in your WordPress admin sidebar:
+- Backups are stored in `wp-content/sitessaver-backups/`, outside the plugin folder, so updating or removing the plugin does not delete them. On Nginx, block web access to that folder in the server config. Help > Where are my backups stored? shows whether it is reachable and gives the exact rule.
+- WP-Cron only runs when someone visits the site. For dependable schedules, use the Server Cron panel on the Schedule page.
+- Retention only removes backups made by the schedule. Manual exports and uploaded ZIPs stay until you delete them.
+- On multisite, only a super admin can use the plugin. The `sitessaver_capability` filter changes this.
 
-- **Export** — Click to create a new backup
-- **Import** — Upload or select a backup to restore
-- **Backups** — View, label, download, or delete existing backups
-- **Schedule** — Configure automatic backups
-- **Settings** — Connect Google Drive and adjust preferences
+Full documentation: https://sitessaver.com/docs.html
 
-## Google Drive Integration
+Changes per version: [CHANGELOG.md](CHANGELOG.md)
 
-To enable automatic cloud backups:
+## Support
 
-1. Go to **SitesSaver > Settings**
-2. Click **Connect Google Drive**
-3. Authorize with your Google account
-4. SitesSaver will automatically create its own backup folder in your Drive.
-5. In **SitesSaver > Schedule**, you can choose to store backups locally, on Google Drive, or both.
-
-## FAQ
-
-**Where are backups stored?**
-In `wp-content/sitessaver-backups/` on your server. Google Drive is optional for cloud copies.
-
-**Will it slow down my site?**
-Backups run in the background. Scheduled backups use WP Cron so they don't affect page loads.
-
-**My scheduled backups run late, or not at all.**
-WP-Cron only fires when someone visits the site, and does nothing at all if `DISABLE_WP_CRON`
-is set in `wp-config.php`. Open **SitesSaver > Schedule** and use the *Server Cron* panel: it
-gives you a private trigger URL plus ready-made crontab, curl, and WP-CLI lines. If you have no
-shell access, point any uptime monitor at the URL instead. The URL is safe to call more often
-than your chosen frequency — SitesSaver replies "not due yet" until a backup is genuinely owed.
-
-**Can I run more than one frequency?**
-Yes. Frequency is a set of checkboxes, so Daily plus Monthly (recent restore points alongside a
-long-term archive) is a valid setup. Each frequency runs on its own independent timer.
-
-**Can I migrate to a new domain?**
-Yes. Export from the old site, import on the new one — all URLs (including serialized data) are updated automatically.
-
-**Is there a file size limit?**
-No. The plugin handles large sites with chunked processing.
+Open an issue on [GitHub](https://github.com/faidodaisen/sitessaver/issues) or email fidodesign.net@gmail.com. Include the reference code from the error message and the log from Help > Troubleshooting Log.
 
 ## License
 

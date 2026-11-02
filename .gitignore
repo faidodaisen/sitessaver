@@ -1,28 +1,22 @@
-
-# Dev files & local overrides
-# IDE / editor
-# Node
-# OS files
-*.swo
-*.swp
-*.zip
+# Editors and OS files
 .DS_Store
+Thumbs.db
+desktop.ini
 .idea/
 .idx/
 .vscode/
-Thumbs.db
-desktop.ini
-node_modules/
+*.swp
+*.swo
 
-# Local scratch and generated metadata.
+# Dependencies and build output
+node_modules/
+*.zip
+
+# Local scratch
 .[a-z]*-local/
 .local-metadata/
 .raw/
-/
 
-# Development-only, kept out of the public repo.
-# Present on the maintainer's machine, never shipped and never published.
+# Development only, not part of the plugin
 tests/
-release-notes-v1.1.*.md
-release-notes-v1.2.*.md
-release-notes-v1.3.0.md
+release-notes-*.md
