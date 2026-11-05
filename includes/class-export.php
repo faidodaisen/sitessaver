@@ -1204,15 +1204,17 @@ final class Export {
                 return ['success' => true, 'step' => $step['id'] ?? '', 'pending' => true];
             }
 
-            $ref = Log::error('export_failed', $e->getMessage(), [
+            $code = Errors::classify_export($e->getMessage());
+            $ref  = Log::error($code, $e->getMessage(), [
                 'step'   => $step['id'] ?? $index,
                 'at'     => basename($e->getFile()) . ':' . $e->getLine(),
                 'memory' => size_format(memory_get_peak_usage(true)),
-            ]);
+            ] + Environment::diagnostics());
 
-            $status['status']  = 'error';
-            $status['message'] = $e->getMessage();
-            $status['ref']     = $ref;
+            $status['status']     = 'error';
+            $status['message']    = $e->getMessage();
+            $status['ref']        = $ref;
+            $status['error_code'] = $code;
             self::save_status($uid, $status);
             delete_transient('sitessaver_active_export_id');
             self::discard_work($status);
@@ -1221,7 +1223,7 @@ final class Export {
                 do_action('sitessaver_scheduled_export_finished', $status, false);
             }
 
-            return ['success' => false, 'message' => $e->getMessage(), 'ref' => $ref, 'error' => Errors::payload('export_failed', $e->getMessage(), $ref)];
+            return ['success' => false, 'message' => $e->getMessage(), 'ref' => $ref, 'error' => Errors::payload($code, $e->getMessage(), $ref)];
         }
     }
 

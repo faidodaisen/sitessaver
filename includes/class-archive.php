@@ -213,14 +213,17 @@ final class Archive {
                 }
 
                 if ($size < self::EXTRACT_STREAM_MIN) {
-                    $dest_file = fopen($target, 'w');
+                    $dest_file = @fopen($target, 'w');
                     if ($dest_file === false) {
                         fclose($source);
-                        throw new \RuntimeException('Failed to extract backup archive: cannot write ' . $entry);
+                        throw new \RuntimeException(self::write_failure('cannot write', $entry));
                     }
-                    stream_copy_to_stream($source, $dest_file);
+                    $copied = stream_copy_to_stream($source, $dest_file);
                     fclose($source);
-                    fclose($dest_file);
+                    $closed = fclose($dest_file);
+                    if ($copied === false || ($size > 0 && $copied !== $size) || !$closed) {
+                        throw new \RuntimeException(self::write_failure('could not write', $entry, 'disk full or quota reached?'));
+                    }
                 } else {
                     $done = self::extract_large($source, $target, $entry, $size, $off, $should_stop);
                     if (!$done) {
@@ -266,7 +269,7 @@ final class Archive {
         $out = @fopen($target, 'c');
         if ($out === false) {
             fclose($source);
-            throw new \RuntimeException('Failed to extract backup archive: cannot write ' . $entry);
+            throw new \RuntimeException(self::write_failure('cannot write', $entry));
         }
         ftruncate($out, $off);
         fseek($out, $off);
@@ -286,7 +289,7 @@ final class Archive {
                     throw new \RuntimeException('Failed to extract backup archive: ' . $entry . ' ended early.');
                 }
                 if (fwrite($out, $chunk) !== strlen($chunk)) {
-                    throw new \RuntimeException('Failed to extract backup archive: could not write ' . $entry . ' (disk full?).');
+                    throw new \RuntimeException(self::write_failure('could not write', $entry, 'disk full or quota reached?'));
                 }
                 $off += strlen($chunk);
                 do_action('sitessaver_heartbeat');
@@ -300,6 +303,26 @@ final class Archive {
             fclose($source);
         }
         return true;
+    }
+
+    /**
+     * Technical message for a write the server refused.
+     *
+     * Not phrased as "failed to extract": the archive is fine, the server
+     * would not let us write. Carries the OS reason and any detected
+     * security layer so the log says why, not just what.
+     */
+    private static function write_failure(string $what, string $entry, string $fallback = 'no reason given'): string {
+        $reason = Environment::last_error();
+        $layers = Environment::security_layers();
+        return sprintf(
+            'Server refused the restore: %s %s (%s; %s)%s',
+            $what,
+            $entry,
+            $reason !== '' ? $reason : $fallback,
+            Environment::WRITE_BLOCKED,
+            $layers !== [] ? ' [security: ' . implode(', ', $layers) . ']' : ''
+        );
     }
 
     public static function extract(string $zip_path, string $dest_dir): bool {

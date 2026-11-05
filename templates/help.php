@@ -84,6 +84,20 @@
                         </details>
                     <?php endif; ?>
                 </div>
+
+                <h3 style="margin-top: 24px;" id="ss-blocked"><?php esc_html_e('10. "Your server blocked the restore" (Imunify360 and other security software)', 'sitessaver'); ?></h3>
+                <p><?php esc_html_e('Many cPanel hosts run security software, most often Imunify360, that watches what PHP writes. A restore writes a database file and thousands of site files in a few minutes, which can look suspicious to it, so it refuses the write or stops the request. SitesSaver checks this before it changes anything: if the server will not let it write, the restore stops with "Your server blocked the restore" and your site stays exactly as it was. Your backup file is fine, so downloading it again will not help.', 'sitessaver'); ?></p>
+                <p><?php esc_html_e('To get past it: in cPanel open Imunify360 → Proactive Defense and set the mode to "Log only", run the restore, then set it back. Alternatively, add wp-content/plugins/sitessaver/ to the Proactive Defense Ignore list. If your cPanel has no Imunify360 settings, send your host the reference code from the error and ask them to allow SitesSaver to write to wp-content while you restore.', 'sitessaver'); ?></p>
+                <?php $ss_layers = \SitesSaver\Environment::security_layers(); ?>
+                <div class="ss-storage-status">
+                    <?php if (in_array('imunify360', $ss_layers, true)) : ?>
+                        <p><i class="ri-information-line" aria-hidden="true"></i> <?php esc_html_e('This server: Imunify360 detected. If a restore or backup is blocked, follow the steps above.', 'sitessaver'); ?></p>
+                    <?php elseif ($ss_layers !== []) : ?>
+                        <p><i class="ri-information-line" aria-hidden="true"></i> <?php echo esc_html(sprintf(/* translators: %s: comma-separated list such as "cloudlinux, wordfence". */ __('This server: %s detected. These can slow or stop long backups and restores.', 'sitessaver'), implode(', ', $ss_layers))); ?></p>
+                    <?php else : ?>
+                        <p><i class="ri-shield-check-line" aria-hidden="true"></i> <?php esc_html_e('This server: no known security software detected from inside PHP. Some scanners cannot be seen from here, so the steps above still apply if a restore is blocked.', 'sitessaver'); ?></p>
+                    <?php endif; ?>
+                </div>
             </div>
         </div>
     </div>

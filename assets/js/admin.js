@@ -403,8 +403,17 @@
             if (text) detail += ' — ' + text.slice(0, 180);
         }
 
+        // WordPress answers a dead login/nonce with a bare "-1" or "0". A 403
+        // or 406 with a real page behind it is a firewall (ModSecurity,
+        // Imunify360, Cloudflare) refusing the request before WordPress ran.
+        var raw = (xhr && typeof xhr.responseText === 'string') ? xhr.responseText.trim() : '';
+        var looksFirewall = /mod_?security|imunify|not acceptable|request rejected|access denied|cloudflare|sucuri|wordfence|firewall/i.test(raw);
+        var wpRefusal = raw === '' || raw === '-1' || raw === '0';
+
         var code;
-        if (http === 403) code = 'session_expired';
+        if (http === 413) code = 'request_too_large';
+        else if (http === 406 || ((http === 403 || http === 429 || http === 501) && !wpRefusal && (looksFirewall || /<html/i.test(raw)))) code = 'request_blocked';
+        else if (http === 403) code = 'session_expired';
         else if (status === 'timeout' || http === 504 || http === 524 || http === 408) code = 'server_timeout';
         else if (http >= 500) code = 'server_error';
         else if (http === 0) code = 'connection_lost';

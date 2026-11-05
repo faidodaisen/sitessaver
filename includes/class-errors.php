@@ -89,6 +89,26 @@ final class Errors {
                 'message' => __('It was made on a different site in your network, so it can’t be restored here.', 'sitessaver') . ' ' . $nothing_changed,
                 'hint'    => __('Restore it from the site it was made on.', 'sitessaver'),
             ],
+            'restore_write_blocked' => [
+                'title'   => __('Your server blocked the restore', 'sitessaver'),
+                'message' => __('Your backup file is fine. The server would not let SitesSaver write the files it needs, so the restore stopped before changing anything.', 'sitessaver'),
+                'hint'    => __('This is almost always hosting security software. If your cPanel has Imunify360, open it → Proactive Defense and set the mode to “Log only” (or add wp-content/plugins/sitessaver/ to its Ignore list), run the restore, then switch it back. No such option? Send your host the reference code below and ask them to allow SitesSaver to write to wp-content for a few minutes.', 'sitessaver'),
+            ],
+            'export_write_blocked' => [
+                'title'   => __('Your server blocked the backup', 'sitessaver'),
+                'message' => __('The server would not let SitesSaver write the backup file. Your site itself is fine — nothing was changed.', 'sitessaver'),
+                'hint'    => __('This is usually hosting security software or folder permissions. If your cPanel has Imunify360, set Proactive Defense to “Log only” while the backup runs, or ask your host to allow writes to wp-content/sitessaver-backups/. The reference code below shows the exact reason.', 'sitessaver'),
+            ],
+            'restore_db_privileges' => [
+                'title'   => __('Your database user lacks a permission', 'sitessaver'),
+                'message' => __('The database account your site uses is not allowed to create, change, rename or remove tables, which a restore needs. The restore stopped before changing anything.', 'sitessaver'),
+                'hint'    => __('In cPanel → MySQL Databases, give the database user named in wp-config.php ALL PRIVILEGES on its database (or ask your host to), then run the restore again. The exact permission is named under Technical details.', 'sitessaver'),
+            ],
+            'restore_db_packet' => [
+                'title'   => __('Your database server refused a large row', 'sitessaver'),
+                'message' => __('One row in the backup is bigger than this database server accepts in one go. The restore stopped before changing anything, so no data was lost.', 'sitessaver'),
+                'hint'    => __('Ask your host to raise the MySQL max_allowed_packet setting (64 MB is common), then run the restore again. The table and the sizes are under Technical details.', 'sitessaver'),
+            ],
             'restore_disk_full' => [
                 'title'   => __('Your server ran out of space', 'sitessaver'),
                 'message' => __('There wasn’t enough free disk space to unpack the backup, so the restore stopped.', 'sitessaver'),
@@ -97,7 +117,7 @@ final class Errors {
             'restore_stalled' => [
                 'title'   => __('The restore stopped partway', 'sitessaver'),
                 'message' => __('Your server stopped the restore before it finished, so the site may be only partly restored.', 'sitessaver'),
-                'hint'    => __('Your backup file is still safe. Run the restore again from the Backups page — it starts over cleanly. If it stops again, ask your host to allow longer-running background tasks.', 'sitessaver'),
+                'hint'    => __('Your backup file is still safe. Run the restore again from the Backups page — it starts over cleanly. If it stops again, ask your host to allow longer-running background tasks. On hosts with Imunify360, its Proactive Defense can end the request without a message: set it to “Log only” while you restore.', 'sitessaver'),
             ],
             'restore_failed_early' => [
                 'title'   => __('The restore couldn’t start', 'sitessaver'),
@@ -169,6 +189,16 @@ final class Errors {
                 'message' => __('Your server replied with an error instead of an answer.', 'sitessaver'),
                 'hint'    => __('Try again. If it keeps happening, share the reference code below with whoever looks after your site.', 'sitessaver'),
             ],
+            'request_blocked' => [
+                'title'   => __('A security filter on your server blocked the request', 'sitessaver'),
+                'message' => __('Your server’s firewall (for example ModSecurity, Imunify360 or Cloudflare) refused a SitesSaver request before WordPress saw it.', 'sitessaver'),
+                'hint'    => __('Ask your host to whitelist requests to wp-admin/admin-ajax.php for this site (the blocked rule is often named under Technical details), or pause the firewall while you back up or restore.', 'sitessaver'),
+            ],
+            'request_too_large' => [
+                'title'   => __('Your server refused a request as too large', 'sitessaver'),
+                'message' => __('The web server or a proxy in front of it limits how much data one request may carry, and a SitesSaver request went over it.', 'sitessaver'),
+                'hint'    => __('Ask your host to raise the request body limit (LimitRequestBody, client_max_body_size, or the Cloudflare plan limit) to at least 10 MB. Uploading the backup into wp-content/sitessaver-backups/ with FTP also works.', 'sitessaver'),
+            ],
             'connection_lost' => [
                 'title'   => __('Connection lost', 'sitessaver'),
                 'message' => __('Your browser lost contact with the server.', 'sitessaver'),
@@ -234,6 +264,18 @@ final class Errors {
         if (str_contains($t, 'no space left') || str_contains($t, 'disk full') || str_contains($t, 'disk quota')) {
             return 'restore_disk_full';
         }
+        // Before "failed to extract": a write the server refused is not a
+        // damaged backup. Calling it one sent users re-downloading a good file.
+        if (str_contains($t, Environment::WRITE_BLOCKED) || str_contains($t, 'permission denied')
+            || str_contains($t, 'operation not permitted') || str_contains($t, 'read-only file system')) {
+            return 'restore_write_blocked';
+        }
+        if (str_contains($t, '[database packet limit]')) {
+            return 'restore_db_packet';
+        }
+        if (str_contains($t, '[database privileges]') || str_contains($t, 'command denied to user')) {
+            return 'restore_db_privileges';
+        }
         if (str_contains($t, 'backup file not found')) {
             return 'restore_file_missing';
         }
@@ -254,6 +296,21 @@ final class Errors {
         return in_array($phase, ['', 'queued', 'download', 'extract', 'manifest'], true)
             ? 'restore_failed_early'
             : 'restore_failed';
+    }
+
+    /**
+     * Map a backup failure's technical message onto a catalogue code.
+     */
+    public static function classify_export(string $technical): string {
+        $t = strtolower($technical);
+        if (str_contains($t, 'no space left') || str_contains($t, 'disk quota')) {
+            return 'upload_disk_full';
+        }
+        if (str_contains($t, Environment::WRITE_BLOCKED) || str_contains($t, 'permission denied')
+            || str_contains($t, 'operation not permitted') || str_contains($t, 'read-only file system')) {
+            return 'export_write_blocked';
+        }
+        return 'export_failed';
     }
 
     /**

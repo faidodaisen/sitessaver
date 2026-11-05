@@ -4,6 +4,38 @@ All notable changes to **SitesSaver** will be documented in this file. The forma
 
 ---
 
+## [1.6.1] - 2026-11-05
+
+### Fixed: restores on hosts with security software were reported as a "damaged backup"
+
+On cPanel hosts running Imunify360, the server can refuse to let PHP write the database file during a restore. SitesSaver 1.6.0 reported this as "This backup can't be opened" and told you to download the backup again, so people retried the same good file over and over.
+
+- A refused write now shows "Your server blocked the restore": your backup is fine, nothing on the site changed, and the message explains how to switch Imunify360 Proactive Defense to "Log only" (or what to ask your host).
+- Before a restore changes anything, SitesSaver now checks that the server lets it write and keep a database file and a normal file. A server that blocks writes is caught in the first second instead of halfway through.
+- The troubleshooting log now records the operating system's own reason for a failed write (for example "Permission denied") and which security layers it can see (Imunify360, CloudLinux, BitNinja, Wordfence), plus free disk space and PHP limits.
+- A backup that fails because the server blocks writes gets its own message too.
+- Help has a new section on Imunify360 and similar security software, showing what was detected on your server.
+
+### Fixed: database problems that could silently lose data or break a move between servers
+
+- The database session's SQL mode is now fixed during a restore. A host default such as NO_BACKSLASH_ESCAPES could otherwise store escaped text wrongly.
+- Backups from MySQL 8 or MariaDB 11 now restore on older database servers: an unknown collation (utf8mb4_0900_ai_ci, utf8mb4_uca1400_ai_ci, utf8mb3) is switched to one the server has, and the log says so.
+- A row bigger than the server's max_allowed_packet used to be skipped without a word. The restore now stops before the live site changes and names the table and both sizes.
+- Before the database is touched, SitesSaver checks the database user can create, alter, rename and drop tables. A missing permission now stops the restore up front with the exact permission named, instead of failing during the switch.
+- A dropped database connection is reconnected once and the statement retried, with the dump's session settings put back.
+
+### Fixed: moving a site away from a managed host
+
+- Must-use plugins that belong to a hosting company (WP Engine, Kinsta, GoDaddy, Bluehost/HostGator, Pantheon, WordPress.com) are no longer restored onto a different host, where they cause a fatal error on the first page load. Restoring onto the same host is unchanged, the skipped files are listed in the log, and the `sitessaver_host_mu_plugins` filter adjusts the list.
+
+### Improved: clearer messages when the server gets in the way
+
+- A firewall (ModSecurity, Imunify360, Cloudflare) refusing an upload or restore request now says so, instead of "connection lost" or "session expired". A request over the server's size limit gets its own message.
+- When background requests cannot run and the browser takes over, the log names the likely reason it can see (WP_HTTP_BLOCK_EXTERNAL, password-protected site, DNS, Imunify360).
+- The "restore stalled" message mentions Imunify360 Proactive Defense, which can end a request without any error.
+
+---
+
 ## [1.6.0] - 2026-10-28
 
 ### New: cloud storage add-ons can plug into SitesSaver

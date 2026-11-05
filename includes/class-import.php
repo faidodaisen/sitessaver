@@ -380,6 +380,10 @@ final class Import {
             // Opportunistic stale-only sweep (won't touch active export temps).
             sitessaver_cleanup_temp();
             wp_mkdir_p($temp_dir);
+            $blocked = Environment::probe_write($temp_dir);
+            if ($blocked !== '') {
+                throw new \RuntimeException($blocked);
+            }
 
             // 1. Extract archive.
             self::tick('extract');
@@ -544,6 +548,15 @@ final class Import {
                 'label' => basename((string) end($set)),
             ];
             wp_mkdir_p($c['temp']);
+            // Before anything is extracted or changed: can this server write
+            // (and keep) the files a restore writes? Security software that
+            // blocks writes is otherwise only found mid-extract and reported
+            // as a damaged backup.
+            $blocked = Environment::probe_write((string) $c['temp']);
+            if ($blocked !== '') {
+                sitessaver_cleanup_temp((string) $c['temp']);
+                throw new \RuntimeException($blocked);
+            }
             $save(true);
         }
 
@@ -615,6 +628,16 @@ final class Import {
                 $old_prefix = (string) ($c['manifest']['db_prefix'] ?? '');
                 if ($old_prefix === '') {
                     $old_prefix = Database::detect_dump_prefix($db_file);
+                }
+                // Before the first statement: can the database user do what a
+                // restore needs? Missing RENAME/ALTER/DROP otherwise shows up
+                // midway, as a failed swap or silently skipped statements.
+                if (empty($c['db']) && empty($c['db_probe'])) {
+                    $denied = Database::probe_privileges();
+                    if ($denied !== '') {
+                        throw new \RuntimeException($denied);
+                    }
+                    $c['db_probe'] = true;
                 }
                 $opt = ['old_url' => $old_url, 'new_url' => $new_url, 'old_prefix' => $old_prefix, 'stage' => empty($c['db_direct'])];
                 $db  = (array) ($c['db'] ?? []);
@@ -705,7 +728,7 @@ final class Import {
      * @param array<string, mixed> $c
      */
     private static function restore_files_slice(array &$c, string $content_src, string $old_url, string $new_url, callable $should_stop, callable $save): bool {
-        [$dirs, $pairs] = self::content_targets($old_url, $new_url);
+        [$dirs, $pairs] = self::content_targets($old_url, $new_url, $content_src);
         $list_file      = (string) $c['temp'] . '.files';
 
         if (empty($c['fl'])) {
@@ -713,10 +736,18 @@ final class Import {
             if ($fh === false) {
                 throw new \RuntimeException('Could not write the restore file list.');
             }
+            $host_skipped = [];
             foreach ($dirs as $name => $cfg) {
                 $src = $content_src . '/' . $name;
                 if (!is_dir($src)) {
                     continue;
+                }
+                if ($name === 'mu-plugins') {
+                    foreach ((array) $cfg['skip'] as $entry) {
+                        if (file_exists($src . '/' . $entry)) {
+                            $host_skipped[] = $entry;
+                        }
+                    }
                 }
                 $it = new \RecursiveIteratorIterator(
                     new \RecursiveDirectoryIterator($src, \RecursiveDirectoryIterator::SKIP_DOTS),
@@ -734,6 +765,9 @@ final class Import {
                 }
             }
             fclose($fh);
+            if ($host_skipped !== []) {
+                Log::warning('restore_host_mu_plugins_skipped', 'Not restored, because they belong to the old hosting company and would break this site: mu-plugins/' . implode(', mu-plugins/', $host_skipped) . '. Filter sitessaver_host_mu_plugins to change this.');
+            }
             $c['fl'] = [
                 'lp'       => 0,
                 'failures' => 0,
@@ -956,7 +990,7 @@ final class Import {
      *
      * @return array{0: array<string, array{dest: string, skip: list<string>, rewrite: bool}>, 1: array<string, string>}
      */
-    private static function content_targets(string $old_url, string $new_url): array {
+    private static function content_targets(string $old_url, string $new_url, ?string $content_src = null): array {
         // The running SitesSaver must never be overwritten by an older copy
         // inside the backup (pre-1.1.7 backups contain one).
         $running_plugin_dir = basename(dirname(SITESSAVER_FILE));
@@ -965,7 +999,7 @@ final class Import {
             'uploads'    => ['dest' => wp_upload_dir()['basedir'], 'skip' => $uploads_skip, 'rewrite' => false],
             'plugins'    => ['dest' => WP_PLUGIN_DIR,              'skip' => [$running_plugin_dir], 'rewrite' => true],
             'themes'     => ['dest' => get_theme_root(),           'skip' => [], 'rewrite' => true],
-            'mu-plugins' => ['dest' => WPMU_PLUGIN_DIR,            'skip' => [], 'rewrite' => true],
+            'mu-plugins' => ['dest' => WPMU_PLUGIN_DIR,            'skip' => self::host_mu_plugin_skip($content_src !== null ? $content_src . '/mu-plugins' : null), 'rewrite' => true],
         ];
         $pairs = [];
         if ($old_url !== '' && $new_url !== '' && $old_url !== $new_url) {
@@ -977,6 +1011,50 @@ final class Import {
             );
         }
         return [$dirs, $pairs];
+    }
+
+    /**
+     * Must-use plugins that belong to a hosting company, not to the site.
+     *
+     * Hosts drop these into wp-content/mu-plugins (WP Engine, Kinsta,
+     * GoDaddy, Bluehost/Endurance, Pantheon, WordPress.com). Copied to a
+     * different host they call APIs, constants or files that do not exist
+     * there, and the restored site dies with a fatal error on the very
+     * first request. Restoring onto the same host is unaffected: an entry
+     * the target already has is restored as usual.
+     *
+     * @return list<string> First path segments under mu-plugins to skip.
+     */
+    public static function host_mu_plugin_skip(?string $backup_mu_dir = null): array {
+        $known = (array) apply_filters('sitessaver_host_mu_plugins', [
+            // WP Engine
+            'mu-plugin.php', 'wpengine-common', 'wpe-wp-sign-on-plugin', 'wpe-wp-sign-on-plugin.php',
+            'wpengine-security-auditor.php', 'wpe-elasticpress-autosuggest-logger.php', 'wpe-cache-plugin', 'wpe-cache-plugin.php',
+            'force-strong-passwords', 'slt-force-strong-passwords.php', 'stop-long-comments.php',
+            // Kinsta
+            'kinsta-mu-plugins', 'kinsta-mu-plugins.php',
+            // GoDaddy Managed WordPress
+            'gd-system-plugin', 'gd-system-plugin.php',
+            // Bluehost / HostGator (Endurance)
+            'endurance-page-cache.php', 'endurance-browser-cache.php', 'endurance-php-edge.php',
+            // Pantheon
+            'pantheon', 'pantheon.php', 'pantheon-mu-plugin',
+            // WordPress.com / Atomic
+            'wpcomsh', 'wpcomsh-loader.php',
+        ]);
+        $skip = [];
+        foreach ($known as $entry) {
+            $entry = (string) $entry;
+            if ($entry !== '' && !file_exists(WPMU_PLUGIN_DIR . '/' . $entry)) {
+                $skip[] = $entry;
+            }
+        }
+        // "mu-plugin.php" is a generic name. It is WP Engine's loader only
+        // when the backup also carries wpengine-common (which it requires).
+        if ($backup_mu_dir !== null && !is_dir($backup_mu_dir . '/wpengine-common')) {
+            $skip = array_values(array_diff($skip, ['mu-plugin.php']));
+        }
+        return $skip;
     }
 
     /**
@@ -1055,7 +1133,7 @@ final class Import {
             'uploads'    => ['dest' => wp_upload_dir()['basedir'],   'skip' => $uploads_skip, 'rewrite' => false],
             'plugins'    => ['dest' => WP_PLUGIN_DIR,               'skip' => [$running_plugin_dir], 'rewrite' => true],
             'themes'     => ['dest' => get_theme_root(),            'skip' => [], 'rewrite' => true],
-            'mu-plugins' => ['dest' => WPMU_PLUGIN_DIR,             'skip' => [], 'rewrite' => true],
+            'mu-plugins' => ['dest' => WPMU_PLUGIN_DIR,             'skip' => self::host_mu_plugin_skip($content_src . '/mu-plugins'), 'rewrite' => true],
         ];
 
         // Build the same cross-scheme replacement map the DB importer uses,

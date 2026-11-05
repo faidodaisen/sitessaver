@@ -229,8 +229,9 @@ final class Restore_Job {
 
         if (is_wp_error($response)) {
             Log::warning('restore_spawn_failed', 'Could not start the background restore; the browser will run it instead.', [
-                'job'   => $id,
-                'error' => $response->get_error_message(),
+                'job'    => $id,
+                'error'  => $response->get_error_message(),
+                'likely' => Environment::loopback_hint() ?: 'unknown',
             ]);
             return false;
         }
@@ -371,7 +372,7 @@ final class Restore_Job {
 
         // Load every class the rest of this request may need NOW, while the
         // plugin's own files are known-good.
-        foreach ([Log::class, Errors::class, Import::class, Database::class, Archive::class, Index::class, GDrive::class, Export::class] as $class) {
+        foreach ([Log::class, Errors::class, Environment::class, Import::class, Database::class, Archive::class, Index::class, GDrive::class, Export::class] as $class) {
             class_exists($class);
         }
 
@@ -557,7 +558,7 @@ final class Restore_Job {
             'memory'   => size_format(memory_get_peak_usage(true)),
             'php'      => PHP_VERSION,
             'server'   => isset($_SERVER['SERVER_SOFTWARE']) ? sanitize_text_field(wp_unslash($_SERVER['SERVER_SOFTWARE'])) : '',
-        ]);
+        ] + (class_exists(Environment::class) ? Environment::diagnostics() : []));
 
         // Put the replaced files back before reporting the failure. This is
         // renames, normally seconds; on a slow host it continues in the
@@ -711,7 +712,7 @@ final class Restore_Job {
                     $j['driver'] = 'browser';
                     return $j;
                 }) ?? $job;
-                Log::warning('restore_browser_takeover', 'Background restore requests keep stopping on this host; the browser continues the restore.', ['job' => $job['id']]);
+                Log::warning('restore_browser_takeover', 'Background restore requests keep stopping on this host; the browser continues the restore. Keep this tab open until it finishes.', ['job' => $job['id'], 'likely' => Environment::loopback_hint() ?: 'unknown']);
             }
             $since = 0;
         }

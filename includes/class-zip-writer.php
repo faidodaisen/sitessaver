@@ -106,7 +106,7 @@ final class Zip_Writer {
         $cdh  = @fopen($cd_file, 'c+b');
         $list = @fopen($list_file, 'rb');
         if (!$out || !$cdh || !$list) {
-            throw new \RuntimeException('Could not open the ZIP work files in ' . dirname($part) . '.');
+            throw new \RuntimeException('Could not open the ZIP work files in ' . basename(dirname($part)) . self::why() . '.');
         }
 
         ftruncate($out, (int) $state['zip']);
@@ -186,7 +186,7 @@ final class Zip_Writer {
         }
 
         if (!@rename($part, $zip_path)) {
-            throw new \RuntimeException('Could not move the finished ZIP into place: ' . basename($zip_path));
+            throw new \RuntimeException('Could not move the finished ZIP into place: ' . basename($zip_path) . self::why());
         }
         foreach ([$list_file, $cd_file] as $done_file) {
             if (is_file($done_file)) {
@@ -199,13 +199,25 @@ final class Zip_Writer {
     }
 
     /**
+     * " (<OS reason>; write blocked)" for a refused open/rename, so the error
+     * classifier can tell a blocked write from a broken backup.
+     */
+    private static function why(): string {
+        $err = error_get_last();
+        $msg = is_array($err) ? (string) ($err['message'] ?? '') : '';
+        $pos = strrpos($msg, ': ');
+        $msg = trim($pos !== false ? substr($msg, $pos + 2) : $msg);
+        return ' (' . ($msg !== '' ? substr($msg, 0, 160) . '; ' : '') . 'write blocked)';
+    }
+
+    /**
      * List every entry to archive, one relative path per line (directories
      * end in "/"). Same selection rules as Archive::create().
      */
     private static function write_list(string $source_dir, array $exclude, string $list_file): int {
         $fh = @fopen($list_file, 'wb');
         if (!$fh) {
-            throw new \RuntimeException('Could not write the ZIP file list.');
+            throw new \RuntimeException('Could not write the ZIP file list' . self::why() . '.');
         }
 
         $count = 0;

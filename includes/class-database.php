@@ -838,6 +838,13 @@ final class Database {
         $hw_prev = is_file($hw_path) ? (int) trim((string) file_get_contents($hw_path)) : 0;
         $hwh     = @fopen($hw_path, 'c');
 
+        // Pin the session's SQL mode before anything runs. The dump sets it
+        // too, but a host default such as NO_BACKSLASH_ESCAPES changes how
+        // every quoted value is read: backslash escapes would be stored
+        // literally (corrupt data) instead of being refused.
+        $wpdb->query("SET SESSION sql_mode = 'NO_AUTO_VALUE_ON_ZERO'");
+        self::max_packet($wpdb); // read now, not between a failure and its error message
+
         // A new request is a new MySQL session: re-apply the dump's SETs
         // (FOREIGN_KEY_CHECKS = 0 above all, or child rows fail).
         if ((int) $state['offset'] > 0) {
@@ -1458,20 +1465,36 @@ final class Database {
 
         // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- Restoring trusted admin-provided SQL dump.
         $result = $wpdb->query($trimmed);
+        $error  = $result === false ? (string) $wpdb->last_error : '';
+        if ($error !== '') {
+            $result = self::recover_statement($wpdb, $trimmed, $state);
+            // A helper query inside the retry resets last_error: keep the
+            // original reason unless the retry produced a new one.
+            $error = $result === false ? ((string) $wpdb->last_error !== '' ? (string) $wpdb->last_error : $error) : '';
+        }
 
         // Log failures so silent row-loss is visible in debug.log rather than
         // surfacing only as "data missing after restore". wpdb returns false on
         // DDL/DML errors; last_error carries the MySQL message.
-        if ($result === false && $wpdb->last_error !== '') {
+        if ($result === false && $error !== '') {
             $state['errors'] = (int) ($state['errors'] ?? 0) + 1;
             $preview = substr($trimmed, 0, 160);
-            error_log('[SitesSaver] Import SQL failed: ' . $wpdb->last_error . ' | stmt: ' . $preview);
+            error_log('[SitesSaver] Import SQL failed: ' . $error . ' | stmt: ' . $preview);
 
             // A staged table that could not be created would silently keep
             // the live table at the switch. Stop instead: nothing on the live
             // site has changed yet.
             if ($staging && $is_create) {
-                throw new \RuntimeException(sprintf('Could not create table %s while restoring: %s', (string) $table, $wpdb->last_error));
+                throw new \RuntimeException(sprintf('Could not create table %s while restoring: %s', (string) $table, $error));
+            }
+            // A server limit or a missing privilege would drop rows one by
+            // one without anyone noticing. While staging, the live site has
+            // not changed yet, so stop and say which limit it was.
+            if ($staging) {
+                $fatal = self::fatal_import_error($wpdb, $error, $trimmed, (string) $table);
+                if ($fatal !== '') {
+                    throw new \RuntimeException($fatal);
+                }
             }
             return;
         }
@@ -1479,6 +1502,153 @@ final class Database {
         if ($staging && $is_create && $table !== null) {
             $state['tables'][$table] = (string) $state['final'] . substr($table, strlen((string) $state['S']));
         }
+    }
+
+    /** Collations older MySQL / MariaDB servers know, best first. */
+    private const COLLATION_FALLBACKS = ['utf8mb4_unicode_520_ci', 'utf8mb4_unicode_ci'];
+
+    /**
+     * Try once more after a statement failed for a reason we can fix here.
+     *
+     * - Unknown collation/charset: a dump from MySQL 8 (utf8mb4_0900_ai_ci,
+     *   utf8mb3) or MariaDB 11 (uca1400) restored on an older server. The
+     *   CREATE TABLE is rewritten to a collation this server has.
+     * - Lost connection on a normal-sized statement: reconnect, re-apply
+     *   the session settings, run it again.
+     *
+     * @param array<string, mixed> $state
+     * @return int|bool The query result of the retry, or false.
+     */
+    private static function recover_statement(\wpdb $wpdb, string $sql, array &$state) {
+        $err = strtolower((string) $wpdb->last_error);
+
+        if (str_contains($err, 'unknown collation') || str_contains($err, 'unknown character set')) {
+            foreach (self::COLLATION_FALLBACKS as $fallback) {
+                $fixed = self::downgrade_collations($sql, $fallback);
+                if ($fixed === $sql) {
+                    continue;
+                }
+                $result = $wpdb->query($fixed); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- trusted dump.
+                if ($result !== false) {
+                    if (empty($state['collation_fixed'])) {
+                        Log::info('restore_collation_fallback', sprintf('This database server does not know a collation used in the backup; tables were created with %s instead.', $fallback));
+                    }
+                    $state['collation_fixed'] = (int) ($state['collation_fixed'] ?? 0) + 1;
+                    return $result;
+                }
+                if (!str_contains(strtolower($wpdb->last_error), 'unknown collation')) {
+                    return false;
+                }
+            }
+            return false;
+        }
+
+        if (str_contains($err, 'gone away') || str_contains($err, 'lost connection')) {
+            // wpdb has reconnected (or will now): a new session has lost the
+            // dump's SETs, so put them back before anything else runs.
+            if (!$wpdb->check_connection(false)) {
+                return false;
+            }
+            $wpdb->query("SET SESSION sql_mode = 'NO_AUTO_VALUE_ON_ZERO'");
+            foreach ((array) ($state['session'] ?? []) as $set) {
+                $wpdb->query((string) $set); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- dump SETs.
+            }
+            if (strlen($sql) >= self::max_packet($wpdb)) {
+                return false; // retrying cannot help: the statement itself is too big
+            }
+            return $wpdb->query($sql); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- trusted dump.
+        }
+
+        return false;
+    }
+
+    /**
+     * Rewrite collations/charsets newer than this server to $fallback.
+     */
+    public static function downgrade_collations(string $sql, string $fallback): string {
+        $sql = (string) preg_replace('/\butf8mb4_(?:0900|uca1400)_[a-z0-9_]+\b/i', $fallback, $sql);
+        $sql = (string) preg_replace('/\butf8mb4_unicode_520_ci\b/i', $fallback, $sql);
+        $sql = (string) preg_replace('/\butf8mb3_([a-z0-9_]+)\b/i', 'utf8_$1', $sql);
+        $sql = (string) preg_replace('/\butf8mb3\b/i', 'utf8', $sql);
+        return $sql;
+    }
+
+    /** This server's max_allowed_packet in bytes (16 MB when unknown). */
+    private static function max_packet(\wpdb $wpdb): int {
+        static $packet = null;
+        if ($packet === null) {
+            $packet = (int) $wpdb->get_var('SELECT @@max_allowed_packet');
+            if ($packet <= 0) {
+                $packet = 16 * 1024 * 1024;
+            }
+        }
+        return $packet;
+    }
+
+    /**
+     * Technical message for an import failure that must stop the restore,
+     * or '' for one that may be skipped. The bracketed tag is what
+     * Errors::classify_restore() keys on.
+     */
+    private static function fatal_import_error(\wpdb $wpdb, string $error, string $sql, string $table): string {
+        $e = strtolower($error);
+        if (str_contains($e, 'max_allowed_packet') || str_contains($e, 'packet bigger')
+            || ((str_contains($e, 'gone away') || str_contains($e, 'lost connection')) && strlen($sql) >= self::max_packet($wpdb))) {
+            return sprintf(
+                'A row of table %s is %s, larger than this database server accepts in one go (max_allowed_packet = %s). [database packet limit]',
+                $table !== '' ? $table : '?',
+                size_format(strlen($sql)),
+                size_format(self::max_packet($wpdb))
+            );
+        }
+        // Only table-level denials (INSERT/CREATE/ALTER/DROP command denied).
+        // "Access denied; you need the SUPER privilege" comes from a view or
+        // trigger DEFINER and was always skipped: keep skipping it.
+        if (str_contains($e, 'command denied')) {
+            return 'The database user is not allowed to do this: ' . $error . ' [database privileges]';
+        }
+        if (str_contains($e, 'gone away') || str_contains($e, 'lost connection')) {
+            return 'Lost the connection to the database while restoring table ' . ($table !== '' ? $table : '?') . ': ' . $error . ' [database connection]';
+        }
+        return '';
+    }
+
+    /**
+     * Can the database user do what a restore does (CREATE, INSERT, ALTER,
+     * RENAME, DROP)? Run before the restore touches the database.
+     *
+     * @return string '' when it can, otherwise the technical reason.
+     */
+    public static function probe_privileges(): string {
+        global $wpdb;
+        $a = 'ssprobe' . strtolower(wp_generate_password(6, false)) . '_a';
+        $b = substr($a, 0, -1) . 'b';
+        // DROP is tried straight after the first CREATE: a user who cannot
+        // drop cannot clean up either, so find that out with one empty table.
+        $steps = [
+            'CREATE TABLE' => "CREATE TABLE `{$a}` (`id` INT NOT NULL PRIMARY KEY)",
+            'DROP TABLE '  => "DROP TABLE `{$a}`",
+            'CREATE TABLE ' => "CREATE TABLE `{$a}` (`id` INT NOT NULL PRIMARY KEY)",
+            'INSERT'       => "INSERT INTO `{$a}` (`id`) VALUES (1)",
+            'ALTER TABLE'  => "ALTER TABLE `{$a}` ADD COLUMN `v` INT NULL",
+            'RENAME TABLE' => "RENAME TABLE `{$a}` TO `{$b}`",
+            'DROP TABLE'   => "DROP TABLE `{$b}`",
+        ];
+        $failed = '';
+        $suppress = $wpdb->suppress_errors(true);
+        foreach ($steps as $what => $sql) {
+            if ($wpdb->query($sql) === false) { // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- fixed SQL.
+                $failed = sprintf('The database user cannot %s: %s [database privileges]', trim($what), $wpdb->last_error !== '' ? $wpdb->last_error : 'no reason given');
+                break;
+            }
+        }
+        $wpdb->query("DROP TABLE IF EXISTS `{$a}`");
+        $wpdb->query("DROP TABLE IF EXISTS `{$b}`");
+        if ($failed !== '' && $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $a)) === $a) {
+            $failed .= sprintf(' (the empty test table %s could not be removed; it is safe to delete)', $a);
+        }
+        $wpdb->suppress_errors($suppress);
+        return $failed;
     }
 
     /**
