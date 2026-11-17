@@ -316,11 +316,34 @@ final class Import {
             wp_mkdir_p(SITESSAVER_TEMP_DIR);
         }
         sitessaver_protect_directory(SITESSAVER_TEMP_DIR);
-        $staged = SITESSAVER_TEMP_DIR . '/incoming-' . wp_generate_password(8, false, false) . '.zip';
-        // phpcs:ignore Generic.PHP.ForbiddenFunctions.Found -- The file is a backup ZIP for restore, not media: it is checked for the .zip extension and ZIP magic bytes above and must land in the protected temp folder, not the uploads folder wp_handle_upload() writes to.
-        if (!move_uploaded_file($file['tmp_name'], $staged)) {
+        if (!function_exists('wp_handle_upload')) {
+            require_once ABSPATH . 'wp-admin/includes/file.php';
+        }
+
+        // wp_handle_upload() writes into the uploads folder by default; point it
+        // at the protected temp folder for this one call so the backup is never
+        // web-reachable, and give it a random name so it cannot clash.
+        $staged_name = 'incoming-' . wp_generate_password(8, false, false) . '.zip';
+        $to_temp     = static function (array $dirs): array {
+            $dirs['path']   = SITESSAVER_TEMP_DIR;
+            $dirs['url']    = '';
+            $dirs['subdir'] = '';
+            $dirs['error']  = false;
+            return $dirs;
+        };
+
+        add_filter('upload_dir', $to_temp);
+        $upload = wp_handle_upload($file, [
+            'test_form'                => false,
+            'mimes'                    => ['zip' => 'application/zip'],
+            'unique_filename_callback' => static fn(): string => $staged_name,
+        ]);
+        remove_filter('upload_dir', $to_temp);
+
+        if (!empty($upload['error']) || empty($upload['file']) || !is_file($upload['file'])) {
             return ['success' => false, 'message' => __('Failed to save uploaded file.', 'sitessaver')];
         }
+        $staged = $upload['file'];
 
         try {
             $result = self::run($staged);
