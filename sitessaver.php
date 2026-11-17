@@ -4,8 +4,8 @@
  * Plugin URI:  https://sitessaver.com
  * Description: Full site backup and migration: export, import, schedule, and Google Drive storage. No restrictions.
  * Version:     1.6.1
- * Author:      SitesSaver
- * Author URI:  https://sitessaver.com
+ * Author:      Fido Design
+ * Author URI:  https://fidodesign.net
  * License:     GPL-2.0-or-later
  * Text Domain: sitessaver
  * Requires PHP: 8.1
