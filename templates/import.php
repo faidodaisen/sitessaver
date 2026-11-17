@@ -37,7 +37,10 @@
                     <?php esc_html_e('Select File', 'sitessaver'); ?>
                 </button>
                 <p style="margin-top: 16px; font-size: 12px; color: var(--ss-text-muted);">
-                    <?php printf(esc_html__('Max file size: %s', 'sitessaver'), sitessaver_format_size(sitessaver_max_upload_size())); ?>
+                    <?php
+                    /* translators: %s: maximum upload size, for example 64 MB. */
+                    printf(esc_html__('Max file size: %s', 'sitessaver'), esc_html(sitessaver_format_size(sitessaver_max_upload_size())));
+                    ?>
                 </p>
             </div>
 

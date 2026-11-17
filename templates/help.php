@@ -1,4 +1,6 @@
-<?php defined('ABSPATH') || exit; ?>
+<?php defined('ABSPATH') || exit;
+// phpcs:disable WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- Template included from inside a SitesSaver\Admin method, so these variables are function-local, not globals.
+?>
 <div class="sitessaver-wrap">
     <header class="ss-header">
         <h1 class="ss-title">
@@ -53,9 +55,8 @@
                 <p><?php esc_html_e('For the sender address, use one on this domain, such as noreply@yourdomain.com. An address from another domain is far more likely to be filtered as spam.', 'sitessaver'); ?></p>
 
                 <h3 style="margin-top: 24px;"><?php esc_html_e('8. Keeping the plugin up to date', 'sitessaver'); ?></h3>
-                <p><?php esc_html_e('SitesSaver is installed manually rather than from the WordPress plugin directory, but it still updates itself. It checks for new releases automatically, and when one is available the update appears on your Plugins screen exactly like any other plugin — click Update and you are done.', 'sitessaver'); ?></p>
+                <p><?php esc_html_e('New versions of SitesSaver appear on your Plugins screen like any other plugin from the WordPress plugin directory. Click Update and you are done, or turn on automatic updates for it there.', 'sitessaver'); ?></p>
                 <p><?php esc_html_e('Your backups, schedule, Google Drive connection, and email branding all survive an update. Backups are stored outside the plugin folder specifically so that updating can never touch them.', 'sitessaver'); ?></p>
-                <p><?php esc_html_e('Settings → Plugin Updates shows which version you are running, and has a button to check immediately instead of waiting for the next automatic check.', 'sitessaver'); ?></p>
 
                 <h3 style="margin-top: 24px;" id="ss-storage"><?php esc_html_e('9. Where are my backups stored?', 'sitessaver'); ?></h3>
                 <p><?php esc_html_e('In wp-content/sitessaver-backups/ on your server, deliberately outside the plugin folder so that updating or reinstalling SitesSaver never deletes them. The folder cannot be listed, and backup files have long random names, so nobody can find them by browsing. A copy in Google Drive is still the best protection: a backup stored only on the server it is protecting will not help you when that server is the thing that fails.', 'sitessaver'); ?></p>
@@ -193,9 +194,8 @@
             <div>
                 <style>.pp-4WBDKC57TT5DL{text-align:center;border:none;border-radius:0.25rem;min-width:11.625rem;padding:0 2rem;height:2.625rem;font-weight:bold;background-color:#FFD140;color:#000000;font-family:"Helvetica Neue",Arial,sans-serif;font-size:1rem;line-height:1.25rem;cursor:pointer;}</style>
                 <form action="https://www.paypal.com/ncp/payment/4WBDKC57TT5DL" method="post" target="_blank" style="display:inline-grid;justify-items:center;align-content:start;gap:0.5rem;">
-                    <input class="pp-4WBDKC57TT5DL" type="submit" value="Buy Now" />
-                    <img src="https://www.paypalobjects.com/images/Debit_Credit_APM.svg" alt="cards" />
-                    <section style="font-size: 0.75rem;"> Powered by <img src="https://www.paypalobjects.com/paypal-ui/logos/svg/paypal-wordmark-color.svg" alt="paypal" style="height:0.875rem;vertical-align:middle;"/></section>
+                    <input class="pp-4WBDKC57TT5DL" type="submit" value="<?php esc_attr_e('Buy Now', 'sitessaver'); ?>" />
+                    <section style="font-size: 0.75rem;"><?php esc_html_e('Opens PayPal in a new tab. Cards accepted.', 'sitessaver'); ?></section>
                 </form>
             </div>
         </div>

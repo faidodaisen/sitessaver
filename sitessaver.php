@@ -1,16 +1,15 @@
 <?php
 /**
  * Plugin Name: SitesSaver
- * Plugin URI:  https://github.com/faidodaisen/sitessaver
- * Description: Full site backup & migration — export, import, schedule, Google Drive. No restrictions.
+ * Plugin URI:  https://sitessaver.com
+ * Description: Full site backup and migration: export, import, schedule, and Google Drive storage. No restrictions.
  * Version:     1.6.1
  * Author:      SitesSaver
- * Author URI:  https://github.com/faidodaisen
+ * Author URI:  https://sitessaver.com
  * License:     GPL-2.0-or-later
  * Text Domain: sitessaver
  * Requires PHP: 8.1
  * Requires at least: 6.0
- * Update URI:  https://github.com/faidodaisen/sitessaver
  */
 
 declare(strict_types=1);

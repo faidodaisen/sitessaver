@@ -1873,40 +1873,6 @@
     });
 
 
-    // ---------- PLUGIN UPDATES ----------
-
-    // The update source is fixed at build time, so this only forces a fresh
-    // lookup rather than saving anything.
-    $(document).on('click', '#sitessaver-check-update', function () {
-        var $btn = $(this).prop('disabled', true).addClass('loading');
-
-        ajax('sitessaver_check_update', {}, function (res) {
-            $btn.prop('disabled', false).removeClass('loading');
-
-            if (res.update) {
-                // Reload so the panel switches to the "update available"
-                // state, which is rendered server-side.
-                ssFlash('success', res.message);
-                location.reload();
-                return;
-            }
-
-            ssNotify.success(res.message, { title: 'Up to date' });
-        }, function (err) {
-            $btn.prop('disabled', false).removeClass('loading');
-            ssNotify.error(err.message || SS.strings.error, { title: 'Update check failed' });
-        });
-    });
-
-    // Persist dismissal of the dashboard banner. WordPress only hides it for
-    // the current page load, so without this it returns on every screen.
-    $(document).on('click', '.sitessaver-update-notice .notice-dismiss', function () {
-        var version = $(this).closest('.sitessaver-update-notice').data('version');
-        ajax('sitessaver_dismiss_update_notice', { version: version }, function () {}, function () {});
-    });
-
-
-
     // ---------- EMAIL BRANDING ----------
 
     // Media picker for the notification email logo. wp.media is only enqueued

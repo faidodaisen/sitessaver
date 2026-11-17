@@ -21,7 +21,6 @@ final class Plugin {
 
     public function init(): void {
         // Load translations on init (before any __() call resolves).
-        add_action('init', [$this, 'load_textdomain']);
 
         // Ensure modern image MIME types are recognised by WordPress. Why:
         // some security plugins and hosting stacks prune `image/webp` and
@@ -50,11 +49,6 @@ final class Plugin {
         // Keeps a manual export moving with no tab open (watchdog, LiteSpeed
         // rule, email). Outside is_admin(): WP-Cron fires on the front end.
         Background::init();
-
-        // Self-hosted updates from GitHub releases. Registered outside the
-        // is_admin() guard because WP-Cron runs the update check in a
-        // front-end context on many hosts.
-        Updater::instance()->init();
 
         // A4 (multisite addon hook point — see PLAN-multisite-premium-addon.md
         // §7 Track A/B). Fires once, synchronously, right here at the end of
@@ -136,16 +130,5 @@ final class Plugin {
             $data['type'] = 'image/avif';
         }
         return $data;
-    }
-
-    /**
-     * Load plugin translations from /languages/ (e.g. sitessaver-ms_MY.mo).
-     */
-    public function load_textdomain(): void {
-        load_plugin_textdomain(
-            'sitessaver',
-            false,
-            dirname(plugin_basename(SITESSAVER_FILE)) . '/languages'
-        );
     }
 }

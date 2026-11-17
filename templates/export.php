@@ -1,4 +1,6 @@
-<?php defined('ABSPATH') || exit; ?>
+<?php defined('ABSPATH') || exit;
+// phpcs:disable WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- Template included from inside a SitesSaver\Admin method, so these variables are function-local, not globals.
+?>
 <div class="sitessaver-wrap">
     <header class="ss-header">
         <h1 class="ss-title">

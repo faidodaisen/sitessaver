@@ -6,6 +6,8 @@ namespace SitesSaver;
 
 defined('ABSPATH') || exit;
 
+// phpcs:disable WordPress.WP.AlternativeFunctions -- Streams multi-GB backup archives, SQL dumps and chunked uploads with byte offsets, file locks and atomic renames inside the plugin's own backup folder; WP_Filesystem has no streaming, seek or lock API and may need FTP credentials that a background worker cannot supply.
+
 /**
  * Scheduled backups.
  *
@@ -499,7 +501,7 @@ final class Schedule {
             nocache_headers();
         }
 
-        echo $message . "\n";
+        echo $message . "\n"; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- text/plain response to a server cron call (Content-Type set above), never rendered as HTML.
         exit;
     }
 

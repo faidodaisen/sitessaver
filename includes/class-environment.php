@@ -6,6 +6,8 @@ namespace SitesSaver;
 
 defined('ABSPATH') || exit;
 
+// phpcs:disable WordPress.WP.AlternativeFunctions -- Streams multi-GB backup archives, SQL dumps and chunked uploads with byte offsets, file locks and atomic renames inside the plugin's own backup folder; WP_Filesystem has no streaming, seek or lock API and may need FTP credentials that a background worker cannot supply.
+
 /**
  * What the hosting environment is doing to us.
  *
@@ -117,7 +119,7 @@ final class Environment {
     public static function loopback_hint(): string {
         $hints = [];
         if (defined('WP_HTTP_BLOCK_EXTERNAL') && WP_HTTP_BLOCK_EXTERNAL) {
-            $host    = (string) parse_url((string) home_url(), PHP_URL_HOST);
+            $host    = (string) wp_parse_url((string) home_url(), PHP_URL_HOST);
             $allowed = defined('WP_ACCESSIBLE_HOSTS') ? (string) WP_ACCESSIBLE_HOSTS : '';
             if ($host !== 'localhost' && !in_array($host, array_map('trim', explode(',', $allowed)), true)) {
                 $hints[] = 'WP_HTTP_BLOCK_EXTERNAL is on in wp-config.php and this site\'s own host is not in WP_ACCESSIBLE_HOSTS';
@@ -126,7 +128,7 @@ final class Environment {
         if (!empty($_SERVER['PHP_AUTH_USER']) || !empty($_SERVER['REMOTE_USER'])) {
             $hints[] = 'the site sits behind a password prompt (HTTP basic auth), which background requests cannot pass';
         }
-        $host = (string) parse_url((string) home_url(), PHP_URL_HOST);
+        $host = (string) wp_parse_url((string) home_url(), PHP_URL_HOST);
         if ($host !== '' && filter_var($host, FILTER_VALIDATE_IP) === false && gethostbyname($host) === $host) {
             $hints[] = 'this server cannot look up its own domain (' . $host . ') in DNS';
         }

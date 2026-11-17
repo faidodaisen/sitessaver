@@ -1,4 +1,5 @@
 <?php defined('ABSPATH') || exit; 
+// phpcs:disable WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- Template included from inside a SitesSaver\Admin method, so these variables are function-local, not globals.
 $backups = sitessaver_get_backups();
 $sitessaver_drive_on = class_exists('SitesSaver\\GDrive') && \SitesSaver\GDrive::is_connected();
 $stats   = [

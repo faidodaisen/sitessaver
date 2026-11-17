@@ -6,6 +6,8 @@ namespace SitesSaver;
 
 defined('ABSPATH') || exit;
 
+// phpcs:disable WordPress.WP.AlternativeFunctions -- Streams multi-GB backup archives, SQL dumps and chunked uploads with byte offsets, file locks and atomic renames inside the plugin's own backup folder; WP_Filesystem has no streaming, seek or lock API and may need FTP credentials that a background worker cannot supply.
+
 /**
  * Keeps a manual export moving when nobody is watching it.
  *
@@ -180,8 +182,10 @@ final class Background {
 
         if ($ok) {
             $result  = is_array($status['result'] ?? null) ? $status['result'] : [];
+            /* translators: %s: site name. */
             $subject = sprintf(__('[%s] Your backup is ready', 'sitessaver'), $site);
             $body    = sprintf(
+                /* translators: 1: site URL, 2: backup file name, 3: backup size, 4: link to the Backups page. */
                 __("The backup you started on %1\$s has finished.\n\nFile: %2\$s\nSize: %3\$s\n\nDownload it from SitesSaver → Backups:\n%4\$s\n\n— SitesSaver", 'sitessaver'),
                 home_url(),
                 (string) ($result['file'] ?? $status['backup_name'] ?? ''),
@@ -189,8 +193,10 @@ final class Background {
                 $link
             );
         } else {
+            /* translators: %s: site name. */
             $subject = sprintf(__('[%s] Your backup did not finish', 'sitessaver'), $site);
             $body    = sprintf(
+                /* translators: 1: site URL, 2: error reference code, 3: error details, 4: link to the Help page. */
                 __("The backup you started on %1\$s stopped before it finished. Your site itself is fine — nothing was changed.\n\nReference: %2\$s\nDetails: %3\$s\n\nTry again from SitesSaver → Export. If it stops again, open Help → Troubleshooting Log, download the log and send it to SitesSaver support:\n%4\$s\n\n— SitesSaver", 'sitessaver'),
                 home_url(),
                 !empty($status['ref']) ? 'SS-' . $status['ref'] : '—',

@@ -1,4 +1,5 @@
 <?php defined('ABSPATH') || exit; 
+// phpcs:disable WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- Template included from inside a SitesSaver\Admin method, so these variables are function-local, not globals.
 
 // Handle OAuth callback from proxy.
 $auth_msg = '';
@@ -27,10 +28,6 @@ $notify_email = is_array($notify_email) ? ($notify_email['notify_email'] ?? '') 
 if ($notify_email === '') {
     $notify_email = (string) get_option('admin_email');
 }
-
-$latest           = \SitesSaver\Updater::latest_release();
-$update_available = $latest !== null && \SitesSaver\Updater::is_newer($latest['version']);
-$update_error     = \SitesSaver\Updater::last_error();
 ?>
 <div class="sitessaver-wrap">
     <header class="ss-header">
@@ -299,95 +296,6 @@ $update_error     = \SitesSaver\Updater::last_error();
                     </span>
                 </p>
             </form>
-        </div>
-    </div>
-
-    <div class="ss-section">
-        <div class="ss-section-header">
-            <h2 class="ss-section-title">
-                <i class="ri-refresh-line"></i>
-                <?php esc_html_e('Plugin Updates', 'sitessaver'); ?>
-            </h2>
-            <?php if ($update_available) : ?>
-                <span class="badge badge-red"><?php
-                    printf(
-                        /* translators: %s: version number */
-                        esc_html__('v%s available', 'sitessaver'),
-                        esc_html($latest['version'])
-                    );
-                ?></span>
-            <?php else : ?>
-                <span class="badge badge-blue"><?php
-                    printf(
-                        /* translators: %s: version number */
-                        esc_html__('v%s installed', 'sitessaver'),
-                        esc_html(SITESSAVER_VERSION)
-                    );
-                ?></span>
-            <?php endif; ?>
-        </div>
-
-        <div class="ss-section-content">
-            <?php if ($update_available) : ?>
-                <div style="background: rgba(214, 54, 56, 0.05); border: 1px solid rgba(214, 54, 56, 0.2); padding: 18px 20px; border-radius: var(--ss-radius-card);">
-                    <h3 style="margin: 0 0 6px 0; font-size: 15px; color: var(--ss-text-main);">
-                        <?php
-                        printf(
-                            /* translators: 1: new version, 2: installed version */
-                            esc_html__('SitesSaver %1$s is available. You are running %2$s.', 'sitessaver'),
-                            esc_html($latest['version']),
-                            esc_html(SITESSAVER_VERSION)
-                        );
-                        ?>
-                    </h3>
-                    <p style="margin: 0 0 14px 0; color: var(--ss-text-muted); font-size: 13px;">
-                        <?php esc_html_e('Your backups, schedule, and Google Drive connection are preserved when you update.', 'sitessaver'); ?>
-                    </p>
-                    <a href="<?php echo esc_url(admin_url('plugins.php?s=sitessaver&plugin_status=all')); ?>" class="btn btn-primary">
-                        <i class="ri-download-2-line"></i>
-                        <?php esc_html_e('Go to Plugins to update', 'sitessaver'); ?>
-                    </a>
-                    <?php if (!empty($latest['url'])) : ?>
-                        <a href="<?php echo esc_url($latest['url']); ?>" target="_blank" rel="noopener" class="btn btn-outline">
-                            <i class="ri-file-list-3-line"></i>
-                            <?php esc_html_e('What\'s new', 'sitessaver'); ?>
-                        </a>
-                    <?php endif; ?>
-                </div>
-            <?php else : ?>
-                <div style="display: flex; gap: 14px; align-items: center; flex-wrap: wrap;">
-                    <div style="flex: 1; min-width: 260px;">
-                        <h3 style="margin: 0 0 4px 0; font-size: 15px; color: var(--ss-text-main);">
-                            <?php esc_html_e('SitesSaver is up to date', 'sitessaver'); ?>
-                        </h3>
-                        <p style="margin: 0; color: var(--ss-text-muted); font-size: 13px;">
-                            <?php
-                            printf(
-                                /* translators: %s: version number */
-                                esc_html__('Running version %s. New versions are detected automatically and appear on your Plugins screen.', 'sitessaver'),
-                                esc_html(SITESSAVER_VERSION)
-                            );
-                            ?>
-                        </p>
-                        <?php if ($update_error !== '') : ?>
-                            <p style="margin: 8px 0 0 0; color: var(--ss-warning-hover); font-size: 12px;">
-                                <i class="ri-alert-line"></i>
-                                <?php
-                                printf(
-                                    /* translators: %s: reason the check failed */
-                                    esc_html__('Last check could not reach GitHub: %s', 'sitessaver'),
-                                    esc_html($update_error)
-                                );
-                                ?>
-                            </p>
-                        <?php endif; ?>
-                    </div>
-                    <button type="button" class="btn btn-outline" id="sitessaver-check-update">
-                        <i class="ri-refresh-line"></i>
-                        <?php esc_html_e('Check for updates', 'sitessaver'); ?>
-                    </button>
-                </div>
-            <?php endif; ?>
         </div>
     </div>
 </div>

@@ -165,10 +165,10 @@ final class Admin {
 
         if ($pagenow !== 'options-permalink.php') {
             // Gently nudge from other admin pages.
-            $url = esc_url(admin_url('options-permalink.php?sitessaver_finalize=1'));
+            $url = admin_url('options-permalink.php?sitessaver_finalize=1');
             echo '<div class="notice notice-warning"><p><strong>SitesSaver:</strong> ' .
                 esc_html__('Site restore is almost done — finish by saving permalinks.', 'sitessaver') .
-                ' <a href="' . $url . '" class="button button-primary" style="margin-left:8px;">' .
+                ' <a href="' . esc_url($url) . '" class="button button-primary" style="margin-left:8px;">' .
                 esc_html__('Go to Permalinks', 'sitessaver') . '</a></p></div>';
             return;
         }

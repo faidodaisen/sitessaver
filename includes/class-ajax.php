@@ -6,6 +6,9 @@ namespace SitesSaver;
 
 defined('ABSPATH') || exit;
 
+// phpcs:disable WordPress.Security.NonceVerification -- Every admin handler calls sitessaver_verify_ajax() first (check_ajax_referer + capability). The background worker, restore runner and finalize endpoints have no browser session after a database swap and are authorised by single-use server-side tokens compared with hash_equals().
+// phpcs:disable WordPress.WP.AlternativeFunctions -- Streams multi-GB backup archives, SQL dumps and chunked uploads with byte offsets, file locks and atomic renames inside the plugin's own backup folder; WP_Filesystem has no streaming, seek or lock API and may need FTP credentials that a background worker cannot supply.
+
 /**
  * AJAX request handlers for all SitesSaver operations.
  */
@@ -37,8 +40,6 @@ final class Ajax {
             'sitessaver_save_settings'  => 'handle_save_settings',
             'sitessaver_save_email_brand' => 'handle_save_email_brand',
             'sitessaver_send_test_email'  => 'handle_send_test_email',
-            'sitessaver_check_update'     => 'handle_check_update',
-            'sitessaver_dismiss_update_notice' => 'handle_dismiss_update_notice',
             'sitessaver_dismiss_storage_notice' => 'handle_dismiss_storage_notice',
             'sitessaver_save_export_notify'  => 'handle_save_export_notify',
             'sitessaver_gdrive_disconnect' => 'handle_gdrive_disconnect',
@@ -626,7 +627,7 @@ final class Ajax {
      */
     public function handle_download(): void {
         if (!sitessaver_current_user_can()) {
-            wp_die(__('Permission denied.', 'sitessaver'));
+            wp_die(esc_html__('Permission denied.', 'sitessaver'));
         }
 
         check_admin_referer('sitessaver_download', 'nonce');
@@ -693,7 +694,7 @@ final class Ajax {
         $handle = fopen($real_path, 'rb');
 
         if ($handle === false) {
-            wp_die(__('Cannot read backup file.', 'sitessaver'));
+            wp_die(esc_html__('Cannot read backup file.', 'sitessaver'));
         }
 
         if ($start > 0) {
@@ -715,7 +716,7 @@ final class Ajax {
                 break;
             }
 
-            echo $buffer;
+            echo $buffer; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Raw bytes of a backup ZIP sent as an application/octet-stream download, not HTML.
             flush();
 
             $remaining -= strlen($buffer);
@@ -1103,76 +1104,12 @@ final class Ajax {
     }
 
     /**
-     * Force a fresh GitHub release lookup and report the outcome.
-     */
-    public function handle_check_update(): void {
-        sitessaver_verify_ajax();
-
-        if (!current_user_can('update_plugins')) {
-            wp_send_json_error(['message' => __('You do not have permission to check for updates.', 'sitessaver')]);
-        }
-
-        Updater::instance()->clear_cache();
-        $release = Updater::latest_release(true);
-
-        if ($release === null) {
-            $error = Updater::last_error();
-            wp_send_json_error([
-                'message' => $error !== ''
-                    ? $error
-                    : __('No releases found in that repository.', 'sitessaver'),
-            ]);
-        }
-
-        if (!Updater::is_newer($release['version'])) {
-            wp_send_json_success([
-                'update'  => false,
-                'version' => $release['version'],
-                'message' => sprintf(
-                    /* translators: %s: version number */
-                    __('You are running the latest version (%s).', 'sitessaver'),
-                    SITESSAVER_VERSION
-                ),
-            ]);
-        }
-
-        // Make WordPress re-evaluate so the Plugins screen row appears without
-        // waiting for its own twice-daily cron.
-        delete_site_transient('update_plugins');
-
-        wp_send_json_success([
-            'update'  => true,
-            'version' => $release['version'],
-            'url'     => $release['url'],
-            'message' => sprintf(
-                /* translators: 1: new version, 2: installed version */
-                __('Version %1$s is available. You are running %2$s.', 'sitessaver'),
-                $release['version'],
-                SITESSAVER_VERSION
-            ),
-        ]);
-    }
-
-    /**
      * Remember that this user dismissed the "older backups can be reached by
      * direct link" note on the Backups page.
      */
     public function handle_dismiss_storage_notice(): void {
         sitessaver_verify_ajax();
         update_user_meta(get_current_user_id(), 'sitessaver_dismissed_storage_notice', 1);
-        wp_send_json_success();
-    }
-
-    /**
-     * Remember that this user dismissed the update banner for this version.
-     */
-    public function handle_dismiss_update_notice(): void {
-        sitessaver_verify_ajax();
-
-        $version = sanitize_text_field(wp_unslash($_POST['version'] ?? ''));
-
-        update_user_meta(get_current_user_id(), 'sitessaver_dismissed_update', $version);
-
         wp_send_json_success();
     }
 

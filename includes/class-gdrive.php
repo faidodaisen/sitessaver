@@ -6,6 +6,8 @@ namespace SitesSaver;
 
 defined('ABSPATH') || exit;
 
+// phpcs:disable WordPress.WP.AlternativeFunctions -- Streams multi-GB backup archives, SQL dumps and chunked uploads with byte offsets, file locks and atomic renames inside the plugin's own backup folder; WP_Filesystem has no streaming, seek or lock API and may need FTP credentials that a background worker cannot supply.
+
 /**
  * Google Drive integration via OAuth Proxy Relay.
  *
@@ -672,6 +674,7 @@ final class GDrive {
             $body    = json_decode((string) wp_remote_retrieve_body($response), true);
             $message = is_array($body) && isset($body['error']['message'])
                 ? (string) $body['error']['message']
+                /* translators: %d: HTTP status code. */
                 : sprintf(__('Upload chunk failed (HTTP %d).', 'sitessaver'), $code);
 
             return ['status' => 'failed', 'next_offset' => 0, 'message' => $message];
@@ -928,8 +931,9 @@ final class GDrive {
             . '?alt=media&acknowledgeAbuse=true&supportsAllDrives=true';
 
         $stall_guard = static function ($handle) {
-            curl_setopt($handle, CURLOPT_LOW_SPEED_LIMIT, 1);
-            curl_setopt($handle, CURLOPT_LOW_SPEED_TIME, 30);
+            // The download itself uses wp_remote_get(); this only adds a stall timeout to WP's own cURL handle via the http_api_curl hook, which the HTTP API has no argument for.
+            curl_setopt($handle, CURLOPT_LOW_SPEED_LIMIT, 1); // phpcs:ignore WordPress.WP.AlternativeFunctions.curl_curl_setopt
+            curl_setopt($handle, CURLOPT_LOW_SPEED_TIME, 30); // phpcs:ignore WordPress.WP.AlternativeFunctions.curl_curl_setopt
         };
         add_action('http_api_curl', $stall_guard);
 

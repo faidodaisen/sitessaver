@@ -6,6 +6,9 @@ namespace SitesSaver;
 
 defined('ABSPATH') || exit;
 
+// phpcs:disable WordPress.WP.AlternativeFunctions -- Streams multi-GB backup archives, SQL dumps and chunked uploads with byte offsets, file locks and atomic renames inside the plugin's own backup folder; WP_Filesystem has no streaming, seek or lock API and may need FTP credentials that a background worker cannot supply.
+// phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception messages are never echoed raw; they are logged or returned through wp_send_json_* and escaped at render time in admin.js (escapeHtml).
+
 /**
  * Import engine — restore full site from ZIP backup.
  */
@@ -314,6 +317,7 @@ final class Import {
         }
         sitessaver_protect_directory(SITESSAVER_TEMP_DIR);
         $staged = SITESSAVER_TEMP_DIR . '/incoming-' . wp_generate_password(8, false, false) . '.zip';
+        // phpcs:ignore Generic.PHP.ForbiddenFunctions.Found -- The file is a backup ZIP for restore, not media: it is checked for the .zip extension and ZIP magic bytes above and must land in the protected temp folder, not the uploads folder wp_handle_upload() writes to.
         if (!move_uploaded_file($file['tmp_name'], $staged)) {
             return ['success' => false, 'message' => __('Failed to save uploaded file.', 'sitessaver')];
         }

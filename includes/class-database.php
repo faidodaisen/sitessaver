@@ -6,6 +6,10 @@ namespace SitesSaver;
 
 defined('ABSPATH') || exit;
 
+// phpcs:disable WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared, PluginCheck.Security.DirectDB.UnescapedDBParameter -- This class is the database backup and restore engine: it dumps, creates, renames and drops whole tables, so it must query $wpdb directly and uncached. Table names come from SHOW TABLES or the plugin's own staging prefix and are backtick-escaped; values go through $wpdb->prepare() or esc_sql().
+// phpcs:disable WordPress.WP.AlternativeFunctions -- Streams multi-GB backup archives, SQL dumps and chunked uploads with byte offsets, file locks and atomic renames inside the plugin's own backup folder; WP_Filesystem has no streaming, seek or lock API and may need FTP credentials that a background worker cannot supply.
+// phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception messages are never echoed raw; they are logged or returned through wp_send_json_* and escaped at render time in admin.js (escapeHtml).
+
 /**
  * Database export & import using wpdb.
  */
@@ -849,7 +853,7 @@ final class Database {
         // (FOREIGN_KEY_CHECKS = 0 above all, or child rows fail).
         if ((int) $state['offset'] > 0) {
             foreach ((array) $state['session'] as $set) {
-                $wpdb->query((string) $set);
+                $wpdb->query((string) $set); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, PluginCheck.Security.DirectDB.UnescapedDBParameter -- SET statements re-applied from the backup dump being restored by an administrator; whole statements, nothing to bind.
             }
             fseek($handle, (int) $state['offset']);
         }
@@ -1107,7 +1111,7 @@ final class Database {
             $renames = [];
             foreach ($plan as [$staged, $final, $aside]) {
                 if ($aside === '') {
-                    $wpdb->query('DROP TABLE IF EXISTS `' . self::ident($final) . '`');
+                    $wpdb->query('DROP TABLE IF EXISTS `' . self::ident($final) . '`'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- Table names are escaped for backtick quoting by self::ident(); identifiers cannot be bound with prepare() before WP 6.2 (%i).
                 } elseif ($aside !== null) {
                     $renames[] = '`' . self::ident($final) . '` TO `' . self::ident($aside) . '`';
                 }
@@ -1115,7 +1119,7 @@ final class Database {
             foreach ($plan as [$staged, $final]) {
                 $renames[] = '`' . self::ident($staged) . '` TO `' . self::ident($final) . '`';
             }
-            if ($wpdb->query('RENAME TABLE ' . implode(', ', $renames)) === false) {
+            if ($wpdb->query('RENAME TABLE ' . implode(', ', $renames)) === false) { // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, PluginCheck.Security.DirectDB.UnescapedDBParameter -- Table names are escaped for backtick quoting by self::ident(); identifiers cannot be bound with prepare() before WP 6.2 (%i).
                 throw new \RuntimeException('Could not switch the restored database in: ' . $wpdb->last_error);
             }
         }
@@ -1151,7 +1155,7 @@ final class Database {
                 $renames[] = '`' . self::ident($aside) . '` TO `' . self::ident($final) . '`';
             }
         }
-        $ok = $renames === [] || $wpdb->query('RENAME TABLE ' . implode(', ', $renames)) !== false;
+        $ok = $renames === [] || $wpdb->query('RENAME TABLE ' . implode(', ', $renames)) !== false; // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, PluginCheck.Security.DirectDB.UnescapedDBParameter -- Table names are escaped for backtick quoting by self::ident(); identifiers cannot be bound with prepare() before WP 6.2 (%i).
         if ($ok) {
             self::discard_staging($state);
             wp_cache_flush();
@@ -1181,7 +1185,7 @@ final class Database {
         }
         $names = (array) $wpdb->get_col($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($prefix) . '%'));
         foreach ($names as $n) {
-            $wpdb->query('DROP TABLE IF EXISTS `' . self::ident((string) $n) . '`');
+            $wpdb->query('DROP TABLE IF EXISTS `' . self::ident((string) $n) . '`'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- Table names are escaped for backtick quoting by self::ident(); identifiers cannot be bound with prepare() before WP 6.2 (%i).
         }
     }
 
