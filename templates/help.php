@@ -192,7 +192,6 @@
             </p>
             
             <div>
-                <style>.pp-4WBDKC57TT5DL{text-align:center;border:none;border-radius:0.25rem;min-width:11.625rem;padding:0 2rem;height:2.625rem;font-weight:bold;background-color:#FFD140;color:#000000;font-family:"Helvetica Neue",Arial,sans-serif;font-size:1rem;line-height:1.25rem;cursor:pointer;}</style>
                 <form action="https://www.paypal.com/ncp/payment/4WBDKC57TT5DL" method="post" target="_blank" style="display:inline-grid;justify-items:center;align-content:start;gap:0.5rem;">
                     <input class="pp-4WBDKC57TT5DL" type="submit" value="<?php esc_attr_e('Buy Now', 'sitessaver'); ?>" />
                     <section style="font-size: 0.75rem;"><?php esc_html_e('Opens PayPal in a new tab. Cards accepted.', 'sitessaver'); ?></section>

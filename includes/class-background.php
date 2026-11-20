@@ -227,7 +227,7 @@ final class Background {
     }
 
     public static function is_litespeed(): bool {
-        $soft = isset($_SERVER['SERVER_SOFTWARE']) ? (string) $_SERVER['SERVER_SOFTWARE'] : '';
+        $soft = isset($_SERVER['SERVER_SOFTWARE']) ? sanitize_text_field(wp_unslash($_SERVER['SERVER_SOFTWARE'])) : '';
         return stripos($soft, 'litespeed') !== false || defined('LSCWP_V') || isset($_SERVER['LSWS_EDITION']);
     }
 
@@ -271,9 +271,6 @@ final class Background {
     }
 
     public static function remove_rules(): void {
-        if (!function_exists('insert_with_markers')) {
-            require_once ABSPATH . 'wp-admin/includes/misc.php';
-        }
         if (!function_exists('get_home_path')) {
             require_once ABSPATH . 'wp-admin/includes/file.php';
         }

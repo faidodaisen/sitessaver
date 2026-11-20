@@ -1,7 +1,9 @@
 <?php defined('ABSPATH') || exit; 
 // phpcs:disable WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- Template included from inside a SitesSaver\Admin method, so these variables are function-local, not globals.
 
-// Handle OAuth callback from proxy.
+// Handle OAuth callback from proxy. Only checks that the parameter is there;
+// the callback itself validates its single-use `state` token.
+// phpcs:disable WordPress.Security.NonceVerification.Recommended
 $auth_msg = '';
 $auth_ok  = false;
 if (isset($_GET['sitessaver_gdrive_token']) && sitessaver_current_user_can()) {
@@ -17,6 +19,7 @@ foreach (\SitesSaver\Destinations::extra() as $ss_dest) {
         $auth_ok  = !empty($result['success']);
     }
 }
+// phpcs:enable WordPress.Security.NonceVerification.Recommended
 
 $settings = get_option('sitessaver_settings', []);
 $token    = get_option('sitessaver_gdrive_token', []);

@@ -3,7 +3,7 @@
  * Plugin Name: SitesSaver
  * Plugin URI:  https://sitessaver.com
  * Description: Full site backup and migration: export, import, schedule, and Google Drive storage. No restrictions.
- * Version:     1.6.1
+ * Version:     1.6.2
  * Author:      Fido Design
  * Author URI:  https://fidodesign.net
  * License:     GPL-2.0-or-later
@@ -17,58 +17,69 @@ declare(strict_types=1);
 defined('ABSPATH') || exit;
 
 // This copy's version, read BEFORE any constants so the duplicate-copy
-// handler below can compare against an already-loaded instance. Folder
-// name is irrelevant — we identify SitesSaver by its VERSION constant.
-$sitessaver_this_version = '1.6.1';
+// handler below can name it. Folder name is irrelevant: SitesSaver is
+// identified by its VERSION constant.
+$sitessaver_this_version = '1.6.2';
 
-// Duplicate-copy handler. WordPress lets the same plugin live in multiple
-// folders (e.g. `plugins/sitessaver/` and `plugins/ss/`) and will happily
-// load both, causing seven `define()` redeclaration warnings that surface
-// as "plugin generated N characters of unexpected output" during activation
-// and corrupt AJAX/REST bodies.
+// Duplicate-copy handler. WordPress lets the same plugin live in more than
+// one folder (e.g. `plugins/sitessaver/` and `plugins/sitessaver-copy/`) and
+// loads every active copy. A second copy must not run: its classes and
+// constants would redeclare the first copy's and stop the site.
 //
-// Resolution: identify SitesSaver by the SITESSAVER_VERSION constant (not
-// by slug or folder). If another copy already claimed it, compare versions:
-//   - newer copy wins: deactivate the older one, let this one proceed by
-//     undefining the older's file guard so re-include reloads classes
-//   - older/equal: bail silently so this copy doesn't stomp the active one
-//
-// Note: we CAN'T actually un-define a constant in PHP, so if a newer copy
-// of the plugin is already loaded, this older copy has to bow out. The
-// inverse path (this copy newer) isn't safely recoverable mid-request
-// either — we defer to the admin-side duplicate-cleanup below on the
-// next request.
+// So the copy that loads second does nothing except tell the admin, on the
+// Plugins screen and SitesSaver's own screens, and offer a button that
+// deactivates it. Nothing is deactivated unless the admin clicks it.
 if (defined('SITESSAVER_VERSION')) {
-    // Queue a one-time admin notice + auto-deactivate duplicate folders on
-    // the next admin load (when WP's plugin API is fully available).
-    add_action('admin_init', static function () use ($sitessaver_this_version): void {
-        if (!function_exists('get_plugins') || !function_exists('deactivate_plugins')) {
+    $sitessaver_copy = plugin_basename(__FILE__);
+
+    $sitessaver_copy_notice = static function () use ($sitessaver_copy, $sitessaver_this_version): void {
+        if (!current_user_can('activate_plugins')) {
             return;
         }
-        $all     = get_plugins();
-        $active  = (array) get_option('active_plugins', []);
-        $duplicates = [];
-        foreach ($all as $plugin_file => $meta) {
-            if (($meta['Name'] ?? '') === 'SitesSaver' && in_array($plugin_file, $active, true)) {
-                $duplicates[] = $plugin_file;
-            }
+        $screen = function_exists('get_current_screen') ? get_current_screen() : null;
+        $id     = $screen ? (string) $screen->id : '';
+        if (!in_array($id, ['plugins', 'plugins-network'], true) && !str_contains($id, 'sitessaver')) {
+            return;
         }
-        if (count($duplicates) > 1) {
-            // Keep the newest version; deactivate the rest.
-            usort($duplicates, static function ($a, $b) use ($all): int {
-                return version_compare($all[$b]['Version'] ?? '0', $all[$a]['Version'] ?? '0');
-            });
-            $keep   = array_shift($duplicates);
-            deactivate_plugins($duplicates, true);
-            add_action('admin_notices', static function () use ($keep, $duplicates): void {
-                printf(
-                    '<div class="notice notice-warning is-dismissible"><p><strong>SitesSaver:</strong> detected duplicate copies and deactivated %d older one(s). Kept: <code>%s</code>. Please delete the deactivated copies from <a href="%s">Plugins</a>.</p></div>',
-                    count($duplicates),
-                    esc_html($keep),
-                    esc_url(admin_url('plugins.php'))
-                );
-            });
+        $url = wp_nonce_url(
+            add_query_arg(
+                ['action' => 'sitessaver_deactivate_copy', 'plugin' => $sitessaver_copy],
+                admin_url('admin-post.php')
+            ),
+            'sitessaver_deactivate_copy_' . $sitessaver_copy
+        );
+        printf(
+            '<div class="notice notice-warning is-dismissible"><p>%s</p><p><a class="button button-primary" href="%s">%s</a></p></div>',
+            sprintf(
+                /* translators: 1: plugin file of the extra copy, 2: its version, 3: version of the copy that is running. */
+                esc_html__('SitesSaver is installed twice. The copy in %1$s (version %2$s) is active but not running, because SitesSaver %3$s from another folder is already loaded. Deactivate the extra copy, then delete it from Plugins.', 'sitessaver'),
+                '<code>' . esc_html($sitessaver_copy) . '</code>',
+                esc_html($sitessaver_this_version),
+                esc_html((string) SITESSAVER_VERSION)
+            ),
+            esc_url($url),
+            esc_html__('Deactivate the other copy', 'sitessaver')
+        );
+    };
+    add_action('admin_notices', $sitessaver_copy_notice);
+    add_action('network_admin_notices', $sitessaver_copy_notice);
+
+    add_action('admin_post_sitessaver_deactivate_copy', static function () use ($sitessaver_copy): void {
+        $requested = isset($_GET['plugin']) ? sanitize_text_field(wp_unslash($_GET['plugin'])) : '';
+        if ($requested !== $sitessaver_copy) {
+            return; // Another copy's request; that copy handles it.
         }
+        if (!current_user_can('activate_plugins')) {
+            wp_die(esc_html__('You do not have permission to deactivate plugins.', 'sitessaver'), '', ['response' => 403]);
+        }
+        check_admin_referer('sitessaver_deactivate_copy_' . $sitessaver_copy);
+        if (!function_exists('deactivate_plugins')) {
+            require_once ABSPATH . 'wp-admin/includes/plugin.php';
+        }
+        $network = is_multisite() && is_plugin_active_for_network($sitessaver_copy);
+        deactivate_plugins(plugin_basename(__FILE__), false, $network);
+        wp_safe_redirect(($network ? network_admin_url('plugins.php') : admin_url('plugins.php')) . '?deactivate=true');
+        exit;
     });
     return;
 }

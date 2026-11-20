@@ -1707,3 +1707,20 @@ body.ss-modal-open {
     border-radius: 4px;
     word-break: break-all;
 }
+
+/* Help page: PayPal donate button (was an inline <style> in templates/help.php). */
+.pp-4WBDKC57TT5DL {
+    text-align: center;
+    border: none;
+    border-radius: 0.25rem;
+    min-width: 11.625rem;
+    padding: 0 2rem;
+    height: 2.625rem;
+    font-weight: bold;
+    background-color: #FFD140;
+    color: #000000;
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    font-size: 1rem;
+    line-height: 1.25rem;
+    cursor: pointer;
+}

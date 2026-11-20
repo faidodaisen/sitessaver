@@ -397,6 +397,9 @@ final class Schedule {
      * get a short, greppable line instead of a rendered page.
      */
     public function handle_external_trigger(): void {
+        // A server cron request carries no session, so no nonce: it is
+        // authorised by the secret key, compared with hash_equals() below.
+        // phpcs:disable WordPress.Security.NonceVerification.Recommended
         if (!isset($_GET[self::TRIGGER_QUERY_VAR])) {
             return;
         }
@@ -435,7 +438,8 @@ final class Schedule {
         // frequency — a cron running every 5 minutes will still only produce
         // one daily backup, which is exactly what you want when the server
         // cron interval and the plugin frequency are configured separately.
-        $force = isset($_GET['force']) && $_GET['force'] === '1';
+        $force = isset($_GET['force']) && sanitize_key(wp_unslash($_GET['force'])) === '1';
+        // phpcs:enable WordPress.Security.NonceVerification.Recommended
 
         if ($force) {
             // Attribute a forced run to the shortest selected frequency, so it

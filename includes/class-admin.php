@@ -74,6 +74,11 @@ final class Admin {
         //   session, so current_user_can() + nonce checks all work normally.
         global $pagenow;
 
+        // No nonce here by design: the restore replaced the database, so a
+        // nonce issued before it cannot verify. The single-use finalize token
+        // is the CSRF guard (hash_equals below), and the permalinks counter
+        // only moves for a user who passes sitessaver_current_user_can().
+        // phpcs:disable WordPress.Security.NonceVerification.Recommended
         $token = isset($_GET['sitessaver_finalize'])
             ? sanitize_text_field(wp_unslash($_GET['sitessaver_finalize']))
             : '';
@@ -99,7 +104,7 @@ final class Admin {
 
         // WP redirects to ?settings-updated=true after saving the permalinks
         // form. That's our cue the user just clicked "Save Changes".
-        if (isset($_GET['settings-updated']) && $_GET['settings-updated'] === 'true') {
+        if (isset($_GET['settings-updated']) && sanitize_key(wp_unslash($_GET['settings-updated'])) === 'true') {
             $remaining = (int) get_transient('sitessaver_needs_permalinks_flush');
             if ($remaining > 0) {
                 $remaining--;
@@ -111,6 +116,7 @@ final class Admin {
                 }
             }
         }
+        // phpcs:enable WordPress.Security.NonceVerification.Recommended
     }
 
     /**
@@ -122,7 +128,8 @@ final class Admin {
      * logout link; it is NOT consumed here (the permalinks request does that).
      */
     public function handle_finalize_logout(): void {
-        $supplied = isset($_GET['token']) ? sanitize_text_field(wp_unslash($_GET['token'])) : '';
+        // The finalize token is the guard (a pre-restore nonce cannot verify).
+        $supplied = isset($_GET['token']) ? sanitize_text_field(wp_unslash($_GET['token'])) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
         $expected = Import::current_finalize_token();
 
         if ($expected === '' || $supplied === '' || !hash_equals($expected, $supplied)) {
@@ -145,10 +152,21 @@ final class Admin {
     }
 
     /**
-     * Banner on Settings > Permalinks during restore finalisation.
+     * Banner during restore finalisation. Shown only where it is needed:
+     * Settings > Permalinks (the step the restore asks for) and SitesSaver's
+     * own screens. Never anywhere else in wp-admin.
      */
     public function render_restore_finalisation_notice(): void {
         global $pagenow;
+
+        if (!sitessaver_current_user_can()) {
+            return;
+        }
+        $screen = function_exists('get_current_screen') ? get_current_screen() : null;
+        $on_own = $screen !== null && str_contains((string) $screen->id, 'sitessaver');
+        if ($pagenow !== 'options-permalink.php' && !$on_own) {
+            return;
+        }
 
         if (get_transient('sitessaver_restore_complete')) {
             delete_transient('sitessaver_restore_complete');
@@ -164,9 +182,9 @@ final class Admin {
         }
 
         if ($pagenow !== 'options-permalink.php') {
-            // Gently nudge from other admin pages.
+            // On SitesSaver's own screens, point to the last step.
             $url = admin_url('options-permalink.php?sitessaver_finalize=1');
-            echo '<div class="notice notice-warning"><p><strong>SitesSaver:</strong> ' .
+            echo '<div class="notice notice-warning is-dismissible"><p><strong>SitesSaver:</strong> ' .
                 esc_html__('Site restore is almost done — finish by saving permalinks.', 'sitessaver') .
                 ' <a href="' . esc_url($url) . '" class="button button-primary" style="margin-left:8px;">' .
                 esc_html__('Go to Permalinks', 'sitessaver') . '</a></p></div>';
@@ -177,7 +195,7 @@ final class Admin {
             ? __('Click "Save Changes" below — twice — to flush rewrite rules and finalise the restore.', 'sitessaver')
             : __('Click "Save Changes" one more time to finalise the restore.', 'sitessaver');
 
-        echo '<div class="notice notice-warning"><p><strong>SitesSaver:</strong> ' .
+        echo '<div class="notice notice-warning is-dismissible"><p><strong>SitesSaver:</strong> ' .
             esc_html($clicks) . '</p></div>';
     }
 
