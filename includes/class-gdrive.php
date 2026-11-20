@@ -905,7 +905,7 @@ final class GDrive {
             wp_mkdir_p(SITESSAVER_TEMP_DIR);
         }
         sitessaver_protect_directory(SITESSAVER_TEMP_DIR);
-        $staged = SITESSAVER_TEMP_DIR . '/gdrive-dl-' . wp_generate_password(8, false, false) . '.zip';
+        $staged = SITESSAVER_TEMP_DIR . '/gdrive-dl-' . wp_generate_password(20, false, false) . '.zip';
 
         /*
          * acknowledgeAbuse=true is REQUIRED here.
@@ -1062,7 +1062,7 @@ final class GDrive {
             return ['success' => false, 'message' => __('Google Drive not connected.', 'sitessaver')];
         }
 
-        $response = wp_remote_request(self::API_URL . "/files/{$file_id}", [
+        $response = wp_remote_request(self::API_URL . '/files/' . rawurlencode($file_id), [
             'method'  => 'DELETE',
             'headers' => ['Authorization' => 'Bearer ' . $token],
             'timeout' => 20,

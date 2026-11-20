@@ -263,7 +263,7 @@ final class Restore_Job {
         $response = wp_remote_post(Background::worker_url(), [
             'timeout'   => 0.01,
             'blocking'  => false,
-            'sslverify' => false,
+            'sslverify' => sitessaver_loopback_sslverify(),
             'body'      => [
                 'action' => 'sitessaver_restore_worker',
                 'job'    => $id,
@@ -718,6 +718,8 @@ final class Restore_Job {
         wp_cache_delete('active_plugins', 'options');
         $active = (array) get_option('active_plugins', []);
         if (!in_array($basename, $active, true)) {
+            // The list is the backup's own; SitesSaver stays on it so the
+            // restore it is running can finish.
             $active[] = $basename;
             update_option('active_plugins', array_values($active));
         }

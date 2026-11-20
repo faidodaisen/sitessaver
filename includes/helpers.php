@@ -206,9 +206,8 @@ function sitessaver_resolve_chain_member(string $member, string $chain_id = ''):
     $files      = glob($dir . '/*.zip');
     foreach (is_array($files) ? $files : [] as $f) {
         $base = basename($f);
-        if (strlen($base) === strlen($stem) + 21
-            && str_starts_with($base, $stem . '-')
-            && preg_match('/-[A-Za-z0-9]{16}\.zip$/', $base)) {
+        // One tail per hop: a backup brought in twice carries two.
+        if (preg_match('/^' . preg_quote($stem, '/') . '(?:-[A-Za-z0-9]{16})+\.zip$/', $base)) {
             $candidates[$base] = (int) @filemtime($f);
         }
     }
@@ -231,6 +230,16 @@ function sitessaver_resolve_chain_member(string $member, string $chain_id = ''):
         }
     }
     return (string) array_key_first($candidates);
+}
+
+/**
+ * SSL check for requests this site sends to itself (background workers and
+ * the storage probe). Only those loopbacks use it. Off by default like core's
+ * own loopbacks, because many sites have a self-signed or mismatched
+ * certificate on their own host name. Same filter core uses.
+ */
+function sitessaver_loopback_sslverify(): bool {
+    return (bool) apply_filters('https_local_ssl_verify', false); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core filter.
 }
 
 /**
@@ -286,11 +295,11 @@ function sitessaver_storage_probe(): array {
         wp_mkdir_p($dir);
         sitessaver_protect_directory($dir);
 
-        $name  = 'ss-probe-' . wp_generate_password(12, false) . '.txt';
+        $name  = 'ss-probe-' . wp_generate_password(16, false) . '.txt';
         $token = wp_generate_password(24, false);
         if (@file_put_contents($dir . '/' . $name, $token) !== false) {
             $url = content_url(substr(wp_normalize_path($dir), strlen($content))) . '/' . $name;
-            $res = wp_remote_get($url, ['timeout' => 8, 'sslverify' => false, 'redirection' => 0]);
+            $res = wp_remote_get($url, ['timeout' => 8, 'sslverify' => sitessaver_loopback_sslverify(), 'redirection' => 0]);
             @unlink($dir . '/' . $name);
 
             if (!is_wp_error($res)) {

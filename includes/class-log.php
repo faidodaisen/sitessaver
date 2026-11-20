@@ -61,16 +61,38 @@ final class Log {
             return self::$file;
         }
         $dir   = self::dir();
+        $found = self::existing($dir);
+        if ($found !== null) {
+            return self::$file = $found;
+        }
+        // random_bytes(): available even before pluggable.php is loaded.
+        $new = $dir . '/sitessaver-log-' . bin2hex(random_bytes(10)) . '.log';
+        $fh  = @fopen($new, 'xb');
+        if ($fh) {
+            fclose($fh);
+        }
+        // Two requests can create a file at the same moment: both then use
+        // the first one by name, and the other empty file is dropped.
+        $first = self::existing($dir) ?? $new;
+        if ($first !== $new && is_file($new) && (int) @filesize($new) === 0) {
+            @unlink($new);
+        }
+        return self::$file = $first;
+    }
+
+    /** First log file in the folder by name, or null. */
+    private static function existing(string $dir): ?string {
         $found = glob($dir . '/sitessaver-log-*.log');
-        foreach (is_array($found) ? $found : [] as $f) {
+        $found = is_array($found) ? $found : [];
+        sort($found);
+        foreach ($found as $f) {
             // Also matches the rotated "<name>.1.log", which may be the only
             // file left right after a rotation.
             if (preg_match('/^sitessaver-log-([A-Za-z0-9]{20})(?:\.1)?\.log$/', basename($f), $m)) {
-                return self::$file = $dir . '/sitessaver-log-' . $m[1] . '.log';
+                return $dir . '/sitessaver-log-' . $m[1] . '.log';
             }
         }
-        // random_bytes(): available even before pluggable.php is loaded.
-        return self::$file = $dir . '/sitessaver-log-' . bin2hex(random_bytes(10)) . '.log';
+        return null;
     }
 
     private static function rotated_file(): string {

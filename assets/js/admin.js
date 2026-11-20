@@ -1168,7 +1168,7 @@
         var keepsLocal = dest === 'local' || dest === 'both' || /\+local$/.test(dest || '');
         if (keepsLocal && result.file) {
             var dlUrl = SS.ajaxUrl + '?action=sitessaver_download_backup&file=' + encodeURIComponent(result.file) + '&nonce=' + SS.downloadNonce;
-            msg += SS.strings.done + ' — ' + result.file + ' (' + result.size + ')<br><br>';
+            msg += escapeHtml(SS.strings.done) + ' — ' + escapeHtml(result.file) + ' (' + escapeHtml(result.size) + ')<br><br>';
             msg += '<a href="' + dlUrl + '" class="ss-download-link" target="_blank"><i class="ri-download-2-line"></i> Download backup</a>';
         }
 
@@ -1176,12 +1176,12 @@
         if (!result.remotes && (dest === 'gdrive' || dest === 'both') && result.gdrive) {
             if (msg) msg += '<br><br>';
             if (result.gdrive.success) {
-                msg += '<i class="ri-google-line"></i> ' + (result.gdrive.message || 'Uploaded to Google Drive.');
+                msg += '<i class="ri-google-line"></i> ' + escapeHtml(result.gdrive.message || 'Uploaded to Google Drive.');
                 if (safeUrl(result.gdrive_folder_url)) {
                     msg += ' <a href="' + escapeHtml(result.gdrive_folder_url) + '" target="_blank" rel="noopener"><i class="ri-external-link-line"></i> Open Drive folder</a>';
                 }
             } else {
-                msg += '<span style="color:var(--ss-danger)"><i class="ri-error-warning-line"></i> Google Drive upload failed: ' + (result.gdrive.message || 'Unknown error') + '</span>';
+                msg += '<span style="color:var(--ss-danger)"><i class="ri-error-warning-line"></i> Google Drive upload failed: ' + escapeHtml(result.gdrive.message || 'Unknown error') + '</span>';
             }
         }
 
