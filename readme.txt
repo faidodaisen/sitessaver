@@ -114,6 +114,12 @@ The Help page has an optional "Buy Me A Coffee" donation button. Nothing is sent
 * Changed: if SitesSaver is installed twice, the extra copy is no longer deactivated for you. A notice lets you deactivate it with one click.
 * Changed: SitesSaver notices only show on SitesSaver screens and, where needed, the Plugins and Permalinks screens.
 * Fixed: input from the browser and server is sanitized everywhere.
+* Changed: on LiteSpeed, the .htaccess rule for background backups is no longer added automatically. Add or remove it from Help > Background backups on LiteSpeed.
+* Changed: SitesSaver no longer changes which image types WordPress accepts for upload.
+* Fixed: an incremental backup brought in more than once is found again when its chain is restored.
+* Fixed: a large file that changes while a backup runs is skipped and logged instead of stopping the backup.
+* Fixed: listing a large media library is split across requests on hosts with short time limits.
+* Fixed: uninstall also removes SitesSaver's data from every site of a network.
 
 = 1.6.1 =
 * Fixed: restores on hosts with security software were sometimes reported as a damaged backup. The plugin now says when the server blocked the restore.
