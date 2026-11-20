@@ -4,7 +4,7 @@ Tags: backup, restore, migration, google drive, schedule
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 1.6.1
+Stable tag: 1.6.2
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -107,6 +107,14 @@ The Help page has an optional "Buy Me A Coffee" donation button. Nothing is sent
 
 == Changelog ==
 
+= 1.6.2 =
+* Changed: plugin, theme and media files now go straight into the backup ZIP. No loose copies are made on disk while a backup runs.
+* Changed: the activity log and restore progress are stored as plain data files with random names instead of PHP files.
+* Changed: every backup you upload or download from Google Drive is stored under a name with a random part. Incremental chains still restore.
+* Changed: if SitesSaver is installed twice, the extra copy is no longer deactivated for you. A notice lets you deactivate it with one click.
+* Changed: SitesSaver notices only show on SitesSaver screens and, where needed, the Plugins and Permalinks screens.
+* Fixed: input from the browser and server is sanitized everywhere.
+
 = 1.6.1 =
 * Fixed: restores on hosts with security software were sometimes reported as a damaged backup. The plugin now says when the server blocked the restore.
 * Fixed: database problems that could silently lose data or break a move between servers.
@@ -138,6 +146,9 @@ The Help page has an optional "Buy Me A Coffee" donation button. Nothing is sent
 * Warning when the backup folder is reachable from the web.
 
 == Upgrade Notice ==
+
+= 1.6.2 =
+Backups are written straight into the ZIP and work files are no longer PHP files. Recommended for all users.
 
 = 1.6.1 =
 Restores on hosts with security software are reported honestly, and several database fixes make moves between servers safer.
