@@ -18,11 +18,11 @@ defined('WP_UNINSTALL_PLUGIN') || exit;
 global $wpdb;
 
 // 1. Best-effort revoke of the Google Drive refresh token via the proxy.
-$token_data = get_option('sitessaver_gdrive_token');
-if (is_array($token_data) && !empty($token_data['refresh_token'])) {
+$sitessaver_token_data = get_option('sitessaver_gdrive_token');
+if (is_array($sitessaver_token_data) && !empty($sitessaver_token_data['refresh_token'])) {
     wp_remote_post('https://api.sitessaver.com/v1/gdrive/revoke', [
         'headers' => ['Content-Type' => 'application/json'],
-        'body'    => wp_json_encode(['refresh_token' => $token_data['refresh_token']]),
+        'body'    => wp_json_encode(['refresh_token' => $sitessaver_token_data['refresh_token']]),
         'timeout' => 10,
     ]);
 }
@@ -65,8 +65,10 @@ $wpdb->query(
 // 4. Flush the alloptions cache so the removed rows disappear immediately.
 wp_cache_delete('alloptions', 'options');
 
-// 5. Remove the plugin's own bookkeeping (troubleshooting log, restore job
-//    records). These are not backups — nothing a user would want to keep.
+// 5. Remove the plugin's own bookkeeping (troubleshooting log files
+//    sitessaver-log-*.log, restore job state restore-*.json, and any
+//    pre-1.6.2 .php versions of either). These are not backups, nothing a
+//    user would want to keep.
 $sitessaver_storage = WP_CONTENT_DIR . '/sitessaver-backups';
 foreach (['logs', 'jobs'] as $sitessaver_sub) {
     $sitessaver_dir = $sitessaver_storage . '/' . $sitessaver_sub;

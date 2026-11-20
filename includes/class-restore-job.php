@@ -61,7 +61,11 @@ final class Restore_Job {
 
     private static int $last_cursor_save = 0;
 
-    private const GUARD = "<?php exit; ?>\n";
+    /**
+     * Prefix of the job files written before 1.6.2 (`restore-<id>.php`).
+     * Only read, to finish a restore that was running across the update.
+     */
+    private const LEGACY_GUARD = "<?php exit; ?>\n";
 
     /** Job id running in THIS process, if any. */
     private static ?string $current = null;
@@ -78,7 +82,19 @@ final class Restore_Job {
         return SITESSAVER_STORAGE_DIR . '/jobs';
     }
 
+    /**
+     * Job state is plain JSON data, never a .php file. The name carries the
+     * job id, 16 random characters, so it cannot be guessed; the folder
+     * also has the deny-all .htaccess, web.config and an empty index.php.
+     * Deliberately NOT derived from an option or salt: the restore replaces
+     * the database halfway through, and the file must still be found after.
+     */
     private static function path(string $id): string {
+        return self::dir() . '/restore-' . $id . '.json';
+    }
+
+    /** Pre-1.6.2 location of a job's state. */
+    private static function legacy_path(string $id): string {
         return self::dir() . '/restore-' . $id . '.php';
     }
 
@@ -100,12 +116,38 @@ final class Restore_Job {
         $path = self::path($id);
         clearstatcache(true, $path);
         if (!is_readable($path)) {
+            return self::migrate_legacy($id);
+        }
+        $job = json_decode((string) file_get_contents($path), true);
+        return is_array($job) ? $job : null;
+    }
+
+    /**
+     * A job started by a version before 1.6.2 kept its state in a .php file
+     * behind an exit guard. Read it once, store it as JSON and delete the
+     * old file, so a restore running across the update carries on.
+     *
+     * @return array<string, mixed>|null
+     */
+    private static function migrate_legacy(string $id): ?array {
+        $legacy = self::legacy_path($id);
+        clearstatcache(true, $legacy);
+        if (!is_readable($legacy)) {
             return null;
         }
-        $raw = (string) file_get_contents($path);
-        $raw = str_starts_with($raw, self::GUARD) ? substr($raw, strlen(self::GUARD)) : $raw;
+        $raw = (string) file_get_contents($legacy);
+        if (str_starts_with($raw, self::LEGACY_GUARD)) {
+            $raw = substr($raw, strlen(self::LEGACY_GUARD));
+        }
         $job = json_decode($raw, true);
-        return is_array($job) ? $job : null;
+        if (!is_array($job) || ($job['id'] ?? '') !== $id) {
+            return null;
+        }
+        self::save($job);
+        if (is_readable(self::path($id))) {
+            @unlink($legacy);
+        }
+        return $job;
     }
 
     /**
@@ -126,7 +168,7 @@ final class Restore_Job {
         if (!is_string($json)) {
             return;
         }
-        if (@file_put_contents($tmp, self::GUARD . $json, LOCK_EX) !== false) {
+        if (@file_put_contents($tmp, $json, LOCK_EX) !== false) {
             // Atomic on POSIX. On Windows the rename fails while another
             // request (the status poll) has the file open; retry briefly,
             // then write in place. Never delete first: a delete that lands
@@ -137,7 +179,7 @@ final class Restore_Job {
                 }
                 usleep(25000);
             }
-            @file_put_contents($path, self::GUARD . $json, LOCK_EX);
+            @file_put_contents($path, $json, LOCK_EX);
             @unlink($tmp);
         }
     }
@@ -752,22 +794,29 @@ final class Restore_Job {
             return;
         }
         $cutoff = time() - DAY_IN_SECONDS;
-        foreach ((array) glob($dir . '/restore-*.php') as $f) {
+        // *.php: job files written before 1.6.2.
+        $files = array_merge((array) glob($dir . '/restore-*.json'), (array) glob($dir . '/restore-*.php'));
+        foreach ($files as $f) {
             if (!is_string($f) || @filemtime($f) >= $cutoff) {
                 continue;
             }
             // An abandoned job may have left staged tables (never switched
             // in) or the previous tables (switched in, never finished).
             // A day later the switched-in state is the site; keep it.
-            $id  = (string) preg_replace('/^restore-(.*)\.php$/', '$1', basename($f));
-            $job = self::get($id);
+            $id  = (string) preg_replace('/^restore-(.*)\.(?:json|php)$/', '$1', basename($f));
+            $job = self::valid_id($id) ? self::get($id) : null;
             $db  = is_array($job['cursor']['db'] ?? null) ? $job['cursor']['db'] : [];
             if (!empty($db['stage'])) {
                 Database::discard_staging($db);
                 Database::drop_previous_tables($db);
             }
             @unlink($f);
-            @unlink(self::lock_path($id));
+            if (self::valid_id($id)) {
+                // get() may have just moved a legacy file to JSON.
+                @unlink(self::path($id));
+                @unlink(self::legacy_path($id));
+                @unlink(self::lock_path($id));
+            }
         }
     }
 }

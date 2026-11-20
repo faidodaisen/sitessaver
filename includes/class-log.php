@@ -17,10 +17,13 @@ defined('ABSPATH') || exit;
  * fix it needs one place that says what SitesSaver was doing, when, and why
  * it stopped — readable from the Help screen without server access.
  *
- * Storage: one JSON object per line inside a .php file that starts with an
- * exit guard, under wp-content/sitessaver-backups/logs/. The folder already
- * carries the deny-all .htaccess, and the .php guard covers Nginx, where
- * .htaccess is ignored: a direct request runs the guard and prints nothing.
+ * Storage: one JSON object per line in a plain .log data file under
+ * wp-content/sitessaver-backups/logs/. The folder carries the deny-all
+ * .htaccess, a web.config and an empty index.php, and the file name has a
+ * random part (created once, found again by listing the folder), so the log
+ * cannot be fetched by guessing its URL on servers that ignore .htaccess.
+ * Before 1.6.2 the log was a .php file with an exit guard; it is moved into
+ * the new file the first time the log is used.
  *
  * Each entry gets a short reference code. The same code is shown to the user
  * in the error notice, so "it says SS-4F2A9C" is enough to find the entry.
@@ -30,7 +33,11 @@ final class Log {
     /** Rotate at this size; one previous file is kept. */
     private const MAX_BYTES = 524288;
 
-    private const GUARD = "<?php exit; ?>\n";
+    /** First line of the pre-1.6.2 .php log files. */
+    private const LEGACY_GUARD = "<?php exit; ?>\n";
+
+    /** Resolved log file for this request. */
+    private static ?string $file = null;
 
     /** Context keys whose values must never reach the log. */
     private const SECRET_KEYS = [
@@ -42,12 +49,60 @@ final class Log {
         return SITESSAVER_STORAGE_DIR . '/logs';
     }
 
+    /**
+     * The current log file: sitessaver-log-<random>.log.
+     *
+     * The random part is not stored in the database on purpose: a restore
+     * replaces the database, and the log written during that restore must
+     * still be found afterwards. It is found by listing the folder instead.
+     */
     public static function file(): string {
-        return self::dir() . '/sitessaver-log.php';
+        if (self::$file !== null) {
+            return self::$file;
+        }
+        $dir   = self::dir();
+        $found = glob($dir . '/sitessaver-log-*.log');
+        foreach (is_array($found) ? $found : [] as $f) {
+            // Also matches the rotated "<name>.1.log", which may be the only
+            // file left right after a rotation.
+            if (preg_match('/^sitessaver-log-([A-Za-z0-9]{20})(?:\.1)?\.log$/', basename($f), $m)) {
+                return self::$file = $dir . '/sitessaver-log-' . $m[1] . '.log';
+            }
+        }
+        // random_bytes(): available even before pluggable.php is loaded.
+        return self::$file = $dir . '/sitessaver-log-' . bin2hex(random_bytes(10)) . '.log';
     }
 
     private static function rotated_file(): string {
-        return self::dir() . '/sitessaver-log.1.php';
+        return (string) preg_replace('/\.log$/', '.1.log', self::file());
+    }
+
+    /**
+     * Move a pre-1.6.2 log (sitessaver-log.php / sitessaver-log.1.php, both
+     * behind an exit guard) into the current .log files, then delete it.
+     */
+    private static function migrate_legacy(): void {
+        $dir = self::dir();
+        foreach (['sitessaver-log.1.php' => self::rotated_file(), 'sitessaver-log.php' => self::file()] as $old => $new) {
+            $legacy = $dir . '/' . $old;
+            if (!is_file($legacy)) {
+                continue;
+            }
+            $raw = (string) @file_get_contents($legacy);
+            if (str_starts_with($raw, self::LEGACY_GUARD)) {
+                $raw = substr($raw, strlen(self::LEGACY_GUARD));
+            }
+            $lines = '';
+            foreach (explode("\n", $raw) as $line) {
+                $line = trim($line);
+                if ($line !== '' && $line[0] === '{') {
+                    $lines .= $line . "\n";
+                }
+            }
+            if ($lines === '' || @file_put_contents($new, $lines, FILE_APPEND | LOCK_EX) !== false) {
+                @unlink($legacy);
+            }
+        }
     }
 
     public static function error(string $code, string $message, array $context = [], ?string $ref = null): string {
@@ -105,6 +160,8 @@ final class Log {
                 sitessaver_protect_directory($dir);
             }
 
+            self::migrate_legacy();
+
             $file = self::file();
             clearstatcache(true, $file);
             if (is_file($file) && filesize($file) > self::MAX_BYTES) {
@@ -113,8 +170,7 @@ final class Log {
 
             $line = wp_json_encode($entry, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
             if (is_string($line)) {
-                $prefix = is_file($file) ? '' : self::GUARD;
-                @file_put_contents($file, $prefix . $line . "\n", FILE_APPEND | LOCK_EX);
+                @file_put_contents($file, $line . "\n", FILE_APPEND | LOCK_EX);
             }
         } catch (\Throwable $e) {
             // Fall through to error_log below.
@@ -134,7 +190,8 @@ final class Log {
      */
     public static function entries(int $limit = 200): array {
         $entries = [];
-        foreach ([self::rotated_file(), self::file()] as $file) {
+        $legacy  = [self::dir() . '/sitessaver-log.1.php', self::dir() . '/sitessaver-log.php'];
+        foreach (array_merge($legacy, [self::rotated_file(), self::file()]) as $file) {
             if (!is_readable($file)) {
                 continue;
             }
@@ -192,6 +249,8 @@ final class Log {
     public static function clear(): void {
         @unlink(self::file());
         @unlink(self::rotated_file());
+        @unlink(self::dir() . '/sitessaver-log.php');
+        @unlink(self::dir() . '/sitessaver-log.1.php');
     }
 
     /**
