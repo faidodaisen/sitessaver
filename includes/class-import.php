@@ -212,7 +212,7 @@ final class Import {
             ];
         }
 
-        $merged = SITESSAVER_TEMP_DIR . '/chain-' . wp_generate_password(8, false);
+        $merged = SITESSAVER_TEMP_DIR . '/chain-' . wp_generate_password(20, false);
 
         try {
             sitessaver_cleanup_temp();
@@ -301,83 +301,6 @@ final class Import {
     }
 
     /**
-     * Import from an uploaded file.
-     *
-     * @param array $file $_FILES array element.
-     * @return array{success: bool, message: string}
-     */
-    public static function from_upload(array $file): array {
-        if (empty($file['tmp_name']) || $file['error'] !== UPLOAD_ERR_OK) {
-            return ['success' => false, 'message' => __('Upload failed.', 'sitessaver')];
-        }
-
-        $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
-        if ($ext !== 'zip') {
-            return ['success' => false, 'message' => __('Only ZIP files are accepted.', 'sitessaver')];
-        }
-
-        // Verify ZIP magic bytes before touching disk — blocks .zip-renamed
-        // executables / random binaries that passed the extension check.
-        if (!self::is_zip_file($file['tmp_name'])) {
-            return ['success' => false, 'message' => __('The uploaded file is not a valid ZIP archive.', 'sitessaver')];
-        }
-
-        // Stage into temp (NOT storage) so a failed import doesn't litter the
-        // backups directory or overwrite an existing backup of the same name.
-        if (!is_dir(SITESSAVER_TEMP_DIR)) {
-            wp_mkdir_p(SITESSAVER_TEMP_DIR);
-        }
-        sitessaver_protect_directory(SITESSAVER_TEMP_DIR);
-        if (!function_exists('wp_handle_upload')) {
-            require_once ABSPATH . 'wp-admin/includes/file.php';
-        }
-
-        // wp_handle_upload() writes into the uploads folder by default; point it
-        // at the protected temp folder for this one call so the backup is never
-        // web-reachable, and give it a random name so it cannot clash.
-        $staged_name = 'incoming-' . wp_generate_password(8, false, false) . '.zip';
-        $to_temp     = static function (array $dirs): array {
-            $dirs['path']   = SITESSAVER_TEMP_DIR;
-            $dirs['url']    = '';
-            $dirs['subdir'] = '';
-            $dirs['error']  = false;
-            return $dirs;
-        };
-
-        add_filter('upload_dir', $to_temp);
-        $upload = wp_handle_upload($file, [
-            'test_form'                => false,
-            'mimes'                    => ['zip' => 'application/zip'],
-            'unique_filename_callback' => static fn(): string => $staged_name,
-        ]);
-        remove_filter('upload_dir', $to_temp);
-
-        if (!empty($upload['error']) || empty($upload['file']) || !is_file($upload['file'])) {
-            return ['success' => false, 'message' => __('Failed to save uploaded file.', 'sitessaver')];
-        }
-        $staged = $upload['file'];
-
-        try {
-            $result = self::run($staged);
-
-            // On success, archive a copy into storage with a unique filename
-            // so the imported backup shows up in the Backups list. Do this
-            // BEFORE cleanup so the staged file still exists.
-            if (!empty($result['success'])) {
-                $final_name = sitessaver_unique_stored_name((string) $file['name']);
-                $final_path = sitessaver_storage_dir() . '/' . $final_name;
-                @copy($staged, $final_path);
-            }
-        } finally {
-            if (file_exists($staged)) {
-                @unlink($staged);
-            }
-        }
-
-        return $result;
-    }
-
-    /**
      * Check the first 4 bytes for the ZIP local-file-header (PK\x03\x04) or
      * empty-archive (PK\x05\x06) magic.
      */
@@ -396,7 +319,7 @@ final class Import {
      * Run the import process.
      */
     private static function run(string $zip_path): array {
-        $temp_dir = SITESSAVER_TEMP_DIR . '/import-' . wp_generate_password(8, false);
+        $temp_dir = SITESSAVER_TEMP_DIR . '/import-' . wp_generate_password(20, false);
 
         try {
             // Opportunistic stale-only sweep (won't touch active export temps).
@@ -566,7 +489,7 @@ final class Import {
                 'set'   => array_values($set),
                 'm'     => 0,
                 'x'     => [],
-                'temp'  => SITESSAVER_TEMP_DIR . '/import-' . wp_generate_password(8, false),
+                'temp'  => SITESSAVER_TEMP_DIR . '/import-' . wp_generate_password(20, false),
                 'label' => basename((string) end($set)),
             ];
             wp_mkdir_p($c['temp']);
@@ -1717,6 +1640,8 @@ final class Import {
         delete_transient('sitessaver_finalize_token');
 
         if (!empty($pending['active_plugins']) && is_array($pending['active_plugins'])) {
+            // Puts back the backup's own active-plugin list, part of the
+            // restore the admin started.
             update_option('active_plugins', $pending['active_plugins']);
         }
 

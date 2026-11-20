@@ -28,9 +28,6 @@ final class Ajax {
             'sitessaver_resume_export'  => 'handle_resume_export',
             'sitessaver_get_export_status' => 'handle_get_export_status',
             'sitessaver_cancel_export'     => 'handle_cancel_export',
-            'sitessaver_import'         => 'handle_import',
-            'sitessaver_get_import_status' => 'handle_get_import_status',
-            'sitessaver_import_upload'  => 'handle_import_upload',
             'sitessaver_delete_backup'  => 'handle_delete',
             'sitessaver_download_backup'=> 'handle_download',
             'sitessaver_add_label'      => 'handle_label',
@@ -47,7 +44,6 @@ final class Ajax {
             'sitessaver_get_gdrive_upload_status' => 'handle_get_gdrive_upload_status',
             'sitessaver_gdrive_list'    => 'handle_gdrive_list',
             'sitessaver_gdrive_download'=> 'handle_gdrive_download',
-            'sitessaver_gdrive_restore' => 'handle_gdrive_restore',
             'sitessaver_gdrive_delete'  => 'handle_gdrive_delete',
             'sitessaver_remote_disconnect'    => 'handle_remote_disconnect',
             'sitessaver_remote_upload'        => 'handle_remote_upload',
@@ -58,7 +54,6 @@ final class Ajax {
             'sitessaver_upload_chunk'   => 'handle_upload_chunk',
             'sitessaver_upload_status'  => 'handle_upload_status',
             'sitessaver_cleanup_chunks' => 'handle_cleanup_chunks',
-            'sitessaver_finalize_restore' => 'handle_finalize_restore',
             'sitessaver_restore_start'  => 'handle_restore_start',
             'sitessaver_restore_status' => 'handle_restore_status',
             'sitessaver_restore_run'    => 'handle_restore_run',
@@ -437,110 +432,6 @@ final class Ajax {
     }
 
     /**
-     * Import/restore from existing backup file.
-     *
-     * Why the output buffer:
-     *   Third-party plugins (Elementor, Landinghub, etc.) sometimes emit PHP
-     *   notices — e.g. WP 6.7's "textdomain loaded too early" — *during* the
-     *   import request. Any stray output ahead of `wp_send_json_*` corrupts
-     *   the JSON response and the client shows a generic "An error occurred"
-     *   with no hint of what actually ran. We buffer, discard pre-output, then
-     *   send a clean JSON envelope. Notices still reach debug.log.
-     */
-    public function handle_import(): void {
-        sitessaver_verify_ajax();
-
-        @set_time_limit(0);
-        wp_raise_memory_limit('admin');
-
-        ob_start();
-
-        $file = sanitize_file_name(wp_unslash($_POST['file'] ?? ''));
-
-        if (empty($file)) {
-            self::discard_output_buffer();
-            wp_send_json_error(['message' => __('No backup file specified.', 'sitessaver')]);
-        }
-
-        $result = Import::from_backup($file);
-
-        self::discard_output_buffer();
-
-        if ($result['success']) {
-            // Post-restore authorization token. The browser's cookie was
-            // issued against the PRE-restore DB; after restore the new user
-            // table + auth salts may not recognise it, so the finalize AJAX
-            // call can't rely on the standard nonce/capability check. Hand
-            // the client this short-lived token to present on finalize.
-            $result['finalize_token'] = Import::current_finalize_token();
-            $result['finalize_url']   = Import::build_finalize_redirect_url();
-            wp_send_json_success($result);
-        } else {
-            wp_send_json_error($this->restore_failure_payload($result));
-        }
-    }
-
-    /**
-     * Turn a failed Import result into the plain-language error payload,
-     * logging the technical message under a reference code.
-     *
-     * @param array<string, mixed> $result
-     * @return array<string, mixed>
-     */
-    private function restore_failure_payload(array $result): array {
-        $technical = (string) ($result['message'] ?? '');
-        $phase     = (string) (Import::get_progress()['phase'] ?? '');
-        return Errors::report(Errors::classify_restore($technical, $phase), $technical, ['phase' => $phase, 'mode' => 'legacy']);
-    }
-
-    /**
-     * Status poll for a restore in progress.
-     *
-     * The restore itself runs inside ONE blocking sitessaver_import request
-     * (see handle_import() — it can't be safely backgrounded, the browser
-     * holds the admin session that authorized it) but Import::tick() writes
-     * a transient at each phase boundary, which THIS separate concurrent
-     * request can read while that blocking call is still in flight — so the
-     * step checklist can show real progress instead of one static spinner.
-     */
-    public function handle_get_import_status(): void {
-        sitessaver_verify_ajax();
-
-        wp_send_json_success(['progress' => Import::get_progress()]);
-    }
-
-    /**
-     * Import from uploaded ZIP file.
-     */
-    public function handle_import_upload(): void {
-        sitessaver_verify_ajax();
-
-        @set_time_limit(0);
-        wp_raise_memory_limit('admin');
-
-        ob_start();
-
-        if (empty($_FILES['backup'])) {
-            self::discard_output_buffer();
-            wp_send_json_error(['message' => __('No file uploaded.', 'sitessaver')]);
-        }
-
-        // The upload array goes to wp_handle_upload() (inside from_upload),
-        // which validates it; its fields are not text to sanitise.
-        $result = Import::from_upload($_FILES['backup']); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
-
-        self::discard_output_buffer();
-
-        if ($result['success']) {
-            $result['finalize_token'] = Import::current_finalize_token();
-            $result['finalize_url']   = Import::build_finalize_redirect_url();
-            wp_send_json_success($result);
-        } else {
-            wp_send_json_error($this->restore_failure_payload($result));
-        }
-    }
-
-    /**
      * Discard only the buffer we opened in this handler. Leaves any outer
      * WordPress / third-party buffers untouched so we don't clobber their
      * output lifecycle.
@@ -553,43 +444,6 @@ final class Ajax {
         if ($contents !== false && $contents !== '') {
             error_log('[SitesSaver] Stray output during AJAX import suppressed: ' . substr($contents, 0, 500));
         }
-    }
-
-    /**
-     * Backward-compat AJAX stub. The redirect-based finalize flow (added in
-     * 1.1.6) means this endpoint is no longer called by current JS — the
-     * client navigates straight to wp-login.php and the deferred work runs
-     * in Admin::handle_post_import_finalisation under a clean session.
-     *
-     * We keep the endpoint registered so that any in-flight browser tab
-     * still on cached 1.1.5 JS can complete gracefully: we simply return the
-     * redirect URL and let the client navigate there.
-     */
-    public function handle_finalize_restore(): void {
-        // SECURITY: returning this URL unconditionally leaked the embedded
-        // one-time finalize token, which is what authorises the deferred work
-        // (activating the backup's plugin set, switching its theme) on the
-        // landing page. A plain subscriber could read it straight out of this
-        // JSON body — verified with a subscriber session.
-        //
-        // A nonce alone is not sufficient here: after a restore the browser's
-        // cookie was minted against the PRE-restore DB, so the legitimate user
-        // can fail a capability check through no fault of their own. We accept
-        // EITHER a real admin session OR possession of the token itself, which
-        // the client already received in the import response.
-        $supplied  = sanitize_text_field(wp_unslash($_POST['token'] ?? ''));
-        $expected  = Import::current_finalize_token();
-        $has_token = $expected !== '' && $supplied !== '' && hash_equals($expected, $supplied);
-
-        if (!$has_token && !sitessaver_current_user_can()) {
-            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
-            return;
-        }
-
-        wp_send_json_success([
-            'redirect' => Import::build_finalize_redirect_url(),
-            'message'  => __('Please log in with your restored credentials to complete the restore.', 'sitessaver'),
-        ]);
     }
 
     /**
@@ -1272,42 +1126,6 @@ final class Ajax {
     }
 
     /**
-     * Download a Drive backup AND immediately restore it. The downloaded
-     * ZIP is persisted to the local storage dir so it shows up in the
-     * Backups list too — same behaviour as manual download + restore,
-     * just one click.
-     */
-    public function handle_gdrive_restore(): void {
-        sitessaver_verify_ajax();
-
-        @set_time_limit(0);
-        wp_raise_memory_limit('admin');
-
-        $file_id = sanitize_text_field(wp_unslash($_POST['file_id'] ?? ''));
-
-        if (empty($file_id)) {
-            wp_send_json_error(['message' => __('No file specified.', 'sitessaver')]);
-        }
-
-        // Step 1: download from Drive to local storage.
-        $dl = GDrive::download($file_id);
-        if (empty($dl['success']) || empty($dl['file'])) {
-            wp_send_json_error(['message' => $dl['message'] ?? __('Failed to download from Google Drive.', 'sitessaver')]);
-        }
-
-        // Step 2: restore from the downloaded file.
-        $restore = Import::from_backup($dl['file']);
-
-        if ($restore['success']) {
-            $restore['finalize_token'] = Import::current_finalize_token();
-            $restore['finalize_url']   = Import::build_finalize_redirect_url();
-            wp_send_json_success($restore);
-        } else {
-            wp_send_json_error($this->restore_failure_payload($restore));
-        }
-    }
-
-    /**
      * Delete backup from Google Drive.
      */
     public function handle_gdrive_delete(): void {
@@ -1669,7 +1487,7 @@ final class Ajax {
             wp_send_json_error(Errors::payload('restore_file_missing', 'No file specified.'), 400);
         }
 
-        if ($file !== '' && !is_readable(sitessaver_storage_dir() . '/' . $file)) {
+        if ($file !== '' && (sitessaver_resolve_backup_path($file) === null || !is_readable(sitessaver_storage_dir() . '/' . $file))) {
             wp_send_json_error(Errors::report('restore_file_missing', 'Backup file not found: ' . $file));
         }
 
