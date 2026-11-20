@@ -32,8 +32,20 @@ $sitessaver_this_version = '1.6.2';
 if (defined('SITESSAVER_VERSION')) {
     $sitessaver_copy = plugin_basename(__FILE__);
 
-    $sitessaver_copy_notice = static function () use ($sitessaver_copy, $sitessaver_this_version): void {
-        if (!current_user_can('activate_plugins')) {
+    // A network-active copy can only be handled from Network Admin.
+    $sitessaver_copy_network = static function () use ($sitessaver_copy): bool {
+        if (!is_multisite()) {
+            return false;
+        }
+        if (!function_exists('is_plugin_active_for_network')) {
+            require_once ABSPATH . 'wp-admin/includes/plugin.php';
+        }
+        return is_plugin_active_for_network($sitessaver_copy);
+    };
+
+    $sitessaver_copy_notice = static function () use ($sitessaver_copy, $sitessaver_this_version, $sitessaver_copy_network): void {
+        $network = $sitessaver_copy_network();
+        if ($network ? (!is_network_admin() || !current_user_can('manage_network_plugins')) : !current_user_can('activate_plugins')) {
             return;
         }
         $screen = function_exists('get_current_screen') ? get_current_screen() : null;
@@ -44,7 +56,7 @@ if (defined('SITESSAVER_VERSION')) {
         $url = wp_nonce_url(
             add_query_arg(
                 ['action' => 'sitessaver_deactivate_copy', 'plugin' => $sitessaver_copy],
-                admin_url('admin-post.php')
+                $network ? network_admin_url('edit.php') : admin_url('admin-post.php')
             ),
             'sitessaver_deactivate_copy_' . $sitessaver_copy
         );
@@ -64,23 +76,28 @@ if (defined('SITESSAVER_VERSION')) {
     add_action('admin_notices', $sitessaver_copy_notice);
     add_action('network_admin_notices', $sitessaver_copy_notice);
 
-    add_action('admin_post_sitessaver_deactivate_copy', static function () use ($sitessaver_copy): void {
+    $sitessaver_copy_deactivate = static function () use ($sitessaver_copy, $sitessaver_copy_network): void {
         $requested = isset($_GET['plugin']) ? sanitize_text_field(wp_unslash($_GET['plugin'])) : '';
         if ($requested !== $sitessaver_copy) {
             return; // Another copy's request; that copy handles it.
         }
-        if (!current_user_can('activate_plugins')) {
+        $network = $sitessaver_copy_network();
+        $allowed = $network
+            ? is_network_admin() && current_user_can('manage_network_plugins')
+            : current_user_can('activate_plugins');
+        if (!$allowed) {
             wp_die(esc_html__('You do not have permission to deactivate plugins.', 'sitessaver'), '', ['response' => 403]);
         }
         check_admin_referer('sitessaver_deactivate_copy_' . $sitessaver_copy);
         if (!function_exists('deactivate_plugins')) {
             require_once ABSPATH . 'wp-admin/includes/plugin.php';
         }
-        $network = is_multisite() && is_plugin_active_for_network($sitessaver_copy);
-        deactivate_plugins(plugin_basename(__FILE__), false, $network);
+        deactivate_plugins($sitessaver_copy, false, $network);
         wp_safe_redirect(($network ? network_admin_url('plugins.php') : admin_url('plugins.php')) . '?deactivate=true');
         exit;
-    });
+    };
+    add_action('admin_post_sitessaver_deactivate_copy', $sitessaver_copy_deactivate);
+    add_action('network_admin_edit_sitessaver_deactivate_copy', $sitessaver_copy_deactivate);
     return;
 }
 
