@@ -57,6 +57,11 @@ final class Zip_Writer {
      * @param callable             $should_stop fn(): bool, checked after each unit of work.
      * @param callable             $commit      fn(array $state, bool $force): void.
      * @param callable|null        $progress    fn(int $entries_done, array $current): void.
+     * @param array<int, string>   $lists       Extra list files, one entry per line:
+     *                                          "name/" for a folder, or "name NUL absolute-path"
+     *                                          for a file read from where it lives.
+     *                                          These files are archived straight from their
+     *                                          source; nothing is copied to disk first.
      * @return array<string, mixed> State; `done` is true when the ZIP is complete.
      */
     public static function build(
@@ -67,7 +72,8 @@ final class Zip_Writer {
         array $state,
         callable $should_stop,
         callable $commit,
-        ?callable $progress = null
+        ?callable $progress = null,
+        array $lists = []
     ): array {
         $source_dir = rtrim(str_replace('\\', '/', $source_dir), '/') . '/';
         $list_file  = $work_dir . '/zip-list.txt';
@@ -87,7 +93,7 @@ final class Zip_Writer {
         }
 
         if (empty($state['listed'])) {
-            $count = self::write_list($source_dir, $exclude, $list_file);
+            $count = self::write_list($source_dir, $exclude, $list_file, $lists);
             foreach ([$part, $cd_file] as $stale) {
                 if (is_file($stale)) {
                     unlink($stale);
@@ -145,10 +151,18 @@ final class Zip_Writer {
                     }
                     $state['i']++;
 
+                    // "name NUL source" = archive a file from where it lives.
+                    $abs = null;
+                    $sep = strpos($relative, "\0");
+                    if ($sep !== false) {
+                        $abs      = substr($relative, $sep + 1);
+                        $relative = substr($relative, 0, $sep);
+                    }
+
                     if (str_ends_with($relative, '/')) {
-                        self::add_dir($out, $cdh, $relative, $source_dir, $state);
+                        self::add_dir($out, $cdh, $relative, $source_dir, $state, $abs);
                     } else {
-                        $abs  = $source_dir . $relative;
+                        $abs  = $abs ?? ($source_dir . $relative);
                         $size = is_file($abs) ? (int) @filesize($abs) : -1;
                         if ($size < 0 || !is_readable($abs)) {
                             // Vanished or unreadable: same as Archive::create()
@@ -156,7 +170,7 @@ final class Zip_Writer {
                             $state['skipped'] = (int) ($state['skipped'] ?? 0) + 1;
                             error_log('[SitesSaver] Zip: unreadable, skipped — ' . $relative);
                         } elseif ($size >= self::STREAM_MIN) {
-                            self::start_large($out, $relative, $abs, $size, $state);
+                            self::start_large($out, $relative, $abs, $size, $state, $abs !== $source_dir . $relative);
                             $save(false);
                             continue;
                         } else {
@@ -215,15 +229,19 @@ final class Zip_Writer {
 
     /**
      * List every entry to archive, one relative path per line (directories
-     * end in "/"). Same selection rules as Archive::create().
+     * end in "/"). Same selection rules as Archive::create(). Entries from
+     * the extra $lists follow, filtered by the same exclude patterns.
+     *
+     * @param array<int, string> $lists
      */
-    private static function write_list(string $source_dir, array $exclude, string $list_file): int {
+    private static function write_list(string $source_dir, array $exclude, string $list_file, array $lists = []): int {
         $fh = @fopen($list_file, 'wb');
         if (!$fh) {
             throw new \RuntimeException('Could not write the ZIP file list' . self::why() . '.');
         }
 
         $count = 0;
+        $dirs  = [];
         $files = new \RecursiveIteratorIterator(
             new \RecursiveDirectoryIterator($source_dir, \RecursiveDirectoryIterator::SKIP_DOTS),
             \RecursiveIteratorIterator::SELF_FIRST
@@ -246,12 +264,64 @@ final class Zip_Writer {
                 continue;
             }
 
+            if ($file->isDir()) {
+                $dirs[$relative . '/'] = true;
+            }
             fwrite($fh, $relative . ($file->isDir() ? '/' : '') . "\n");
             $count++;
 
             if ($count % 500 === 0 && class_exists(Export::class)) {
                 Export::tick('zip-list', $count);
             }
+        }
+
+        foreach ($lists as $extra) {
+            $in = @fopen($extra, 'rb');
+            if (!$in) {
+                fclose($fh);
+                throw new \RuntimeException('Could not read the backup file list' . self::why() . '.');
+            }
+            while (($line = fgets($in)) !== false) {
+                $line = rtrim($line, "\n");
+                if ($line === '') {
+                    continue;
+                }
+                $sep  = strpos($line, "\0");
+                $name = $sep === false ? $line : substr($line, 0, $sep);
+                if ($name === '' || str_starts_with($name, '/') || str_contains($name, "\r")) {
+                    continue;
+                }
+
+                $is_dir = $sep === false && str_ends_with($name, '/');
+                if ($sep === false && !$is_dir) {
+                    continue; // a file line must carry its source path
+                }
+                $test = rtrim($name, '/');
+                $skip = false;
+                foreach ($exclude as $pattern) {
+                    if (fnmatch($pattern, $test) || fnmatch($pattern, basename($test))) {
+                        $skip = true;
+                        break;
+                    }
+                }
+                if ($skip) {
+                    continue;
+                }
+                if ($is_dir) {
+                    if (isset($dirs[$name])) {
+                        continue;
+                    }
+                    $dirs[$name] = true;
+                }
+
+                fwrite($fh, $line . "\n");
+                $count++;
+
+                if ($count % 500 === 0 && class_exists(Export::class)) {
+                    Export::tick('zip-list', $count);
+                }
+            }
+            fclose($in);
         }
 
         fclose($fh);
@@ -262,8 +332,9 @@ final class Zip_Writer {
     // Entries
     // ---------------------------------------------------------------
 
-    private static function add_dir($out, $cdh, string $relative, string $source_dir, array &$state): void {
-        [$time, $date] = self::dos_time((int) @filemtime($source_dir . rtrim($relative, '/')));
+    private static function add_dir($out, $cdh, string $relative, string $source_dir, array &$state, ?string $abs = null): void {
+        $from          = $abs ?? ($source_dir . rtrim($relative, '/'));
+        [$time, $date] = self::dos_time(is_dir($from) ? (int) @filemtime($from) : 0);
         $offset = (int) ftell($out);
 
         fwrite($out, pack('VvvvvvVVVvv', 0x04034b50, 20, 0x0800, 0, $time, $date, 0, 0, 0, strlen($relative), 0) . $relative);
@@ -313,7 +384,7 @@ final class Zip_Writer {
         $state['entries']++;
     }
 
-    private static function start_large($out, string $relative, string $abs, int $size, array &$state): void {
+    private static function start_large($out, string $relative, string $abs, int $size, array &$state, bool $external = false): void {
         [$time, $date] = self::dos_time((int) @filemtime($abs));
         $method = self::should_deflate($relative) ? 8 : 0;
         $z64    = $size >= self::$zip64_at;
@@ -337,6 +408,10 @@ final class Zip_Writer {
             'z64'    => $z64,
             'crc'    => base64_encode(serialize(hash_init('crc32b'))),
         ];
+        if ($external) {
+            // Read from where it lives; the next request needs the path.
+            $state['cur']['abs'] = $abs;
+        }
     }
 
     /**
@@ -345,7 +420,7 @@ final class Zip_Writer {
      */
     private static function continue_large(string $source_dir, $out, $cdh, array &$state, callable $save, callable $should_stop): bool {
         $cur = &$state['cur'];
-        $in  = @fopen($source_dir . $cur['name'], 'rb');
+        $in  = @fopen(isset($cur['abs']) ? (string) $cur['abs'] : $source_dir . $cur['name'], 'rb');
         if (!$in) {
             throw new \RuntimeException('Could not read ' . $cur['name'] . ' while building the ZIP.');
         }

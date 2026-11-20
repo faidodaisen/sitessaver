@@ -38,10 +38,10 @@ final class Export {
                 ['id' => 'init',      'label' => __('Initializing...', 'sitessaver'), 'pct' => 5],
                 ['id' => 'manifest',  'label' => __('Creating manifest...', 'sitessaver'), 'pct' => 10],
                 ['id' => 'db',        'label' => __('Exporting database...', 'sitessaver'), 'pct' => 25],
-                ['id' => 'uploads',   'label' => __('Copying uploads...', 'sitessaver'), 'pct' => 45],
-                ['id' => 'plugins',   'label' => __('Copying plugins...', 'sitessaver'), 'pct' => 60],
-                ['id' => 'themes',    'label' => __('Copying themes...', 'sitessaver'), 'pct' => 75],
-                ['id' => 'other',     'label' => __('Copying other files...', 'sitessaver'), 'pct' => 80],
+                ['id' => 'uploads',   'label' => __('Listing uploads...', 'sitessaver'), 'pct' => 30],
+                ['id' => 'plugins',   'label' => __('Listing plugins...', 'sitessaver'), 'pct' => 33],
+                ['id' => 'themes',    'label' => __('Listing themes...', 'sitessaver'), 'pct' => 36],
+                ['id' => 'other',     'label' => __('Listing other files...', 'sitessaver'), 'pct' => 38],
                 ['id' => 'zip',       'label' => __('Creating ZIP archive...', 'sitessaver'), 'pct' => 95],
                 ['id' => 'finalize',  'label' => __('Finalizing...', 'sitessaver'), 'pct' => 100],
             ];
@@ -51,10 +51,10 @@ final class Export {
             ['id' => 'init',      'label' => __('Initializing...', 'sitessaver'), 'pct' => 3],
             ['id' => 'manifest',  'label' => __('Creating manifest...', 'sitessaver'), 'pct' => 6],
             ['id' => 'db',        'label' => __('Exporting database...', 'sitessaver'), 'pct' => 15],
-            ['id' => 'uploads',   'label' => __('Copying uploads...', 'sitessaver'), 'pct' => 28],
-            ['id' => 'plugins',   'label' => __('Copying plugins...', 'sitessaver'), 'pct' => 38],
-            ['id' => 'themes',    'label' => __('Copying themes...', 'sitessaver'), 'pct' => 46],
-            ['id' => 'other',     'label' => __('Copying other files...', 'sitessaver'), 'pct' => 50],
+            ['id' => 'uploads',   'label' => __('Listing uploads...', 'sitessaver'), 'pct' => 18],
+            ['id' => 'plugins',   'label' => __('Listing plugins...', 'sitessaver'), 'pct' => 20],
+            ['id' => 'themes',    'label' => __('Listing themes...', 'sitessaver'), 'pct' => 22],
+            ['id' => 'other',     'label' => __('Listing other files...', 'sitessaver'), 'pct' => 24],
             ['id' => 'zip',       'label' => __('Creating ZIP archive...', 'sitessaver'), 'pct' => 60],
             [
                 'id'    => 'finalize',
@@ -678,7 +678,7 @@ final class Export {
             'memory_limit'       => ini_get('memory_limit'),
             'peak_memory'        => size_format(memory_get_peak_usage(true)),
             'disk_free'          => $free !== false ? size_format((int) $free) : 'unknown',
-            'server'             => isset($_SERVER['SERVER_SOFTWARE']) ? substr((string) $_SERVER['SERVER_SOFTWARE'], 0, 60) : '',
+            'server'             => isset($_SERVER['SERVER_SOFTWARE']) ? substr(sanitize_text_field(wp_unslash($_SERVER['SERVER_SOFTWARE'])), 0, 60) : '',
             'php'                => PHP_VERSION,
         ];
     }
@@ -952,7 +952,7 @@ final class Export {
                             Log::info('export_skipped_foreign_backups', 'Left other backup plugins\' archives out of the backup.', ['items' => $foreign]);
                         }
                         $uploads_exclude = array_merge($uploads_exclude, self::FOREIGN_BACKUP_DIRS, self::FOREIGN_BACKUP_FILES);
-                        self::copy_area('uploads', $uploads_dir, $temp_dir, $uploads_exclude, $plan);
+                        self::list_area('uploads', $uploads_dir, $temp_dir, $uploads_exclude, $plan);
                     }
                     break;
 
@@ -966,7 +966,7 @@ final class Export {
                         // silently reverting whatever bugfixes the running plugin had.
                         // We now pass an explicit path-prefix pattern AND rely on the
                         // prefix-aware check added to copy_directory() below.
-                        self::copy_area(
+                        self::list_area(
                             'plugins',
                             WP_PLUGIN_DIR,
                             $temp_dir,
@@ -978,13 +978,13 @@ final class Export {
 
                 case 'themes':
                     if (!empty($options['include_themes'])) {
-                        self::copy_area('themes', get_theme_root(), $temp_dir, [], $plan);
+                        self::list_area('themes', get_theme_root(), $temp_dir, [], $plan);
                     }
                     break;
 
                 case 'other':
                     if (is_dir(WPMU_PLUGIN_DIR)) {
-                        self::copy_area('mu-plugins', WPMU_PLUGIN_DIR, $temp_dir, [], $plan);
+                        self::list_area('mu-plugins', WPMU_PLUGIN_DIR, $temp_dir, [], $plan);
                     }
                     break;
 
@@ -1025,7 +1025,8 @@ final class Export {
                         },
                         static function (int $n): void {
                             self::tick('zip', $n);
-                        }
+                        },
+                        self::area_lists($temp_dir)
                     );
                     if (empty($w['done'])) {
                         self::slice_expired();
@@ -1308,8 +1309,14 @@ final class Export {
     }
 
     /**
-     * Copy one backup area, indexing it and — for an incremental run —
-     * skipping files that have not changed since the parent backup.
+     * List one backup area for the ZIP, indexing it and, for an incremental
+     * run, leaving out files that have not changed since the parent backup.
+     *
+     * Nothing is copied. The area's files are written straight from their
+     * live location into the archive by Zip_Writer in the 'zip' step; this
+     * step only records which files go in, as "name-in-zip NUL absolute-path"
+     * lines in the ZIP builder's scratch folder. So no loose copy of any plugin,
+     * theme or upload file (PHP included) is ever written to disk.
      *
      * Each area writes its own index shard to temp rather than accumulating
      * into a static or an option. Steps run as separate HTTP requests, so
@@ -1318,10 +1325,9 @@ final class Export {
      *
      * @param array<string, mixed> $plan
      */
-    private static function copy_area(string $area, string $source, string $temp_dir, array $exclude, array $plan): void {
+    private static function list_area(string $area, string $source, string $temp_dir, array $exclude, array $plan): void {
         $prefixes = Index::area_prefixes();
         $prefix   = $prefixes[$area] ?? ('wp-content/' . $area . '/');
-        $dest     = $temp_dir . '/' . rtrim($prefix, '/');
 
         $incremental = ($plan['type'] ?? 'full') === 'incremental';
         $detection   = ($plan['detection'] ?? 'fast') === 'thorough' ? 'thorough' : 'fast';
@@ -1331,7 +1337,7 @@ final class Export {
             $loaded = Index::load((string) ($plan['parent'] ?? ''));
             if (!is_array($loaded)) {
                 // plan() already verified the parent index exists. If it has
-                // vanished between then and now, copying everything is the
+                // vanished between then and now, archiving everything is the
                 // safe answer: a bigger backup, not a broken one.
                 $incremental = false;
             } else {
@@ -1341,9 +1347,10 @@ final class Export {
 
         $index = [];
 
-        self::copy_directory(
+        self::list_directory(
             $source,
-            $dest,
+            $prefix,
+            self::area_list_file($temp_dir, $area),
             $exclude,
             static function (string $relative, string $abs_path) use ($prefix, $incremental, $parent_index, $detection, &$index): bool {
                 $key         = $prefix . $relative;
@@ -1360,6 +1367,30 @@ final class Export {
         );
 
         self::write_index_shard($temp_dir, $area, $index);
+    }
+
+    /**
+     * Where an area's ZIP list lives: in the ZIP builder's scratch folder,
+     * beside (never inside) temp_dir, so the list itself is not archived.
+     */
+    private static function area_list_file(string $temp_dir, string $area): string {
+        return self::zip_work_dir($temp_dir) . '/areas/' . sanitize_file_name($area) . '.lst';
+    }
+
+    /**
+     * Every area list written so far, for Zip_Writer.
+     *
+     * @return list<string>
+     */
+    private static function area_lists(string $temp_dir): array {
+        $lists = [];
+        foreach (array_keys(Index::area_prefixes()) as $area) {
+            $file = self::area_list_file($temp_dir, $area);
+            if (is_file($file)) {
+                $lists[] = $file;
+            }
+        }
+        return $lists;
     }
 
     /**
@@ -1452,173 +1483,182 @@ final class Export {
     }
 
     /**
-     * Recursively copy a directory, respecting exclude patterns.
+     * Walk a directory and write the ZIP list for it, respecting exclude
+     * patterns. Same selection rules the export always used when it copied
+     * files into a staging folder; only the output changed.
      *
+     * The list is written to "<list>.tmp" and renamed when complete, so a
+     * request stopped mid-walk leaves no half list behind; the next slice
+     * simply walks the area again. A walk only reads metadata (and, in
+     * thorough mode, checksums), which is the part every earlier slice of
+     * the old copy step also repeated.
+     *
+     * @param string $zip_prefix Name prefix inside the archive, e.g. "wp-content/plugins/".
      * @param callable(string, string): bool|null $filter Receives the path
-     *        relative to $source and its absolute path; returns false to skip
-     *        copying the file. Called for every non-excluded FILE, including
-     *        ones it then skips, so an incremental run still indexes the
-     *        files it chose not to archive.
-     * @param bool $mirror_dirs Recreate every source directory in the
-     *        destination, empty ones included. False for incremental runs,
-     *        where only the folders holding archived files are wanted.
+     *        relative to $source and its absolute path; returns false to leave
+     *        the file out. Called for every non-excluded FILE, including ones
+     *        it then skips, so an incremental run still indexes the files it
+     *        chose not to archive.
+     * @param bool $mirror_dirs List every source directory, empty ones
+     *        included. False for incremental runs, where only the folders
+     *        holding archived files are wanted.
      */
-    private static function copy_directory(string $source, string $dest, array $exclude = [], ?callable $filter = null, bool $mirror_dirs = true): void {
-        if (!is_dir($source)) {
-            return;
+    private static function list_directory(string $source, string $zip_prefix, string $list_file, array $exclude = [], ?callable $filter = null, bool $mirror_dirs = true): void {
+        if (!is_dir(dirname($list_file))) {
+            wp_mkdir_p(dirname($list_file));
+        }
+        $tmp = $list_file . '.tmp';
+        $fh  = @fopen($tmp, 'wb');
+        if ($fh === false) {
+            throw new \RuntimeException('Could not write the backup file list (' . Environment::last_error() . '; write blocked).');
         }
 
-        // Always exclude our own backups and temp files.
-        $exclude = array_merge($exclude, [
-            'sitessaver-backups',
-            'cache',
-            'upgrade',
-            '*.log',
-            '.DS_Store',
-            'Thumbs.db',
-        ]);
-
-        wp_mkdir_p($dest);
-
-        // Decide once per entry whether the exclude list skips it, and whether
-        // a skipped DIRECTORY can be pruned (not descended into at all).
-        // Pruning only happens when every descendant would also be skipped
-        // under the historic rules (first-segment / prefix match, or a
-        // trailing-* pattern that matches the folder itself); a folder that
-        // is merely skipped by basename (e.g. a nested `cache` dir inside a
-        // plugin) is still walked so its files keep being copied exactly as
-        // before. Before pruning, a huge excluded tree was walked file by file
-        // with no liveness tick, which alone could trip the stall detector.
-        $match = static function (string $relative) use ($exclude): array {
-            $first_segment = strtok($relative, '/');
-            foreach ($exclude as $pattern) {
-                $base_pattern = rtrim($pattern, '/*');
-                $by_prefix    = $first_segment === $base_pattern || str_starts_with($relative, $base_pattern . '/');
-                $by_glob      = fnmatch($pattern, $relative);
-                if ($by_prefix || $by_glob || fnmatch($pattern, basename($relative))) {
-                    return [true, $by_prefix || ($by_glob && str_ends_with($pattern, '*'))];
+        $zip_prefix = rtrim($zip_prefix, '/') . '/';
+        $complete   = false;
+        $listed     = [];
+        $emit_dir   = static function (string $name) use ($fh, &$listed): void {
+            // Parent folders first, each once.
+            $parts = explode('/', trim($name, '/'));
+            $path  = '';
+            foreach ($parts as $part) {
+                $path .= $part . '/';
+                if (!isset($listed[$path])) {
+                    $listed[$path] = true;
+                    fwrite($fh, $path . "\n");
                 }
             }
-            return [false, false];
         };
 
-        $source_norm = str_replace('\\', '/', $source);
-        $relative_of = static function (\SplFileInfo $file) use ($source_norm): string {
-            $relative = str_replace('\\', '/', $file->getPathname());
-            if (str_starts_with($relative, $source_norm)) {
-                $relative = substr($relative, strlen($source_norm));
+        try {
+            if (!is_dir($source)) {
+                $complete = true;
+                return;
             }
-            return ltrim($relative, '/');
-        };
 
-        $copied   = 0;
-        $iterator = new \RecursiveCallbackFilterIterator(
-            new \RecursiveDirectoryIterator($source, \RecursiveDirectoryIterator::SKIP_DOTS),
-            static function (\SplFileInfo $file) use ($match, $relative_of, &$copied): bool {
-                // Liveness while walking, including long runs of entries
-                // that are skipped and never reach the copy below.
-                self::tick('copy', $copied);
-                if (!$file->isDir()) {
-                    return true;
+            // The area folder itself is always in the archive, as it was
+            // when the staging copy created it.
+            $emit_dir($zip_prefix);
+
+            // Always exclude our own backups and temp files.
+            $exclude = array_merge($exclude, [
+                'sitessaver-backups',
+                'cache',
+                'upgrade',
+                '*.log',
+                '.DS_Store',
+                'Thumbs.db',
+            ]);
+
+            // Decide once per entry whether the exclude list skips it, and
+            // whether a skipped DIRECTORY can be pruned (not descended into
+            // at all). Pruning only happens when every descendant would also
+            // be skipped (first-segment / prefix match, or a trailing-*
+            // pattern that matches the folder itself); a folder that is
+            // merely skipped by basename (e.g. a nested `cache` dir inside a
+            // plugin) is still walked so its files are kept.
+            $match = static function (string $relative) use ($exclude): array {
+                $first_segment = strtok($relative, '/');
+                foreach ($exclude as $pattern) {
+                    $base_pattern = rtrim($pattern, '/*');
+                    $by_prefix    = $first_segment === $base_pattern || str_starts_with($relative, $base_pattern . '/');
+                    $by_glob      = fnmatch($pattern, $relative);
+                    if ($by_prefix || $by_glob || fnmatch($pattern, basename($relative))) {
+                        return [true, $by_prefix || ($by_glob && str_ends_with($pattern, '*'))];
+                    }
                 }
-                [, $prune] = $match($relative_of($file));
-                return !$prune;
-            }
-        );
+                return [false, false];
+            };
 
-        $files = new \RecursiveIteratorIterator($iterator, \RecursiveIteratorIterator::SELF_FIRST);
-
-        $skipped = [];
-
-        foreach ($files as $file) {
-            $relative  = $relative_of($file);
-            $dest_path = $dest . '/' . $relative;
-
-            [$skip] = $match($relative);
-            if ($skip) {
-                continue;
-            }
-
-            if ($file->isDir()) {
-                // On an incremental run the destination tree is built on
-                // demand around the files actually archived. Mirroring every
-                // directory up front would write a full skeleton of empty
-                // folders into a ZIP that is meant to hold only what changed.
-                // A full backup still mirrors them, so an intentionally empty
-                // directory survives a restore exactly as it always has.
-                if ($mirror_dirs) {
-                    wp_mkdir_p($dest_path);
+            $source_norm = rtrim(str_replace('\\', '/', $source), '/');
+            $relative_of = static function (\SplFileInfo $file) use ($source_norm): string {
+                $relative = str_replace('\\', '/', $file->getPathname());
+                if (str_starts_with($relative, $source_norm)) {
+                    $relative = substr($relative, strlen($source_norm));
                 }
-                continue;
-            }
+                return ltrim($relative, '/');
+            };
 
-            // The filter both indexes the file and decides whether it
-            // needs archiving. It is called for every file that survived
-            // the exclude list, INCLUDING ones it then declines — an
-            // incremental backup must still index a file it skipped, or
-            // the next run would see it as deleted.
-            if ($filter !== null && !$filter($relative, $file->getPathname())) {
-                continue;
-            }
-
-            $parent = dirname($dest_path);
-            if (!is_dir($parent)) {
-                wp_mkdir_p($parent);
-            }
-
-            $size = (int) $file->getSize();
-
-            // A resumed export reuses its temp folder: a file already copied
-            // completely by the previous worker is not copied again. Partial
-            // copies never sit under the final name (see copy_file()).
-            if (is_file($dest_path) && (int) @filesize($dest_path) === $size) {
-                self::tick('copy', ++$copied);
-                continue;
-            }
-
-            $result = self::copy_file($file->getPathname(), $dest_path, $relative, $size);
-            if ($result === 'paused') {
-                self::slice_expired();
-            }
-            if ($result === 'unreadable') {
-                // Same as before: a file PHP cannot read is left out rather
-                // than failing the whole backup — but it is now on record.
-                if (count($skipped) < 20) {
-                    $skipped[] = $relative;
+            $done     = 0;
+            $iterator = new \RecursiveCallbackFilterIterator(
+                new \RecursiveDirectoryIterator($source, \RecursiveDirectoryIterator::SKIP_DOTS),
+                static function (\SplFileInfo $file) use ($match, $relative_of, &$done): bool {
+                    // Liveness while walking, including long runs of entries
+                    // that are skipped.
+                    self::tick('scan', $done);
+                    if (!$file->isDir()) {
+                        return true;
+                    }
+                    [, $prune] = $match($relative_of($file));
+                    return !$prune;
                 }
-            } elseif ($result === 'write_failed') {
-                // Running out of disk is fatal: every following file would
-                // fail too and the backup would be silently incomplete. Any
-                // other write failure (odd file name, permissions) is left
-                // out and logged, as copy() failures always were.
-                $free = @disk_free_space($dest);
-                if ($free !== false && (float) $free < max(64 * 1024 * 1024, $size)) {
-                    throw new \RuntimeException(sprintf(
-                        'No space left on device while copying %s (%s). Free disk space: %s.',
-                        $relative,
-                        size_format($size),
-                        size_format((int) $free)
-                    ));
+            );
+
+            $files   = new \RecursiveIteratorIterator($iterator, \RecursiveIteratorIterator::SELF_FIRST);
+            $skipped = [];
+
+            foreach ($files as $file) {
+                $relative = $relative_of($file);
+                if ($relative === '' || str_contains($relative, "\n") || str_contains($relative, "\r") || str_contains($relative, "\0")) {
+                    continue;
                 }
-                if (count($skipped) < 20) {
-                    $skipped[] = $relative . ' (write failed)';
+
+                [$skip] = $match($relative);
+                if ($skip) {
+                    continue;
                 }
+
+                if ($file->isDir()) {
+                    // On an incremental run only the folders around archived
+                    // files are listed (see $emit_dir below); a full backup
+                    // keeps every folder, so an intentionally empty directory
+                    // survives a restore exactly as it always has.
+                    if ($mirror_dirs) {
+                        $emit_dir($zip_prefix . $relative);
+                    }
+                    continue;
+                }
+
+                // The filter both indexes the file and decides whether it
+                // needs archiving. It is called for every file that survived
+                // the exclude list, INCLUDING ones it then declines.
+                if ($filter !== null && !$filter($relative, $file->getPathname())) {
+                    continue;
+                }
+
+                if (!$file->isReadable()) {
+                    // A file PHP cannot read is left out rather than failing
+                    // the whole backup, and it is on record.
+                    if (count($skipped) < 20) {
+                        $skipped[] = $relative;
+                    }
+                    continue;
+                }
+
+                $parent = dirname($relative);
+                if ($parent !== '.' && $parent !== '') {
+                    $emit_dir($zip_prefix . $parent);
+                }
+                fwrite($fh, $zip_prefix . $relative . "\0" . str_replace('\\', '/', $file->getPathname()) . "\n");
+                self::tick('scan', ++$done);
             }
 
-            self::tick('copy', ++$copied);
-
-            // Hand over between files. Files finished in this slice are
-            // skipped by size on the next pass, so nothing is copied twice.
-            if (self::out_of_time()) {
-                if ($skipped) {
-                    Log::warning('export_unreadable_files', 'Some files could not be read and were left out of the backup.', ['files' => $skipped]);
-                }
-                self::slice_expired();
+            if ($skipped) {
+                Log::warning('export_unreadable_files', 'Some files could not be read and were left out of the backup.', ['files' => $skipped]);
             }
-        }
-
-        if ($skipped) {
-            Log::warning('export_unreadable_files', 'Some files could not be read and were left out of the backup.', ['files' => $skipped]);
+            $complete = true;
+        } finally {
+            fclose($fh);
+            if ($complete) {
+                if (is_file($list_file)) {
+                    @unlink($list_file);
+                }
+                if (!@rename($tmp, $list_file)) {
+                    @unlink($tmp);
+                    throw new \RuntimeException('Could not save the backup file list (' . Environment::last_error() . '; write blocked).');
+                }
+            } else {
+                @unlink($tmp);
+            }
         }
     }
 

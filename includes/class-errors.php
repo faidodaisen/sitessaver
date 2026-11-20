@@ -153,7 +153,7 @@ final class Errors {
             ],
             'export_stalled_file' => [
                 'title'   => __('The backup got stuck on one large file', 'sitessaver'),
-                'message' => __('Copying one very large file took longer than your server allows. Your site itself is fine — nothing was changed.', 'sitessaver'),
+                'message' => __('Adding one very large file to the backup took longer than your server allows. Your site itself is fine — nothing was changed.', 'sitessaver'),
                 'hint'    => __('The file is named under Technical details. If it is an old backup, video or archive you don’t need in the backup, move it out of the uploads folder and try again. Otherwise, download the log from Help → Troubleshooting Log and send it to SitesSaver support.', 'sitessaver'),
             ],
             'export_killed' => [
