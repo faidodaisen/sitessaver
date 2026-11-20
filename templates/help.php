@@ -99,6 +99,47 @@
                         <p><i class="ri-shield-check-line" aria-hidden="true"></i> <?php esc_html_e('This server: no known security software detected from inside PHP. Some scanners cannot be seen from here, so the steps above still apply if a restore is blocked.', 'sitessaver'); ?></p>
                     <?php endif; ?>
                 </div>
+
+                <h3 style="margin-top: 24px;" id="ss-litespeed"><?php esc_html_e('11. Background backups on LiteSpeed', 'sitessaver'); ?></h3>
+                <p><?php esc_html_e('LiteSpeed can stop a PHP request once the browser that started it goes away. A backup that keeps running after you close the tab needs LiteSpeed told not to do that for SitesSaver\'s own background requests. SitesSaver can add a short rule for this to the .htaccess file in your site root. It only applies to requests that carry sitessaver_bg=1 and to wp-cron.php. Nothing is added unless you click the button, and you can remove it here at any time. It is also removed when you deactivate SitesSaver.', 'sitessaver'); ?></p>
+                <?php
+                $ss_ls_on    = \SitesSaver\Background::is_litespeed();
+                $ss_ls_has   = \SitesSaver\Background::rules_installed();
+                $ss_ls_state = isset($_GET['ss_rule']) ? sanitize_key(wp_unslash($_GET['ss_rule'])) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- display only.
+                ?>
+                <div class="ss-storage-status">
+                    <?php if ($ss_ls_state === 'added') : ?>
+                        <p><i class="ri-shield-check-line" aria-hidden="true"></i> <?php esc_html_e('The rule was added to .htaccess.', 'sitessaver'); ?></p>
+                    <?php elseif ($ss_ls_state === 'removed') : ?>
+                        <p><i class="ri-shield-check-line" aria-hidden="true"></i> <?php esc_html_e('The rule was removed from .htaccess.', 'sitessaver'); ?></p>
+                    <?php elseif ($ss_ls_state === 'failed') : ?>
+                        <p><i class="ri-information-line" aria-hidden="true"></i> <?php esc_html_e('The .htaccess file is missing or not writable. You can add the rule below by hand.', 'sitessaver'); ?></p>
+                    <?php endif; ?>
+                    <p>
+                        <?php if ($ss_ls_has) : ?>
+                            <i class="ri-shield-check-line" aria-hidden="true"></i> <?php esc_html_e('Rule status: added.', 'sitessaver'); ?>
+                        <?php elseif ($ss_ls_on) : ?>
+                            <i class="ri-information-line" aria-hidden="true"></i> <?php esc_html_e('Rule status: this server is LiteSpeed and the rule is not added.', 'sitessaver'); ?>
+                        <?php else : ?>
+                            <i class="ri-information-line" aria-hidden="true"></i> <?php esc_html_e('Rule status: this server does not look like LiteSpeed, so the rule is not needed.', 'sitessaver'); ?>
+                        <?php endif; ?>
+                    </p>
+                    <?php if ($ss_ls_on || $ss_ls_has) : ?>
+                        <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+                            <input type="hidden" name="action" value="<?php echo esc_attr(\SitesSaver\Background::RULE_ACTION); ?>">
+                            <?php wp_nonce_field(\SitesSaver\Background::RULE_ACTION); ?>
+                            <?php if ($ss_ls_has) : ?>
+                                <button type="submit" name="op" value="remove" class="btn btn-outline" id="ss-litespeed-remove"><?php esc_html_e('Remove the LiteSpeed rule', 'sitessaver'); ?></button>
+                            <?php else : ?>
+                                <button type="submit" name="op" value="add" class="btn btn-primary" id="ss-litespeed-add"><?php esc_html_e('Add the LiteSpeed rule to .htaccess', 'sitessaver'); ?></button>
+                            <?php endif; ?>
+                        </form>
+                    <?php endif; ?>
+                    <details>
+                        <summary><?php esc_html_e('Show the rule', 'sitessaver'); ?></summary>
+                        <pre class="ss-notice-code"><?php echo esc_html(implode("\n", \SitesSaver\Background::htaccess_lines())); ?></pre>
+                    </details>
+                </div>
             </div>
         </div>
     </div>

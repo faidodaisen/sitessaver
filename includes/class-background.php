@@ -43,13 +43,15 @@ final class Background {
     private const WATCHED_SECONDS = 20;
 
     private const HTACCESS_MARKER = 'SitesSaver';
-    private const HTACCESS_OPTION = 'sitessaver_htaccess_rules';
-    private const HTACCESS_VERSION = '1';
+
+    /** admin-post action behind the Help page's LiteSpeed rule buttons. */
+    public const RULE_ACTION = 'sitessaver_litespeed_rule';
 
     public static function init(): void {
         add_action(self::WATCHDOG_HOOK, [self::class, 'run_watchdog']);
         add_filter('cron_schedules', [self::class, 'add_schedule']);
-        add_action('admin_init', [self::class, 'maybe_install_rules']);
+        add_action('admin_post_' . self::RULE_ACTION, [self::class, 'handle_rule_action']);
+        add_action('admin_notices', [self::class, 'rule_notice']);
     }
 
     /** URL every loopback worker posts to. */
@@ -228,83 +230,101 @@ final class Background {
 
     public static function is_litespeed(): bool {
         $soft = isset($_SERVER['SERVER_SOFTWARE']) ? sanitize_text_field(wp_unslash($_SERVER['SERVER_SOFTWARE'])) : '';
-        return stripos($soft, 'litespeed') !== false || defined('LSCWP_V') || isset($_SERVER['LSWS_EDITION']);
+        $is   = stripos($soft, 'litespeed') !== false || defined('LSCWP_V') || isset($_SERVER['LSWS_EDITION']);
+        return (bool) apply_filters('sitessaver_is_litespeed', $is);
     }
 
     private static function htaccess_path(): string {
-        return (function_exists('get_home_path') ? get_home_path() : ABSPATH) . '.htaccess';
-    }
-
-    /**
-     * Add the rule on LiteSpeed (once per rule version). Never creates an
-     * .htaccess that does not exist and never touches one it cannot write.
-     */
-    public static function maybe_install_rules(): void {
-        if (!sitessaver_current_user_can() || wp_doing_ajax()) {
-            return;
-        }
-        if (get_option(self::HTACCESS_OPTION) === self::HTACCESS_VERSION . ':' . (self::is_litespeed() ? 'ls' : 'other')) {
-            return;
-        }
-        $result = self::is_litespeed() ? self::install_rules() : 'skipped';
-        update_option(self::HTACCESS_OPTION, self::HTACCESS_VERSION . ':' . (self::is_litespeed() ? 'ls' : 'other'), false);
-        if ($result !== 'skipped') {
-            Log::info('htaccess_rule', $result === 'ok'
-                ? 'Added the LiteSpeed rule that lets background backup workers finish.'
-                : 'Could not add the LiteSpeed background-worker rule (.htaccess missing or not writable).');
-        }
-    }
-
-    /** @return string 'ok' | 'failed' | 'skipped' */
-    public static function install_rules(): string {
-        if (!function_exists('insert_with_markers')) {
-            require_once ABSPATH . 'wp-admin/includes/misc.php';
-        }
         if (!function_exists('get_home_path')) {
             require_once ABSPATH . 'wp-admin/includes/file.php';
         }
+        return get_home_path() . '.htaccess';
+    }
+
+    /** Is our rule block in the site's .htaccess? */
+    public static function rules_installed(): bool {
+        $file = self::htaccess_path();
+        if (!is_file($file) || !is_readable($file)) {
+            return false;
+        }
+        return str_contains((string) file_get_contents($file), self::WORKER_FLAG . '=1');
+    }
+
+    /**
+     * Add the rule, only when the admin asks for it from the Help page.
+     * Never creates an .htaccess that does not exist.
+     *
+     * @return string 'ok' | 'failed'
+     */
+    public static function install_rules(): string {
         $file = self::htaccess_path();
         if (!is_file($file) || !is_writable($file)) {
             return 'failed';
         }
-        return self::write_block($file, self::htaccess_lines()) ? 'ok' : 'failed';
+        require_once ABSPATH . 'wp-admin/includes/misc.php';
+        return insert_with_markers($file, self::HTACCESS_MARKER, self::htaccess_lines()) ? 'ok' : 'failed';
     }
 
-    public static function remove_rules(): void {
-        if (!function_exists('get_home_path')) {
-            require_once ABSPATH . 'wp-admin/includes/file.php';
-        }
+    /** Take the rule out again (Help page button, deactivation, uninstall). */
+    public static function remove_rules(): bool {
+        delete_option('sitessaver_htaccess_rules');
         $file = self::htaccess_path();
-        if (is_file($file) && is_writable($file)) {
-            $text = (string) file_get_contents($file);
-            if (str_contains($text, '# BEGIN ' . self::HTACCESS_MARKER)) {
-                $clean = preg_replace('/\R?# BEGIN ' . self::HTACCESS_MARKER . '\R.*?# END ' . self::HTACCESS_MARKER . '\R?/s', "\n", $text);
-                if (is_string($clean)) {
-                    file_put_contents($file, ltrim($clean, "\r\n"), LOCK_EX);
-                }
-            }
+        if (!is_file($file) || !is_writable($file)) {
+            return false;
         }
-        delete_option(self::HTACCESS_OPTION);
+        if (!str_contains((string) file_get_contents($file), '# BEGIN ' . self::HTACCESS_MARKER)) {
+            return true;
+        }
+        require_once ABSPATH . 'wp-admin/includes/misc.php';
+        return insert_with_markers($file, self::HTACCESS_MARKER, []);
     }
 
-    /**
-     * Put our block at the TOP of .htaccess. insert_with_markers() appends a
-     * new block at the end, after `# END WordPress`, which works too, but a
-     * caching plugin's own [L] rules above could otherwise end processing
-     * before our line is reached.
-     *
-     * @param array<int, string> $lines
-     */
-    private static function write_block(string $file, array $lines): bool {
-        $text  = (string) file_get_contents($file);
-        $begin = '# BEGIN ' . self::HTACCESS_MARKER;
-        $end   = '# END ' . self::HTACCESS_MARKER;
+    /** Add / remove buttons on the Help page. */
+    public static function handle_rule_action(): void {
+        if (!sitessaver_current_user_can()) {
+            wp_die(esc_html__('You do not have permission to do this.', 'sitessaver'), '', ['response' => 403]);
+        }
+        check_admin_referer(self::RULE_ACTION);
 
-        if (str_contains($text, $begin)) {
-            return insert_with_markers($file, self::HTACCESS_MARKER, $lines);
+        $op = isset($_POST['op']) ? sanitize_key(wp_unslash($_POST['op'])) : '';
+        if ($op === 'add') {
+            $ok = self::install_rules() === 'ok';
+            Log::info('htaccess_rule', $ok
+                ? 'Added the LiteSpeed rule that lets background backup workers finish (admin request).'
+                : 'Could not add the LiteSpeed background-worker rule (.htaccess missing or not writable).');
+            $result = $ok ? 'added' : 'failed';
+        } elseif ($op === 'remove') {
+            $ok = self::remove_rules();
+            if ($ok) {
+                Log::info('htaccess_rule', 'Removed the LiteSpeed background-worker rule (admin request).');
+            }
+            $result = $ok ? 'removed' : 'failed';
+        } else {
+            $result = 'failed';
         }
 
-        $block = $begin . "\n" . implode("\n", $lines) . "\n" . $end . "\n\n";
-        return file_put_contents($file, $block . $text, LOCK_EX) !== false;
+        wp_safe_redirect(add_query_arg(
+            ['page' => 'sitessaver-help', 'ss_rule' => $result],
+            admin_url('admin.php')
+        ) . '#ss-litespeed');
+        exit;
+    }
+
+    /** On LiteSpeed without the rule, point to the Help page. SitesSaver screens only. */
+    public static function rule_notice(): void {
+        if (!sitessaver_current_user_can() || !self::is_litespeed()) {
+            return;
+        }
+        $screen = function_exists('get_current_screen') ? get_current_screen() : null;
+        $id     = $screen ? (string) $screen->id : '';
+        if (!str_contains($id, 'sitessaver') || str_contains($id, 'sitessaver-help') || self::rules_installed()) {
+            return;
+        }
+        printf(
+            '<div class="notice notice-info"><p>%s <a href="%s">%s</a></p></div>',
+            esc_html__('This site runs on LiteSpeed. Background backups finish more reliably with a small .htaccess rule, which you can add from the Help page.', 'sitessaver'),
+            esc_url(admin_url('admin.php?page=sitessaver-help#ss-litespeed')),
+            esc_html__('Open Help', 'sitessaver')
+        );
     }
 }
