@@ -8,17 +8,58 @@
  * fails with "Could not copy file" and refuses to install the plugin. This
  * script writes spec-compliant entries via ZipArchive.
  *
- * Usage: php tools/build-zip.php
+ * Usage: php tools/build-zip.php [git-ref]
  */
 declare(strict_types=1);
 
 $root = dirname(__DIR__);
 $slug = 'sitessaver';
 
+// Package committed files only: the blobs of HEAD (or the ref given as the
+// first argument), never the working tree. Untracked or modified local files
+// cannot end up in the archive.
+$ref  = $argv[1] ?? 'HEAD';
+$ship = ['assets', 'includes', 'templates', 'LICENSE', 'readme.txt', 'sitessaver.php', 'uninstall.php'];
+
+$git = static function (array $args) use ($root): string {
+    $cmd = 'git -C ' . escapeshellarg($root);
+    foreach ($args as $a) {
+        $cmd .= ' ' . escapeshellarg($a);
+    }
+    $out  = [];
+    $code = 0;
+    exec($cmd . ' 2>&1', $out, $code);
+    if ($code !== 0) {
+        fwrite(STDERR, "git failed: {$cmd}\n" . implode("\n", $out) . "\n");
+        exit(1);
+    }
+    return implode("\n", $out);
+};
+// proc_open pipes are binary; shell_exec() stops at 0x1A on Windows.
+$blob = static function (string $path) use ($root, $ref): string {
+    $proc = proc_open(
+        ['git', '-C', $root, 'cat-file', 'blob', $ref . ':' . $path],
+        [1 => ['pipe', 'wb'], 2 => ['pipe', 'wb']],
+        $pipes
+    );
+    if (!is_resource($proc)) {
+        fwrite(STDERR, "git cat-file failed: {$path}\n");
+        exit(1);
+    }
+    $data = stream_get_contents($pipes[1]);
+    fclose($pipes[1]);
+    fclose($pipes[2]);
+    if (proc_close($proc) !== 0 || !is_string($data)) {
+        fwrite(STDERR, "git cat-file failed: {$path}\n");
+        exit(1);
+    }
+    return $data;
+};
+
 // Read the shipping version FIRST: it names the artefact and the build is
 // self-verifying, so a header/constant mismatch aborts before anything is
 // written.
-$main = (string) file_get_contents($root . '/sitessaver.php');
+$main = $blob('sitessaver.php');
 preg_match('/^\s*\*\s*Version:\s*([0-9.]+)/m', $main, $hv);
 preg_match("/\\\$sitessaver_this_version\s*=\s*'([0-9.]+)'/", $main, $cv);
 $header   = $hv[1] ?? '';
@@ -33,21 +74,14 @@ if ($header === '' || $header !== $constant) {
 // downloads folder, and an unversioned `SitesSaver.zip` is impossible to tell
 // apart once it has been downloaded twice.
 $out = $root . '/SitesSaver-' . $header . '.zip';
+if (is_file($out)) {
+    unlink($out);
+}
 
-// Everything the distributable must NOT contain. Matched by CLASS, not by
-// today's tool list: naming individual editors or utilities means the next
-// one needs another build change, and leaks its name into a public artefact.
-$skip_dirs = [
-    '.git', 'node_modules', 'storage', 'tests', 'tools', 'css-analysis',
-];
-$skip_files = [
-    'CHANGELOG.md', 'desktop.ini', 'Thumbs.db',
-];
-
-// Remove ZIPs from previous builds so the repo never carries two versions of
-// the artefact (any `*.zip` is skipped during packaging regardless).
-foreach (glob($root . '/SitesSaver*.zip') ?: [] as $stale) {
-    @unlink($stale);
+$files = array_values(array_filter(explode("\n", $git(array_merge(['ls-tree', '-r', '--name-only', $ref, '--'], $ship)))));
+if ($files === []) {
+    fwrite(STDERR, "No files to package at {$ref}\n");
+    exit(1);
 }
 
 $zip = new ZipArchive();
@@ -57,48 +91,10 @@ if ($zip->open($out, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
 }
 
 $added = 0;
-$iter  = new RecursiveIteratorIterator(
-    new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS),
-    RecursiveIteratorIterator::SELF_FIRST
-);
-
-foreach ($iter as $path => $info) {
-    $rel = str_replace('\\', '/', substr((string) $path, strlen($root) + 1));
-
-    // Skip whole trees.
-    $first = explode('/', $rel)[0];
-    if (in_array($first, $skip_dirs, true)) { continue; }
-
-    $base = basename($rel);
-    if (in_array($base, $skip_files, true)) { continue; }
-
-    // Dotfiles and dot-directories are tooling and local state by definition:
-    // config, caches, editor and local metadata. None of it belongs in a
-    // distributed plugin, and matching the class means new tools need no
-    // build change and never leak their names into a public artefact.
-    //
-    // Tested on EVERY path segment, not just the leaf: basename() of a nested
-    // path under a dot-directory returns the child's name, so a leaf-only
-    // test silently packaged the whole tree.
-    $dotted = false;
-    foreach (explode('/', $rel) as $segment) {
-        if ($segment !== '' && str_starts_with($segment, '.')) { $dotted = true; break; }
-    }
-    if ($dotted) { continue; }
-
-    // Markdown is documentation for the repo, not payload for the install.
-    if (str_ends_with(strtolower($base), '.md')) { continue; }
-    if (str_ends_with($base, '.zip')) { continue; }
-
-    // Entry names MUST use forward slashes.
-    $entry = $slug . '/' . $rel;
-
-    if ($info->isDir()) {
-        $zip->addEmptyDir($entry);
-        continue;
-    }
-    if (!$zip->addFile((string) $path, $entry)) {
-        fwrite(STDERR, "addFile failed: {$rel}\n");
+foreach ($files as $rel) {
+    // Entry names MUST use forward slashes (git already uses them).
+    if (!$zip->addFromString($slug . '/' . $rel, $blob($rel))) {
+        fwrite(STDERR, "addFromString failed: {$rel}\n");
         $zip->close();
         exit(1);
     }
@@ -106,7 +102,7 @@ foreach ($iter as $path => $info) {
 }
 
 if (!$zip->close()) {
-    fwrite(STDERR, "close() failed — archive may be corrupt\n");
+    fwrite(STDERR, "close() failed, archive may be corrupt\n");
     exit(1);
 }
 

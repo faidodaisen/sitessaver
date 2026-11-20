@@ -13,7 +13,6 @@ Website and documentation: https://sitessaver.com
 - **Google Drive.** Send backups to your own Drive and restore straight from it. Add-on plugins can register more cloud storage through the `sitessaver_destinations` filter.
 - **Works on strict hosts.** Backups and restores run in short background slices, so a host that stops every request after 30 seconds cannot cut them short. You can close the page while a backup runs and get an email when it is done.
 - **Email reports.** A report after each scheduled run, with your own logo, colours and sender.
-- **Automatic updates** from GitHub releases, checked against the published SHA-256 checksum.
 
 ## Requirements
 
@@ -28,7 +27,7 @@ Website and documentation: https://sitessaver.com
 
 You can also copy this repository into `wp-content/plugins/sitessaver/`. There is no build step.
 
-After activation, the **SitesSaver** menu has Backups, Export, Import, Schedule, Settings and Help. Updates then appear on the Plugins screen like any other plugin.
+After activation, the **SitesSaver** menu has Backups, Export, Import, Schedule, Settings and Help.
 
 ## Good to know
 
