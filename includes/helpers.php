@@ -78,7 +78,7 @@ function sitessaver_storage_dir(): string {
 }
 
 /**
- * Write the dual-syntax .htaccess + index.php guard into a directory, if not
+ * Write the dual-syntax .htaccess, a web.config (IIS) and the index.php guard into a directory, if not
  * already present. Idempotent. Shared by the activation hook (network-wide
  * SITESSAVER_STORAGE_DIR) and sitessaver_storage_dir() (per-site subfolders
  * on multisite), so the two never drift out of sync.
@@ -95,6 +95,22 @@ function sitessaver_protect_directory(string $dir): void {
             . "    Order Deny,Allow\n"
             . "    Deny from all\n"
             . "</IfModule>\n"
+        );
+    }
+
+    // IIS ignores .htaccess; web.config is its equivalent deny rule.
+    $webconfig = $dir . '/web.config';
+    if (!file_exists($webconfig)) {
+        file_put_contents(
+            $webconfig,
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+            . "<configuration>\n"
+            . "  <system.webServer>\n"
+            . "    <authorization>\n"
+            . "      <deny users=\"*\" />\n"
+            . "    </authorization>\n"
+            . "  </system.webServer>\n"
+            . "</configuration>\n"
         );
     }
 
@@ -132,21 +148,89 @@ function sitessaver_current_user_can(): bool {
  *
  * Backups SitesSaver writes carry a random tail (see
  * sitessaver_backup_filename()) so they cannot be fetched by guessing the
- * URL where the folder is web-readable (Nginx ignores .htaccess). An
- * uploaded file keeps whatever name it had on the user's computer —
- * "backup.zip", "mysite.zip" — which is trivially guessable. Names that
- * already follow SitesSaver's pattern are kept as they are, because an
- * incremental backup finds the other files of its chain by name.
+ * URL where the folder is web-readable (Nginx ignores .htaccess). A file
+ * that comes in from outside (upload, Google Drive download) has a name
+ * someone else chose, so it ALWAYS gets a fresh random tail of its own,
+ * even when it already looks like a SitesSaver name.
+ *
+ * Incremental backups name the other files of their chain in their
+ * manifest by the ORIGINAL names. sitessaver_resolve_chain_member() finds a
+ * renamed member again from that name: "<original name>-<16 random>.zip".
  */
 function sitessaver_safe_stored_name(string $filename): string {
     $filename = sanitize_file_name($filename);
     if ($filename === '' || strtolower((string) pathinfo($filename, PATHINFO_EXTENSION)) !== 'zip') {
         $filename = 'imported.zip';
     }
-    if (preg_match('/-\d{8}-\d{6}-[A-Za-z0-9]{6,}\.zip$/', $filename)) {
-        return $filename;
-    }
     return pathinfo($filename, PATHINFO_FILENAME) . '-' . wp_generate_password(16, false, false) . '.zip';
+}
+
+/**
+ * sitessaver_safe_stored_name(), retried until the name is free in the
+ * storage folder. Used for every backup that arrives from outside
+ * (browser upload, chunked upload, Google Drive download).
+ */
+function sitessaver_unique_stored_name(string $filename): string {
+    $dir  = sitessaver_storage_dir();
+    $name = sitessaver_safe_stored_name($filename);
+    for ($try = 0; $try < 5 && file_exists($dir . '/' . $name); $try++) {
+        $name = sitessaver_safe_stored_name($filename);
+    }
+    return $name;
+}
+
+/**
+ * The stored file for a chain member named in a backup's manifest.
+ *
+ * Exact name first (backups this site made itself). Otherwise a file that
+ * was stored under that name plus a random tail by
+ * sitessaver_safe_stored_name(). When the same backup was brought in more
+ * than once, the copy whose manifest belongs to $chain_id wins, else the
+ * newest. Works from the folder alone: no option is involved, so it still
+ * works after a reinstall or after a restore replaced the database.
+ *
+ * @return string|null Stored file name, or null when no such file exists.
+ */
+function sitessaver_resolve_chain_member(string $member, string $chain_id = ''): ?string {
+    $member = sanitize_file_name($member);
+    if ($member === '' || strtolower((string) pathinfo($member, PATHINFO_EXTENSION)) !== 'zip') {
+        return null;
+    }
+    $dir = sitessaver_storage_dir();
+    if (is_file($dir . '/' . $member)) {
+        return $member;
+    }
+
+    $stem       = (string) pathinfo($member, PATHINFO_FILENAME);
+    $candidates = [];
+    $files      = glob($dir . '/*.zip');
+    foreach (is_array($files) ? $files : [] as $f) {
+        $base = basename($f);
+        if (strlen($base) === strlen($stem) + 21
+            && str_starts_with($base, $stem . '-')
+            && preg_match('/-[A-Za-z0-9]{16}\.zip$/', $base)) {
+            $candidates[$base] = (int) @filemtime($f);
+        }
+    }
+    if ($candidates === []) {
+        return null;
+    }
+    arsort($candidates);
+    if (count($candidates) > 1 && $chain_id !== '' && class_exists('ZipArchive')) {
+        foreach (array_keys($candidates) as $base) {
+            $zip = new ZipArchive();
+            if ($zip->open($dir . '/' . $base) !== true) {
+                continue;
+            }
+            $raw = $zip->getFromName('manifest.json');
+            $zip->close();
+            $m = is_string($raw) ? json_decode($raw, true) : null;
+            if (is_array($m) && (string) ($m['chain_id'] ?? '') === $chain_id) {
+                return $base;
+            }
+        }
+    }
+    return (string) array_key_first($candidates);
 }
 
 /**
@@ -229,7 +313,7 @@ add_action('sitessaver_storage_probe', 'sitessaver_storage_probe');
 function sitessaver_server_kind(string $header): string {
     $h = strtolower(trim($header));
     if ($h === '') {
-        $h = strtolower((string) ($_SERVER['SERVER_SOFTWARE'] ?? ''));
+        $h = isset($_SERVER['SERVER_SOFTWARE']) ? strtolower(sanitize_text_field(wp_unslash($_SERVER['SERVER_SOFTWARE']))) : '';
     }
     if (str_contains($h, 'nginx-rc')) {
         return 'runcloud';
@@ -362,7 +446,7 @@ function sitessaver_cleanup_temp(?string $scope_dir = null): void {
     if ($top) {
         foreach ($top as $entry) {
             $name = basename($entry);
-            if ($name === 'chunks' || $name === 'index.php' || $name === '.htaccess') {
+            if ($name === 'chunks' || $name === 'index.php' || $name === '.htaccess' || $name === 'web.config') {
                 continue;
             }
             if (filemtime($entry) >= $cutoff) {

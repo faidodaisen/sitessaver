@@ -118,10 +118,10 @@ final class Ajax {
         }
 
         $options = [
-            'include_db'         => (bool) ($_POST['include_db'] ?? true),
-            'include_media'      => (bool) ($_POST['include_media'] ?? true),
-            'include_plugins'    => (bool) ($_POST['include_plugins'] ?? true),
-            'include_themes'     => (bool) ($_POST['include_themes'] ?? true),
+            'include_db'         => (bool) sanitize_text_field(wp_unslash($_POST['include_db'] ?? '1')),
+            'include_media'      => (bool) sanitize_text_field(wp_unslash($_POST['include_media'] ?? '1')),
+            'include_plugins'    => (bool) sanitize_text_field(wp_unslash($_POST['include_plugins'] ?? '1')),
+            'include_themes'     => (bool) sanitize_text_field(wp_unslash($_POST['include_themes'] ?? '1')),
             'export_destination' => $destination,
         ];
 
@@ -226,7 +226,7 @@ final class Ajax {
         // the server which step is next, rather than counting steps itself.
         $index = !empty($_POST['auto'])
             ? (int) ($status['step_index'] ?? 0)
-            : (int) ($_POST['step_index'] ?? 0);
+            : (int) sanitize_text_field(wp_unslash($_POST['step_index'] ?? '0'));
 
         // This request now owns the export, and works in a slice short enough
         // to return before PHP's or the gateway's time limit.
@@ -289,7 +289,7 @@ final class Ajax {
     public function handle_get_export_status(): void {
         sitessaver_verify_ajax();
 
-        $uid    = sanitize_text_field((string) ($_POST['uid'] ?? get_transient('sitessaver_active_export_id') ?? ''));
+        $uid    = sanitize_text_field(wp_unslash((string) ($_POST['uid'] ?? get_transient('sitessaver_active_export_id') ?? '')));
         $status = $uid !== '' ? Export::get_status($uid) : [];
 
         if (empty($status)) {
@@ -525,7 +525,9 @@ final class Ajax {
             wp_send_json_error(['message' => __('No file uploaded.', 'sitessaver')]);
         }
 
-        $result = Import::from_upload($_FILES['backup']);
+        // The upload array goes to wp_handle_upload() (inside from_upload),
+        // which validates it; its fields are not text to sanitise.
+        $result = Import::from_upload($_FILES['backup']); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
 
         self::discard_output_buffer();
 
@@ -645,9 +647,10 @@ final class Ajax {
         $status    = 200;
 
         // Handle HTTP Range request (resume support).
-        if (!empty($_SERVER['HTTP_RANGE'])) {
+        $range = isset($_SERVER['HTTP_RANGE']) ? sanitize_text_field(wp_unslash($_SERVER['HTTP_RANGE'])) : '';
+        if ($range !== '') {
             // Validate format: "bytes=start-end" or "bytes=start-".
-            if (!preg_match('/^bytes=(\d+)-(\d*)$/', $_SERVER['HTTP_RANGE'], $matches)) {
+            if (!preg_match('/^bytes=(\d+)-(\d*)$/', $range, $matches)) {
                 header('HTTP/1.1 416 Range Not Satisfiable');
                 header("Content-Range: bytes */{$file_size}");
                 exit;
@@ -754,7 +757,7 @@ final class Ajax {
 
         // The form posts frequencies[] so several cadences can run together
         // (e.g. Daily for recent restore points plus Monthly as an archive).
-        $posted = $_POST['frequencies'] ?? [];
+        $posted = isset($_POST['frequencies']) ? map_deep(wp_unslash($_POST['frequencies']), 'sanitize_text_field') : [];
         if (is_string($posted)) {
             // Tolerate a single scalar, which is what a legacy client or a
             // hand-written request is most likely to send.
@@ -774,7 +777,7 @@ final class Ajax {
                 if (!is_string($value) || $value === '') {
                     continue;
                 }
-                $key = sanitize_text_field(wp_unslash($value));
+                $key = $value; // already unslashed and sanitised above
                 if (in_array($key, $allowed, true)) {
                     $frequencies[] = Schedule::normalize_frequency($key);
                 }
@@ -797,11 +800,11 @@ final class Ajax {
         // Clamp rather than trust: the form caps retention at 100, but a
         // hand-crafted POST could otherwise store 0 (delete everything on the
         // next run) or a negative value.
-        $retention = (int) ($_POST['retention'] ?? 5);
+        $retention = (int) sanitize_text_field(wp_unslash($_POST['retention'] ?? '5'));
         $retention = max(1, min(100, $retention));
 
         $schedule = [
-            'enabled'     => (bool) ($_POST['enabled'] ?? false),
+            'enabled'     => (bool) sanitize_text_field(wp_unslash($_POST['enabled'] ?? '')),
             'frequencies' => $frequencies,
             // Kept in sync for anything still reading the old single-value
             // key (and so downgrading the plugin does not lose the setting).
@@ -810,15 +813,15 @@ final class Ajax {
             // Backup mode. Anything that isn't an explicit 'incremental'
             // means full — an unrecognised value must never silently put a
             // site onto chained backups it did not ask for.
-            'backup_mode'      => ($_POST['backup_mode'] ?? 'full') === 'incremental' ? 'incremental' : 'full',
-            'full_every'       => max(2, min(60, (int) ($_POST['full_every'] ?? \SitesSaver\Index::DEFAULT_FULL_EVERY))),
-            'change_detection' => ($_POST['change_detection'] ?? 'fast') === 'thorough' ? 'thorough' : 'fast',
-            'include_db'      => (bool) ($_POST['include_db'] ?? true),
-            'include_media'   => (bool) ($_POST['include_media'] ?? true),
-            'include_plugins' => (bool) ($_POST['include_plugins'] ?? true),
-            'include_themes'  => (bool) ($_POST['include_themes'] ?? true),
-            'storage_local'   => (bool) ($_POST['storage_local'] ?? true),
-            'storage_gdrive'  => (bool) ($_POST['storage_gdrive'] ?? false),
+            'backup_mode'      => sanitize_key(wp_unslash($_POST['backup_mode'] ?? 'full')) === 'incremental' ? 'incremental' : 'full',
+            'full_every'       => max(2, min(60, (int) sanitize_text_field(wp_unslash($_POST['full_every'] ?? (string) \SitesSaver\Index::DEFAULT_FULL_EVERY)))),
+            'change_detection' => sanitize_key(wp_unslash($_POST['change_detection'] ?? 'fast')) === 'thorough' ? 'thorough' : 'fast',
+            'include_db'      => (bool) sanitize_text_field(wp_unslash($_POST['include_db'] ?? '1')),
+            'include_media'   => (bool) sanitize_text_field(wp_unslash($_POST['include_media'] ?? '1')),
+            'include_plugins' => (bool) sanitize_text_field(wp_unslash($_POST['include_plugins'] ?? '1')),
+            'include_themes'  => (bool) sanitize_text_field(wp_unslash($_POST['include_themes'] ?? '1')),
+            'storage_local'   => (bool) sanitize_text_field(wp_unslash($_POST['storage_local'] ?? '1')),
+            'storage_gdrive'  => (bool) sanitize_text_field(wp_unslash($_POST['storage_gdrive'] ?? '')),
             // Addon destinations ticked on the Schedule page (ids).
             'storage_remotes' => array_values(array_filter(
                 array_map('sanitize_key', (array) wp_unslash($_POST['storage_remotes'] ?? [])),
@@ -934,7 +937,7 @@ final class Ajax {
 
         $enabled = empty($_POST['notify_enabled']) ? '0' : '1';
         $email   = sanitize_email(wp_unslash($_POST['notify_email'] ?? ''));
-        $raw     = trim((string) wp_unslash($_POST['notify_email'] ?? ''));
+        $raw     = trim(sanitize_text_field(wp_unslash($_POST['notify_email'] ?? '')));
         if ($enabled === '1' && $raw !== '' && !is_email($email)) {
             wp_send_json_error(['message' => __('That is not a valid email address.', 'sitessaver')]);
         }
@@ -1352,8 +1355,8 @@ final class Ajax {
             wp_send_json_error(Errors::payload('upload_page_outdated', 'Invalid upload ID.'), 400);
         }
 
-        $chunk_index  = (int) ($_POST['chunk_index'] ?? -1);
-        $total_chunks = (int) ($_POST['total_chunks'] ?? 0);
+        $chunk_index  = (int) sanitize_text_field(wp_unslash($_POST['chunk_index'] ?? '-1'));
+        $total_chunks = (int) sanitize_text_field(wp_unslash($_POST['total_chunks'] ?? '0'));
         $filename     = sanitize_file_name(wp_unslash($_POST['filename'] ?? ''));
 
         if ($total_chunks < 1 || $total_chunks > 100000 || $chunk_index < 0 || $chunk_index >= $total_chunks) {
@@ -1364,8 +1367,12 @@ final class Ajax {
             wp_send_json_error(Errors::payload('upload_not_zip', 'Rejected file name: ' . $filename), 400);
         }
 
-        if (empty($_FILES['chunk']) || (int) $_FILES['chunk']['error'] !== UPLOAD_ERR_OK) {
-            $php_err = (int) ($_FILES['chunk']['error'] ?? -1);
+        $chunk_err = isset($_FILES['chunk']['error']) ? absint($_FILES['chunk']['error']) : -1;
+        // tmp_name is the path PHP itself gave the uploaded part; it is
+        // checked with is_uploaded_file() rather than altered.
+        $chunk_tmp = isset($_FILES['chunk']['tmp_name']) ? (string) $_FILES['chunk']['tmp_name'] : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
+        if ($chunk_err !== UPLOAD_ERR_OK || $chunk_tmp === '' || !is_uploaded_file($chunk_tmp)) {
+            $php_err = $chunk_err;
             wp_send_json_error(Errors::report(
                 $php_err === UPLOAD_ERR_CANT_WRITE ? 'upload_disk_full' : 'upload_failed',
                 'PHP rejected chunk upload (UPLOAD_ERR ' . $php_err . ').',
@@ -1426,9 +1433,11 @@ final class Ajax {
         $part   = $chunk_dir . '/upload.part';
         clearstatcache(true, $part);
         $before = is_file($part) ? (int) filesize($part) : 0;
-        $in     = @fopen($_FILES['chunk']['tmp_name'], 'rb');
+        // Local files only: PHP's temp copy of this chunk and the .part
+        // file in the plugin's own temp folder.
+        $in     = @fopen($chunk_tmp, 'rb');
         $out    = @fopen($part, 'ab');
-        $size   = (int) ($_FILES['chunk']['size'] ?? 0);
+        $size   = isset($_FILES['chunk']['size']) ? absint($_FILES['chunk']['size']) : 0;
         $copied = ($in && $out) ? stream_copy_to_stream($in, $out) : false;
         if ($in) {
             fclose($in);
@@ -1551,11 +1560,8 @@ final class Ajax {
         }
 
         $dir  = sitessaver_storage_dir();
-        $name = sitessaver_safe_stored_name($filename);
-        $dest = $dir . '/' . $name;
-        if (file_exists($dest)) {
-            $dest = $dir . '/' . pathinfo($name, PATHINFO_FILENAME) . '-' . wp_generate_password(4, false) . '.zip';
-        }
+        // Always a fresh random tail (see sitessaver_safe_stored_name()).
+        $dest = $dir . '/' . sitessaver_unique_stored_name($filename);
 
         if (@rename($part, $dest)) {
             return $dest;

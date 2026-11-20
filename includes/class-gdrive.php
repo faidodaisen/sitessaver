@@ -104,9 +104,13 @@ final class GDrive {
      * Called when proxy redirects back with ?sitessaver_gdrive_token=xxx
      */
     public static function handle_callback(): array {
+        // An OAuth redirect cannot carry a WordPress nonce; the one-time
+        // `state` value issued before the redirect is checked below instead.
+        // phpcs:disable WordPress.Security.NonceVerification.Recommended
         $refresh_token = sanitize_text_field(wp_unslash($_GET['sitessaver_gdrive_token'] ?? ''));
         $status        = sanitize_text_field(wp_unslash($_GET['sitessaver_gdrive_status'] ?? ''));
         $received_state = sanitize_text_field(wp_unslash($_GET['state'] ?? ''));
+        // phpcs:enable WordPress.Security.NonceVerification.Recommended
 
         if ($refresh_token === '' || $status !== 'connected') {
             return ['success' => false, 'message' => __('Google Drive connection failed.', 'sitessaver')];
@@ -893,7 +897,7 @@ final class GDrive {
         if ($filename === '' || strtolower((string) pathinfo($filename, PATHINFO_EXTENSION)) !== 'zip') {
             $filename = 'gdrive.zip';
         }
-        $filename = sitessaver_safe_stored_name($filename);
+        $original = $filename;
 
         // Stage into temp so a failed download can never clobber an existing
         // backup in the storage directory.
@@ -1000,12 +1004,10 @@ final class GDrive {
         }
 
         // Publish under a non-clashing name so an existing local backup with
-        // the same filename is preserved.
-        $dest_name = $filename;
-        if (file_exists(sitessaver_storage_dir() . '/' . $dest_name)) {
-            $dest_name = pathinfo($filename, PATHINFO_FILENAME)
-                . '-' . wp_generate_password(4, false, false) . '.zip';
-        }
+        // the same filename is preserved. A fresh random tail, never a
+        // shorter suffix: every stored backup keeps an unguessable name, and
+        // chain lookups (sitessaver_resolve_chain_member) expect one tail.
+        $dest_name = sitessaver_unique_stored_name($original);
         $dest = sitessaver_storage_dir() . '/' . $dest_name;
 
         if (!@rename($staged, $dest)) {

@@ -121,18 +121,30 @@ final class Import {
             $members = Index::restore_set($backup_file);
         }
 
+        // An uploaded or downloaded chain member is stored under its own
+        // name plus a random tail; the manifest names the original. Map
+        // each original name to the file actually on disk (unchanged when
+        // the member was made here and never renamed).
+        $chain_id = (string) ($manifest['chain_id'] ?? '');
+        $last     = count($members) - 1;
+
         $set = [];
-        foreach ($members as $member) {
+        foreach (array_values($members) as $i => $member) {
             $name = sanitize_file_name((string) $member);
-            if ($name !== '') {
-                $set[] = $name;
+            if ($name === '') {
+                continue;
             }
+            // The last listed member is the archive being restored itself.
+            $stored = $i === $last ? $backup_file : sitessaver_resolve_chain_member($name, $chain_id);
+            $stored = $stored ?? $name;
+            $set[]  = $stored;
             // Stop at the backup being restored: a later member is a NEWER
             // state the user did not ask for.
-            if ($name === $backup_file) {
+            if ($stored === $backup_file || $name === $backup_file) {
                 break;
             }
         }
+
 
         return $set === [] ? [$backup_file] : $set;
     }
@@ -352,7 +364,7 @@ final class Import {
             // so the imported backup shows up in the Backups list. Do this
             // BEFORE cleanup so the staged file still exists.
             if (!empty($result['success'])) {
-                $final_name = self::unique_backup_filename(sitessaver_safe_stored_name((string) $file['name']));
+                $final_name = sitessaver_unique_stored_name((string) $file['name']);
                 $final_path = sitessaver_storage_dir() . '/' . $final_name;
                 @copy($staged, $final_path);
             }
@@ -363,23 +375,6 @@ final class Import {
         }
 
         return $result;
-    }
-
-    /**
-     * Return a storage-dir filename that doesn't clash with an existing backup.
-     */
-    private static function unique_backup_filename(string $filename): string {
-        if ($filename === '' || strtolower(pathinfo($filename, PATHINFO_EXTENSION)) !== 'zip') {
-            $filename = 'imported-' . wp_generate_password(6, false, false) . '.zip';
-        }
-
-        $dest = sitessaver_storage_dir() . '/' . $filename;
-        if (!file_exists($dest)) {
-            return $filename;
-        }
-
-        $base = pathinfo($filename, PATHINFO_FILENAME);
-        return $base . '-' . wp_generate_password(4, false, false) . '.zip';
     }
 
     /**
