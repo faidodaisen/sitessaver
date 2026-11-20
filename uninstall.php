@@ -17,67 +17,97 @@ defined('WP_UNINSTALL_PLUGIN') || exit;
 
 global $wpdb;
 
-// 1. Best-effort revoke of the Google Drive refresh token via the proxy.
-$sitessaver_token_data = get_option('sitessaver_gdrive_token');
-if (is_array($sitessaver_token_data) && !empty($sitessaver_token_data['refresh_token'])) {
-    wp_remote_post('https://api.sitessaver.com/v1/gdrive/revoke', [
-        'headers' => ['Content-Type' => 'application/json'],
-        'body'    => wp_json_encode(['refresh_token' => $sitessaver_token_data['refresh_token']]),
-        'timeout' => 10,
-    ]);
+// 1. The LiteSpeed rule, if the admin added it from the Help page.
+if (!function_exists('get_home_path')) {
+    require_once ABSPATH . 'wp-admin/includes/file.php';
+}
+$sitessaver_ht = get_home_path() . '.htaccess';
+if (is_file($sitessaver_ht) && is_writable($sitessaver_ht)
+    && str_contains((string) file_get_contents($sitessaver_ht), '# BEGIN SitesSaver')) {
+    require_once ABSPATH . 'wp-admin/includes/misc.php';
+    insert_with_markers($sitessaver_ht, 'SitesSaver', []);
 }
 
-// 2. Clear any scheduled cron events.
-//
-// Scheduled backups register one event per frequency, with the frequency key
-// passed as a cron argument. wp_clear_scheduled_hook() only removes events
-// whose args match, so the no-arg call alone would strand every per-frequency
-// event in the cron array and leave WordPress trying to fire a hook that no
-// longer has a listener.
-wp_clear_scheduled_hook('sitessaver_scheduled_backup');
-wp_clear_scheduled_hook('sitessaver_export_watchdog');
+/**
+ * Google Drive token (best-effort revoke through the proxy), cron events,
+ * options and transients of the current site.
+ *
+ * Scheduled backups register one event per frequency, with the frequency
+ * key passed as a cron argument; wp_clear_scheduled_hook() only removes
+ * events whose args match, so each one is cleared by name.
+ */
+$sitessaver_clean_site = static function (): void {
+    global $wpdb;
 
-// The LiteSpeed background-worker rule SitesSaver added to .htaccess.
-$sitessaver_ht = (function_exists('get_home_path') ? get_home_path() : ABSPATH) . '.htaccess';
-if (is_file($sitessaver_ht) && is_writable($sitessaver_ht)) {
-    $sitessaver_text = (string) file_get_contents($sitessaver_ht);
-    if (str_contains($sitessaver_text, '# BEGIN SitesSaver')) {
-        $sitessaver_clean = preg_replace('/\R?# BEGIN SitesSaver\R.*?# END SitesSaver\R?/s', "\n", $sitessaver_text);
-        if (is_string($sitessaver_clean)) {
-            file_put_contents($sitessaver_ht, ltrim($sitessaver_clean, "\r\n"), LOCK_EX);
-        }
+    $token = get_option('sitessaver_gdrive_token');
+    if (is_array($token) && !empty($token['refresh_token'])) {
+        wp_remote_post('https://api.sitessaver.com/v1/gdrive/revoke', [
+            'headers' => ['Content-Type' => 'application/json'],
+            'body'    => wp_json_encode(['refresh_token' => $token['refresh_token']]),
+            'timeout' => 10,
+        ]);
     }
+
+    wp_clear_scheduled_hook('sitessaver_scheduled_backup');
+    wp_clear_scheduled_hook('sitessaver_export_watchdog');
+    wp_clear_scheduled_hook('sitessaver_storage_probe');
+    foreach (['hourly', 'twicedaily', 'daily', 'weekly', 'sitessaver_monthly'] as $frequency) {
+        wp_clear_scheduled_hook('sitessaver_scheduled_backup', [$frequency]);
+    }
+
+    $wpdb->query(
+        "DELETE FROM {$wpdb->options}
+         WHERE option_name LIKE 'sitessaver\\_%'
+            OR option_name LIKE '\\_transient\\_sitessaver\\_%'
+            OR option_name LIKE '\\_transient\\_timeout\\_sitessaver\\_%'
+            OR option_name LIKE '\\_site\\_transient\\_sitessaver\\_%'
+            OR option_name LIKE '\\_site\\_transient\\_timeout\\_sitessaver\\_%'"
+    );
+    wp_cache_delete('alloptions', 'options');
+};
+
+// 2. Every site of a network, or this site.
+if (is_multisite()) {
+    foreach (get_sites(['fields' => 'ids', 'number' => 0]) as $sitessaver_blog_id) {
+        switch_to_blog((int) $sitessaver_blog_id);
+        $sitessaver_clean_site();
+        restore_current_blog();
+    }
+    $wpdb->query(
+        "DELETE FROM {$wpdb->sitemeta}
+         WHERE meta_key LIKE 'sitessaver\\_%'
+            OR meta_key LIKE '\\_site\\_transient\\_sitessaver\\_%'
+            OR meta_key LIKE '\\_site\\_transient\\_timeout\\_sitessaver\\_%'"
+    );
+} else {
+    $sitessaver_clean_site();
 }
-foreach (['hourly', 'twicedaily', 'daily', 'weekly', 'sitessaver_monthly'] as $sitessaver_frequency) {
-    wp_clear_scheduled_hook('sitessaver_scheduled_backup', [$sitessaver_frequency]);
-}
 
-// 3. Delete every sitessaver_* option and transient in one sweep.
-$wpdb->query(
-    "DELETE FROM {$wpdb->options}
-     WHERE option_name LIKE 'sitessaver\\_%'
-        OR option_name LIKE '\\_transient\\_sitessaver\\_%'
-        OR option_name LIKE '\\_transient\\_timeout\\_sitessaver\\_%'
-        OR option_name LIKE '\\_site\\_transient\\_sitessaver\\_%'
-        OR option_name LIKE '\\_site\\_transient\\_timeout\\_sitessaver\\_%'"
-);
+// 3. User meta the plugin wrote (all users).
+delete_metadata('user', 0, 'sitessaver_dismissed_storage_notice', '', true);
+delete_metadata('user', 0, 'sitessaver_dismissed_update', '', true);
 
-// 4. Flush the alloptions cache so the removed rows disappear immediately.
-wp_cache_delete('alloptions', 'options');
-
-// 5. Remove the plugin's own bookkeeping (troubleshooting log files
+// 4. Remove the plugin's own bookkeeping (troubleshooting log files
 //    sitessaver-log-*.log, restore job state restore-*.json, and any
 //    pre-1.6.2 .php versions of either). These are not backups, nothing a
-//    user would want to keep.
+//    user would want to keep. Multisite subsites keep theirs under site-<id>/.
 $sitessaver_storage = WP_CONTENT_DIR . '/sitessaver-backups';
-foreach (['logs', 'jobs'] as $sitessaver_sub) {
-    $sitessaver_dir = $sitessaver_storage . '/' . $sitessaver_sub;
-    if (is_dir($sitessaver_dir)) {
-        foreach ((array) @scandir($sitessaver_dir) as $sitessaver_f) {
-            if (is_string($sitessaver_f) && is_file($sitessaver_dir . '/' . $sitessaver_f)) {
-                @unlink($sitessaver_dir . '/' . $sitessaver_f);
+$sitessaver_roots   = [$sitessaver_storage];
+foreach ((array) glob($sitessaver_storage . '/site-*', GLOB_ONLYDIR) as $sitessaver_sub_root) {
+    if (is_string($sitessaver_sub_root)) {
+        $sitessaver_roots[] = $sitessaver_sub_root;
+    }
+}
+foreach ($sitessaver_roots as $sitessaver_root) {
+    foreach (['logs', 'jobs'] as $sitessaver_sub) {
+        $sitessaver_dir = $sitessaver_root . '/' . $sitessaver_sub;
+        if (is_dir($sitessaver_dir)) {
+            foreach ((array) @scandir($sitessaver_dir) as $sitessaver_f) {
+                if (is_string($sitessaver_f) && is_file($sitessaver_dir . '/' . $sitessaver_f)) {
+                    @unlink($sitessaver_dir . '/' . $sitessaver_f);
+                }
             }
+            @rmdir($sitessaver_dir);
         }
-        @rmdir($sitessaver_dir);
     }
 }
