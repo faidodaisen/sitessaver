@@ -331,7 +331,7 @@ final class Export {
         $response = wp_remote_post(Background::worker_url(), [
             'timeout'   => 0.01,
             'blocking'  => false,
-            'sslverify' => false,
+            'sslverify' => sitessaver_loopback_sslverify(),
             'body'      => [
                 'action' => 'sitessaver_export_work',
                 'uid'    => $uid,
@@ -687,7 +687,7 @@ final class Export {
      * Start a new export process.
      */
     public static function start(array $options = []): array {
-        $uid         = 'exp_' . wp_generate_password(8, false, false);
+        $uid         = 'exp_' . wp_generate_password(20, false, false);
         $backup_name = sitessaver_backup_filename();
         $temp_dir    = SITESSAVER_TEMP_DIR . '/' . $uid;
 
@@ -1345,6 +1345,14 @@ final class Export {
             }
         }
 
+        // A run started before the update may have staged a copy of this
+        // area in temp_dir; the list replaces it, so drop it to avoid
+        // duplicate names in the ZIP.
+        $staged = $temp_dir . '/' . rtrim($prefix, '/');
+        if (is_dir($staged)) {
+            self::remove_directory($staged);
+        }
+
         $index = [];
 
         self::list_directory(
@@ -1363,7 +1371,8 @@ final class Export {
 
                 return Index::is_changed($key, $entry, $parent_index, $detection);
             },
-            !$incremental
+            !$incremental,
+            $index
         );
 
         self::write_index_shard($temp_dir, $area, $index);
@@ -1487,11 +1496,12 @@ final class Export {
      * patterns. Same selection rules the export always used when it copied
      * files into a staging folder; only the output changed.
      *
-     * The list is written to "<list>.tmp" and renamed when complete, so a
-     * request stopped mid-walk leaves no half list behind; the next slice
-     * simply walks the area again. A walk only reads metadata (and, in
-     * thorough mode, checksums), which is the part every earlier slice of
-     * the old copy step also repeated.
+     * The walk honours the slice deadline. When time is up it saves a
+     * cursor (folder stack, position in each folder, the list written so
+     * far and $carry) beside the list and ends the slice; the next request
+     * picks up from there. The list is written to "<list>.tmp" and renamed
+     * only when the walk is complete. Folders are read in sorted order so a
+     * resumed walk sees them the same way.
      *
      * @param string $zip_prefix Name prefix inside the archive, e.g. "wp-content/plugins/".
      * @param callable(string, string): bool|null $filter Receives the path
@@ -1502,21 +1512,51 @@ final class Export {
      * @param bool $mirror_dirs List every source directory, empty ones
      *        included. False for incremental runs, where only the folders
      *        holding archived files are wanted.
+     * @param array<string, mixed> $carry Caller data kept with the cursor
+     *        (the area index), restored on resume.
      */
-    private static function list_directory(string $source, string $zip_prefix, string $list_file, array $exclude = [], ?callable $filter = null, bool $mirror_dirs = true): void {
+    private static function list_directory(string $source, string $zip_prefix, string $list_file, array $exclude = [], ?callable $filter = null, bool $mirror_dirs = true, array &$carry = []): void {
         if (!is_dir(dirname($list_file))) {
             wp_mkdir_p(dirname($list_file));
         }
-        $tmp = $list_file . '.tmp';
-        $fh  = @fopen($tmp, 'wb');
+        $tmp      = $list_file . '.tmp';
+        $cur_file = $list_file . '.cur';
+
+        $cursor = null;
+        if (is_file($cur_file) && is_file($tmp)) {
+            $raw    = @file_get_contents($cur_file);
+            $cursor = is_string($raw) ? @unserialize($raw, ['allowed_classes' => false]) : null;
+            if (!is_array($cursor) || !is_array($cursor['stack'] ?? null) || !isset($cursor['bytes'])) {
+                $cursor = null;
+            }
+        }
+        if ($cursor === null && is_file($cur_file)) {
+            @unlink($cur_file);
+        }
+
+        $fh = @fopen($tmp, $cursor !== null ? 'c+b' : 'wb');
         if ($fh === false) {
             throw new \RuntimeException('Could not write the backup file list (' . Environment::last_error() . '; write blocked).');
         }
 
         $zip_prefix = rtrim($zip_prefix, '/') . '/';
         $complete   = false;
+        $paused     = false;
         $listed     = [];
-        $emit_dir   = static function (string $name) use ($fh, &$listed): void {
+        $done       = 0;
+        $skipped    = [];
+        $stack      = [['', 0]];
+        if ($cursor !== null) {
+            ftruncate($fh, (int) $cursor['bytes']);
+            fseek($fh, 0, SEEK_END);
+            $stack   = $cursor['stack'];
+            $listed  = is_array($cursor['listed'] ?? null) ? $cursor['listed'] : [];
+            $done    = (int) ($cursor['done'] ?? 0);
+            $skipped = is_array($cursor['skipped'] ?? null) ? $cursor['skipped'] : [];
+            $carry   = is_array($cursor['carry'] ?? null) ? $cursor['carry'] : [];
+        }
+
+        $emit_dir = static function (string $name) use ($fh, &$listed): void {
             // Parent folders first, each once.
             $parts = explode('/', trim($name, '/'));
             $path  = '';
@@ -1570,44 +1610,67 @@ final class Export {
             };
 
             $source_norm = rtrim(str_replace('\\', '/', $source), '/');
-            $relative_of = static function (\SplFileInfo $file) use ($source_norm): string {
-                $relative = str_replace('\\', '/', $file->getPathname());
-                if (str_starts_with($relative, $source_norm)) {
-                    $relative = substr($relative, strlen($source_norm));
-                }
-                return ltrim($relative, '/');
-            };
+            $entries     = [];
+            $worked      = 0;
 
-            $done     = 0;
-            $iterator = new \RecursiveCallbackFilterIterator(
-                new \RecursiveDirectoryIterator($source, \RecursiveDirectoryIterator::SKIP_DOTS),
-                static function (\SplFileInfo $file) use ($match, $relative_of, &$done): bool {
-                    // Liveness while walking, including long runs of entries
-                    // that are skipped.
-                    self::tick('scan', $done);
-                    if (!$file->isDir()) {
-                        return true;
+            while ($stack !== []) {
+                $top         = count($stack) - 1;
+                [$dir, $pos] = $stack[$top];
+                if (!isset($entries[$dir])) {
+                    $names         = @scandir($source_norm . ($dir === '' ? '' : '/' . $dir));
+                    $entries[$dir] = is_array($names) ? array_values(array_diff($names, ['.', '..'])) : [];
+                }
+                if ($pos >= count($entries[$dir])) {
+                    unset($entries[$dir]);
+                    array_pop($stack);
+                    continue;
+                }
+
+                // Every slice moves at least one entry forward.
+                if ($worked > 0 && self::out_of_time()) {
+                    fflush($fh);
+                    $saved = [
+                        'stack'   => $stack,
+                        'bytes'   => (int) ftell($fh),
+                        'listed'  => $listed,
+                        'done'    => $done,
+                        'skipped' => $skipped,
+                        'carry'   => $carry,
+                    ];
+                    if (@file_put_contents($cur_file . '.new', serialize($saved), LOCK_EX) !== false
+                        && @rename($cur_file . '.new', $cur_file)) {
+                        $paused = true;
                     }
-                    [, $prune] = $match($relative_of($file));
-                    return !$prune;
+                    self::slice_expired();
                 }
-            );
+                $worked++;
+                $stack[$top][1] = $pos + 1;
 
-            $files   = new \RecursiveIteratorIterator($iterator, \RecursiveIteratorIterator::SELF_FIRST);
-            $skipped = [];
+                $name     = (string) $entries[$dir][$pos];
+                $relative = $dir === '' ? $name : $dir . '/' . $name;
+                $abs      = $source_norm . '/' . $relative;
 
-            foreach ($files as $file) {
-                $relative = $relative_of($file);
-                if ($relative === '' || str_contains($relative, "\n") || str_contains($relative, "\r") || str_contains($relative, "\0")) {
+                // Liveness while walking, including long runs of entries
+                // that are skipped.
+                self::tick('scan', $done);
+
+                if (str_contains($relative, "\n") || str_contains($relative, "\r") || str_contains($relative, "\0")) {
                     continue;
                 }
 
-                [$skip] = $match($relative);
-                if ($skip) {
-                    continue;
-                }
+                [$skip, $prune] = $match($relative);
 
-                if ($file->isDir()) {
+                if (is_dir($abs)) {
+                    if ($prune) {
+                        continue;
+                    }
+                    // Linked folders are listed but not followed.
+                    if (!is_link($abs)) {
+                        $stack[] = [$relative, 0];
+                    }
+                    if ($skip) {
+                        continue;
+                    }
                     // On an incremental run only the folders around archived
                     // files are listed (see $emit_dir below); a full backup
                     // keeps every folder, so an intentionally empty directory
@@ -1618,14 +1681,18 @@ final class Export {
                     continue;
                 }
 
-                // The filter both indexes the file and decides whether it
-                // needs archiving. It is called for every file that survived
-                // the exclude list, INCLUDING ones it then declines.
-                if ($filter !== null && !$filter($relative, $file->getPathname())) {
+                if ($skip) {
                     continue;
                 }
 
-                if (!$file->isReadable()) {
+                // The filter both indexes the file and decides whether it
+                // needs archiving. It is called for every file that survived
+                // the exclude list, INCLUDING ones it then declines.
+                if ($filter !== null && !$filter($relative, $abs)) {
+                    continue;
+                }
+
+                if (!is_readable($abs)) {
                     // A file PHP cannot read is left out rather than failing
                     // the whole backup, and it is on record.
                     if (count($skipped) < 20) {
@@ -1638,7 +1705,7 @@ final class Export {
                 if ($parent !== '.' && $parent !== '') {
                     $emit_dir($zip_prefix . $parent);
                 }
-                fwrite($fh, $zip_prefix . $relative . "\0" . str_replace('\\', '/', $file->getPathname()) . "\n");
+                fwrite($fh, $zip_prefix . $relative . "\0" . $abs . "\n");
                 self::tick('scan', ++$done);
             }
 
@@ -1652,12 +1719,19 @@ final class Export {
                 if (is_file($list_file)) {
                     @unlink($list_file);
                 }
+                if (is_file($cur_file)) {
+                    @unlink($cur_file);
+                }
                 if (!@rename($tmp, $list_file)) {
                     @unlink($tmp);
                     throw new \RuntimeException('Could not save the backup file list (' . Environment::last_error() . '; write blocked).');
                 }
-            } else {
-                @unlink($tmp);
+            } elseif (!$paused) {
+                foreach ([$tmp, $cur_file] as $left) {
+                    if (is_file($left)) {
+                        @unlink($left);
+                    }
+                }
             }
         }
     }

@@ -422,7 +422,9 @@ final class Zip_Writer {
         $cur = &$state['cur'];
         $in  = @fopen(isset($cur['abs']) ? (string) $cur['abs'] : $source_dir . $cur['name'], 'rb');
         if (!$in) {
-            throw new \RuntimeException('Could not read ' . $cur['name'] . ' while building the ZIP.');
+            unset($cur);
+            self::drop_large($out, $state, 'vanished');
+            return true;
         }
         fseek($in, (int) $cur['src']);
 
@@ -446,7 +448,10 @@ final class Zip_Writer {
                         $chunk .= $more;
                     }
                     if (!is_string($chunk) || strlen($chunk) !== $want) {
-                        throw new \RuntimeException('Could not read ' . $cur['name'] . ' (it may have changed while the backup ran).');
+                        // The file shrank or changed while it was read.
+                        unset($cur);
+                        self::drop_large($out, $state, 'changed while read');
+                        return true;
                     }
                 }
 
@@ -507,6 +512,20 @@ final class Zip_Writer {
         $state['cur'] = null;
         $state['entries']++;
         return true;
+    }
+
+    /**
+     * Skip the large file being written, like an unreadable small file: cut
+     * its partial entry off the ZIP and log it. Its central record was never
+     * written, so the archive stays valid.
+     */
+    private static function drop_large($out, array &$state, string $why): void {
+        $name = (string) ($state['cur']['name'] ?? '');
+        ftruncate($out, (int) ($state['cur']['offset'] ?? ftell($out)));
+        fseek($out, 0, SEEK_END);
+        $state['cur']     = null;
+        $state['skipped'] = (int) ($state['skipped'] ?? 0) + 1;
+        error_log('[SitesSaver] Zip: ' . $why . ', skipped: ' . $name);
     }
 
     // ---------------------------------------------------------------
