@@ -24,6 +24,9 @@ final class Admin {
         // Run deferred post-import finalisation on the first clean admin
         // request after a restore, then track the permalinks-save cycle.
         add_action('admin_init', [$this, 'handle_post_import_finalisation'], 1);
+
+        // Storage OAuth return: store the token, then drop it from the URL.
+        add_action('admin_init', [$this, 'handle_remote_callback'], 2);
         add_action('admin_notices', [$this, 'render_restore_finalisation_notice']);
 
         // Server-side logout for the post-restore hand-off. Both hooks: the
@@ -74,10 +77,15 @@ final class Admin {
         //   session, so current_user_can() + nonce checks all work normally.
         global $pagenow;
 
+        // Only a logged-in user with the SitesSaver capability. The finalize
+        // URL is reached after the post-restore login, so the admin is here.
+        if (!is_user_logged_in() || !sitessaver_current_user_can()) {
+            return;
+        }
+
         // No nonce here by design: the restore replaced the database, so a
         // nonce issued before it cannot verify. The single-use finalize token
-        // is the CSRF guard (hash_equals below), and the permalinks counter
-        // only moves for a user who passes sitessaver_current_user_can().
+        // is the CSRF guard (hash_equals below).
         // phpcs:disable WordPress.Security.NonceVerification.Recommended
         $token = isset($_GET['sitessaver_finalize'])
             ? sanitize_text_field(wp_unslash($_GET['sitessaver_finalize']))
@@ -92,10 +100,6 @@ final class Admin {
             if ($expected !== '' && hash_equals($expected, $token)) {
                 Import::run_deferred_finalisation();
             }
-        }
-
-        if (!sitessaver_current_user_can()) {
-            return;
         }
 
         if ($pagenow !== 'options-permalink.php') {
@@ -117,6 +121,52 @@ final class Admin {
             }
         }
         // phpcs:enable WordPress.Security.NonceVerification.Recommended
+    }
+
+    /**
+     * The relay sends the browser back to Settings with the refresh token in
+     * the query string. Handle it here, before any output, and redirect to a
+     * clean Settings URL so the token does not stay in the address bar or
+     * browser history. The one-time `state` check is in handle_callback().
+     */
+    public function handle_remote_callback(): void {
+        // phpcs:disable WordPress.Security.NonceVerification.Recommended -- An OAuth return cannot carry a nonce; the single-use state value is checked instead.
+        $page = isset($_GET['page']) ? sanitize_key(wp_unslash($_GET['page'])) : '';
+        if ($page !== 'sitessaver-settings') {
+            return;
+        }
+
+        $callback = null;
+        if (isset($_GET['sitessaver_gdrive_token'])) {
+            $callback = [GDrive::class, 'handle_callback'];
+        } else {
+            foreach (Destinations::extra() as $dest) {
+                if (isset($_GET[$dest->callback_param()])) {
+                    $callback = [$dest, 'handle_callback'];
+                    break;
+                }
+            }
+        }
+        // phpcs:enable WordPress.Security.NonceVerification.Recommended
+        if ($callback === null) {
+            return;
+        }
+
+        $clean = admin_url('admin.php?page=sitessaver-settings');
+        if (!sitessaver_current_user_can()) {
+            wp_safe_redirect($clean);
+            exit;
+        }
+
+        $result = (array) call_user_func($callback);
+        set_transient('sitessaver_auth_notice_' . get_current_user_id(), [
+            'message' => (string) ($result['message'] ?? ''),
+            'ok'      => !empty($result['success']),
+        ], 5 * MINUTE_IN_SECONDS);
+
+        nocache_headers();
+        wp_safe_redirect(add_query_arg('ss_auth', '1', $clean));
+        exit;
     }
 
     /**

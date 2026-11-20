@@ -1,25 +1,15 @@
 <?php defined('ABSPATH') || exit; 
 // phpcs:disable WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- Template included from inside a SitesSaver\Admin method, so these variables are function-local, not globals.
 
-// Handle OAuth callback from proxy. Only checks that the parameter is there;
-// the callback itself validates its single-use `state` token.
-// phpcs:disable WordPress.Security.NonceVerification.Recommended
-$auth_msg = '';
-$auth_ok  = false;
-if (isset($_GET['sitessaver_gdrive_token']) && sitessaver_current_user_can()) {
-    $result    = \SitesSaver\GDrive::handle_callback();
-    $auth_msg  = $result['message'] ?? '';
-    $auth_ok   = !empty($result['success']);
+// Result of a storage connection, handled in Admin::handle_remote_callback().
+$auth_msg  = '';
+$auth_ok   = false;
+$ss_notice = get_transient('sitessaver_auth_notice_' . get_current_user_id());
+if (is_array($ss_notice)) {
+    delete_transient('sitessaver_auth_notice_' . get_current_user_id());
+    $auth_msg = (string) ($ss_notice['message'] ?? '');
+    $auth_ok  = !empty($ss_notice['ok']);
 }
-// Same for addon destinations (OneDrive, ...): each names its own query arg.
-foreach (\SitesSaver\Destinations::extra() as $ss_dest) {
-    if (isset($_GET[$ss_dest->callback_param()]) && sitessaver_current_user_can()) {
-        $result   = $ss_dest->handle_callback();
-        $auth_msg = $result['message'] ?? '';
-        $auth_ok  = !empty($result['success']);
-    }
-}
-// phpcs:enable WordPress.Security.NonceVerification.Recommended
 
 $settings = get_option('sitessaver_settings', []);
 $token    = get_option('sitessaver_gdrive_token', []);
