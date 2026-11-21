@@ -10,7 +10,7 @@ defined('ABSPATH') || exit;
 // phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception messages are never echoed raw; they are logged or returned through wp_send_json_* and escaped at render time in admin.js (escapeHtml).
 
 /**
- * ZIP archive handler — create and extract site backups.
+ * ZIP archive handler: create and extract site backups.
  */
 final class Archive {
 
@@ -46,10 +46,9 @@ final class Archive {
         );
 
         // Track add failures. ZipArchive::addFile() returning false means the
-        // entry never made it into the archive — previously ignored, so a
-        // backup could be missing files and still report success. The user
-        // only discovers it during a restore, which is the worst possible
-        // moment.
+        // entry never made it into the archive. Ignoring that would let a
+        // backup miss files and still report success, and the user would
+        // only find out during a restore.
         $failed = 0;
         $added  = 0;
 
@@ -72,7 +71,7 @@ final class Archive {
                 // to add one that DOES exist is data loss and must be loud.
                 if (!is_readable($filepath)) {
                     $failed++;
-                    error_log('[SitesSaver] Archive: unreadable, skipped — ' . $relative);
+                    error_log('[SitesSaver] Archive: unreadable, skipped: ' . $relative);
                     continue;
                 }
 
@@ -81,7 +80,7 @@ final class Archive {
                 if (!$zip->addFile($filepath, $relative)) {
                     $failed++;
                     if ($failed <= 50) {
-                        error_log('[SitesSaver] Archive: addFile failed — ' . $relative);
+                        error_log('[SitesSaver] Archive: addFile failed: ' . $relative);
                     }
                 }
 
@@ -96,12 +95,12 @@ final class Archive {
             }
         }
 
-        // close() performs the actual write — this is where ZipArchive does
+        // close() performs the actual write. This is where ZipArchive does
         // the real read+compress+write for every entry addFile()'d above,
         // and it is a single uninterruptible call with no way to tick from
         // inside it. Mark the phase transition explicitly (tick_phase()
         // bypasses the normal throttle and always persists) so the stall
-        // watchdog knows to extend its patience — see
+        // watchdog knows to wait longer. See
         // Export::STALL_SECONDS_FINALIZING's docblock for why.
         if (class_exists(Export::class)) {
             Export::tick_phase('zip-finalizing');
@@ -116,9 +115,9 @@ final class Archive {
             error_log(sprintf('[SitesSaver] Archive: %d file(s) could not be added to %s.', $failed, basename($output_zip)));
         }
 
-        // Final sanity check — the archive must exist and be openable.
+        // Final check: the archive must exist and be openable.
         if (!file_exists($output_zip) || filesize($output_zip) === 0) {
-            error_log('[SitesSaver] Archive: output file missing or empty after close — ' . $output_zip);
+            error_log('[SitesSaver] Archive: output file missing or empty after close: ' . $output_zip);
             return false;
         }
 
@@ -356,7 +355,7 @@ final class Archive {
 
         // Extract each file with path validation. Fail-closed: if any entry
         // looks malicious we close the archive and return false rather than
-        // silently skipping it — that way a tampered backup is REJECTED
+        // silently skipping it, so a tampered backup is REJECTED
         // wholesale, not half-restored.
         for ($i = 0; $i < $zip->numFiles; $i++) {
             $entry = $zip->getNameIndex($i);
@@ -377,7 +376,7 @@ final class Archive {
                 return false;
             }
 
-            // Reject symlink entries — a ZIP stores symlinks via the upper
+            // Reject symlink entries. A ZIP stores symlinks via the upper
             // 16 bits of the external attribute (Unix mode). S_IFLNK = 0xA000.
             $stat = $zip->statIndex($i);
             if (is_array($stat) && isset($stat['external_attr'])) {
@@ -396,7 +395,7 @@ final class Archive {
             }
             $parent_real = realpath($parent);
 
-            // Ensure target is within destination (zip-slip prevention).
+            // Target must stay within destination (zip-slip prevention).
             if ($parent_real === false
                 || !str_starts_with($parent_real . DIRECTORY_SEPARATOR, $real_dest . DIRECTORY_SEPARATOR)
             ) {
@@ -440,7 +439,7 @@ final class Archive {
      *
      * Only a path SEGMENT equal to ".." is traversal. A file NAME that merely contains
      * two dots ("photo..jpg", "my..report.pdf") is legal on every filesystem and does
-     * occur in real uploads; rejecting those used to abort a whole restore with
+     * occur in real uploads; rejecting those would abort a whole restore with
      * "Failed to extract backup archive.". Absolute paths, Windows drive prefixes and
      * NUL bytes are still refused.
      */

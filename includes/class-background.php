@@ -18,8 +18,8 @@ defined('ABSPATH') || exit;
  * 1. LiteSpeed stops a PHP request as soon as its client disconnects, and a
  *    loopback worker's client disconnects at once by design. LiteSpeed's
  *    documented fix is the `noabort` environment variable, set from
- *    .htaccess. We add that rule — scoped to SitesSaver's own worker
- *    requests only — between our own markers.
+ *    .htaccess. We add that rule, scoped to SitesSaver's own worker
+ *    requests only, between our own markers.
  * 2. When a worker dies anyway, a WP-Cron watchdog that runs every minute
  *    while an export is open notices the silence and runs the next slice.
  *    WP-Cron needs site traffic to fire.
@@ -188,7 +188,7 @@ final class Background {
             $subject = sprintf(__('[%s] Your backup is ready', 'sitessaver'), $site);
             $body    = sprintf(
                 /* translators: 1: site URL, 2: backup file name, 3: backup size, 4: link to the Backups page. */
-                __("The backup you started on %1\$s has finished.\n\nFile: %2\$s\nSize: %3\$s\n\nDownload it from SitesSaver → Backups:\n%4\$s\n\n— SitesSaver", 'sitessaver'),
+                __("The backup you started on %1\$s has finished.\n\nFile: %2\$s\nSize: %3\$s\n\nDownload it from SitesSaver → Backups:\n%4\$s\n\nSitesSaver", 'sitessaver'),
                 home_url(),
                 (string) ($result['file'] ?? $status['backup_name'] ?? ''),
                 (string) ($result['size'] ?? ''),
@@ -199,9 +199,9 @@ final class Background {
             $subject = sprintf(__('[%s] Your backup did not finish', 'sitessaver'), $site);
             $body    = sprintf(
                 /* translators: 1: site URL, 2: error reference code, 3: error details, 4: link to the Help page. */
-                __("The backup you started on %1\$s stopped before it finished. Your site itself is fine — nothing was changed.\n\nReference: %2\$s\nDetails: %3\$s\n\nTry again from SitesSaver → Export. If it stops again, open Help → Troubleshooting Log, download the log and send it to SitesSaver support:\n%4\$s\n\n— SitesSaver", 'sitessaver'),
+                __("The backup you started on %1\$s stopped before it finished. Your site itself is fine. Nothing was changed.\n\nReference: %2\$s\nDetails: %3\$s\n\nTry again from SitesSaver → Export. If it stops again, open Help → Troubleshooting Log, download the log and send it to SitesSaver support:\n%4\$s\n\nSitesSaver", 'sitessaver'),
                 home_url(),
-                !empty($status['ref']) ? 'SS-' . $status['ref'] : '—',
+                !empty($status['ref']) ? 'SS-' . $status['ref'] : 'none',
                 $detail !== '' ? $detail : (string) ($status['message'] ?? ''),
                 admin_url('admin.php?page=sitessaver-help')
             );

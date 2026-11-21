@@ -10,7 +10,7 @@ defined('ABSPATH') || exit;
 // phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception messages are never echoed raw; they are logged or returned through wp_send_json_* and escaped at render time in admin.js (escapeHtml).
 
 /**
- * Export engine — creates full site backup (DB + files → ZIP).
+ * Export engine: creates a full site backup (DB + files in one ZIP).
  */
 final class Export {
 
@@ -20,7 +20,7 @@ final class Export {
      * The percentages are a rough map of how long each stage takes, and the
      * LAST step must land on 100. When the backup is also going to Google
      * Drive, the upload happens inside the finalize step and is usually the
-     * slowest part of the whole export — so finalize cannot own 100 or the
+     * slowest part of the whole export, so finalize cannot own 100 or the
      * bar sits full and motionless for the entire upload. In that case the
      * local work is compressed into the first 60% and the upload is given a
      * step of its own, which the client fills from real byte progress
@@ -102,8 +102,8 @@ final class Export {
     // Heartbeat
     //
     // A single step (copying 35k uploads, zipping 5 GB) runs for minutes
-    // inside one PHP process. Nothing observing it — the browser poll, the
-    // stale-worker watchdog — can tell "still working" from "died" unless the
+    // inside one PHP process. Nothing observing it (the browser poll, the
+    // stale-worker watchdog) can tell "still working" from "died" unless the
     // step says so while it runs. These ticks refresh the status transient's
     // last_update from inside the long loops. Throttled, so a tick in a tight
     // per-file loop costs effectively nothing.
@@ -114,14 +114,14 @@ final class Export {
 
     /**
      * Extended grace period for phases that are a single, uninterruptible
-     * blocking call with no incremental progress API — currently only
+     * blocking call with no incremental progress API. Currently only
      * ZipArchive::close(). PHP's ZipArchive defers the actual read+compress
      * +write work for every addFile()'d entry to this one call (addFile()
      * itself just registers metadata and returns almost instantly), so the
      * per-file tick() calls during the add loop cover the FAST phase and
      * go silent right when the SLOW phase starts. A multi-gigabyte
      * wp-content easily takes longer than STALL_SECONDS to compress here,
-     * and there is no way to tick from inside it — so instead of lying
+     * and there is no way to tick from inside it. So instead of lying
      * with fake periodic ticks, the phase ticks once on entry with a
      * distinguishable note and the watchdog is told to extend its patience
      * for exactly that note.
@@ -385,8 +385,8 @@ final class Export {
     /**
      * Start a scheduled backup and run as much of it as this request may.
      *
-     * Scheduled backups used to run start-to-finish in one request, which a
-     * host that stops requests after ~30 s never allows. The rest now runs as
+     * A scheduled backup can't run start-to-finish in one request on a
+     * host that stops requests after ~30 s. The rest runs as
      * the same chain of slices as a manual export (worker, watchdog, server
      * cron). Drive upload, retention and the email happen when it finishes
      * (action `sitessaver_scheduled_export_finished`).
@@ -416,7 +416,7 @@ final class Export {
         ];
     }
 
-    /** Scratch dir for the ZIP builder — beside, never inside, temp_dir. */
+    /** Scratch dir for the ZIP builder, beside (never inside) temp_dir. */
     private static function zip_work_dir(string $temp_dir): string {
         return rtrim($temp_dir, '/\\') . '-zip';
     }
@@ -451,8 +451,8 @@ final class Export {
 
     /**
      * Report liveness unconditionally, bypassing the TICK_INTERVAL throttle.
-     * For one-off phase transitions (not a loop) — e.g. "about to enter a
-     * single long blocking call with no internal progress hook" — where the
+     * For one-off phase transitions (not a loop), e.g. "about to enter a
+     * single long blocking call with no internal progress hook", where the
      * normal throttle could suppress the one tick that actually matters
      * (it fires regardless of how recently a previous tick landed).
      *
@@ -578,7 +578,7 @@ final class Export {
                 $st['slice']       = max(5, intdiv(self::slice_budget($st), 2));
                 $st['last_update'] = time();
                 self::save_status($uid, $st);
-                Log::warning('export_slice_timeout', $tech . sprintf(' — continuing with a %ds slice.', $st['slice']), self::diagnostics($st));
+                Log::warning('export_slice_timeout', $tech . sprintf('; continuing with a %ds slice.', $st['slice']), self::diagnostics($st));
                 self::spawn_worker($uid);
                 return;
             }
@@ -612,7 +612,7 @@ final class Export {
                 $status = self::get_status($uid);
 
                 if (empty($status) || ($status['status'] ?? '') !== 'running') {
-                    // Completed, cancelled, or errored — either way we are done.
+                    // Completed, cancelled, or errored. Either way we are done.
                     return ['success' => true];
                 }
 
@@ -691,7 +691,7 @@ final class Export {
         $backup_name = sitessaver_backup_filename();
         $temp_dir    = SITESSAVER_TEMP_DIR . '/' . $uid;
 
-        // Ensure isolated temp directory exists.
+        // Create the isolated temp directory.
         wp_mkdir_p($temp_dir);
         sitessaver_protect_directory(SITESSAVER_TEMP_DIR);
 
@@ -758,7 +758,7 @@ final class Export {
             return ['pending' => true, 'progress' => (int) $res['progress']];
         }
 
-        // Terminal outcome — drop the carried state.
+        // Terminal outcome: drop the carried state.
         $fresh = self::get_status($uid);
         if (!empty($fresh) && !empty($fresh[$key])) {
             unset($fresh[$key]);
@@ -863,7 +863,7 @@ final class Export {
             return ['success' => false, 'message' => __('No active export found for this ID.', 'sitessaver')];
         }
 
-        // Build the table for THIS export's destination — the Drive variant
+        // Build the table for THIS export's destination. The Drive variant
         // has different weights, so a default table could index a different
         // step than the client is showing.
         $steps = self::get_steps((string) ($status['options']['export_destination'] ?? 'local'));
@@ -928,21 +928,19 @@ final class Export {
                         // core keeps every subsite's media under a shared
                         // parent (uploads/sites/{blog_id}/...), so copying
                         // the bare uploads root would pull every OTHER
-                        // subsite's media into THIS site's backup — a
-                        // content-layer version of the same leak A2 fixed
-                        // for the database. wp_upload_dir() resolves to the
+                        // subsite's media into THIS site's backup, the file
+                        // version of the table scoping done for the
+                        // database. wp_upload_dir() resolves to the
                         // current site's own subtree automatically (WP core
-                        // switches the basedir per blog) for every subsite —
+                        // switches the basedir per blog) for every subsite,
                         // but the MAIN site (blog ID 1) is the one case
                         // where basedir is NOT scoped: it IS the literal
                         // parent of uploads/sites/, so a plain copy still
                         // vacuums up every subsite's media. Exclude that
                         // subfolder explicitly when this is the main site
-                        // on a multisite network. Verified against a real
-                        // WP multisite install (see PLAN-multisite-
-                        // premium-addon.md §7 A3 test notes) — this is not
-                        // a documented wp_upload_dir() edge case, it was
-                        // found by testing, not by reading core source.
+                        // on a multisite network. Verified on a real WP
+                        // multisite install; wp_upload_dir() does not
+                        // document this case.
                         $uploads_exclude = (is_multisite() && get_current_blog_id() === 1)
                             ? ['sites', 'sites/*']
                             : [];
@@ -959,13 +957,11 @@ final class Export {
                 case 'plugins':
                     if (!empty($options['include_plugins'])) {
                         // Exclude BOTH the top-level folder AND every file inside it.
-                        // Pre-1.1.7 the exclude was `['sitessaver']` — fnmatch does not
-                        // treat that as a directory prefix, so every file under
-                        // `sitessaver/*` was silently included in the backup. Restores
-                        // then overwrote the live plugin with the backup's (older) copy,
-                        // silently reverting whatever bugfixes the running plugin had.
-                        // We now pass an explicit path-prefix pattern AND rely on the
-                        // prefix-aware check added to copy_directory() below.
+                        // fnmatch does not treat `sitessaver` as a directory prefix,
+                        // so `sitessaver/*` is needed too. Otherwise the plugin's own
+                        // files land in the backup and a restore overwrites the live
+                        // plugin with that older copy. The prefix-aware check in
+                        // copy_directory() below covers the same case.
                         self::list_area(
                             'plugins',
                             WP_PLUGIN_DIR,
@@ -1068,7 +1064,7 @@ final class Export {
                     }
 
                     if (empty($status['finalized'])) {
-                        // Isolated cleanup — ONLY delete this export's temp dir.
+                        // Isolated cleanup: ONLY delete this export's temp dir.
                         // Sliced: tens of thousands of files can take longer
                         // to delete than a request is allowed to live.
                         if (!self::remove_directory($temp_dir, true)) {
@@ -1180,7 +1176,7 @@ final class Export {
             }
 
             // Re-read: checkpoints wrote cursors meanwhile. An empty status
-            // means the export was cancelled while this step ran — do not
+            // means the export was cancelled while this step ran. Do not
             // bring it back to life by saving it.
             $status = self::get_status($uid);
             if (empty($status)) {
@@ -1444,7 +1440,7 @@ final class Export {
 
             if (!is_readable($shard)) {
                 // Area was switched off this run. It contributes no index
-                // entries AND no deletions — an area nobody looked at cannot
+                // entries AND no deletions: an area nobody looked at cannot
                 // have lost files.
                 continue;
             }

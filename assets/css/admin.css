@@ -1,4 +1,4 @@
-/* SitesSaver — Premium WP Design System */
+/* SitesSaver admin styles */
 
 :root {
     /* Color Palette */
@@ -399,8 +399,8 @@
     border-radius: 5px;
 
     /* Two stacked layers:
-       1. Zebra stripes (top) — diagonal translucent white, scrolls to show motion
-       2. Brand gradient (bottom) — solid colour base                          */
+       1. Zebra stripes (top): diagonal translucent white, scrolls to show motion
+       2. Brand gradient (bottom): solid colour base                           */
     background-image:
         linear-gradient(
             45deg,
@@ -504,10 +504,10 @@
     word-break: break-word;
 }
 
-/* Error variant. Without it the card fell through to WordPress core's
-   `div.error` notice style (4px red left bar, white box) — the success
-   card had its own tint, the failure card did not. Mirrors the success
-   card: tinted surface, 1px border, danger accent on the icon + title. */
+/* Error variant. Without it the card picks up WordPress core's
+   `div.error` notice style (4px red left bar, white box). Same layout as
+   the success card: tinted surface, 1px border, danger accent on the icon
+   and title. */
 .ss-result-card.error {
     margin: 20px 0;
     padding: 20px;
@@ -1059,10 +1059,10 @@
 }
 
 /* ==========================================================================
-   Notification system — toasts + dialogs
-   Replaces the native alert() / confirm() / prompt() dialogs the plugin used
-   to rely on. Those were unstyled, non-translatable, blocked the main thread,
-   and are suppressed entirely by some browsers inside iframes.
+   Notification system: toasts and dialogs
+   Used instead of native alert() / confirm() / prompt(), which can't be
+   styled or translated, block the main thread, and are suppressed by some
+   browsers inside iframes.
    ========================================================================== */
 
 /* ── Toasts ───────────────────────────────────────────────── */
@@ -1357,7 +1357,7 @@ body.ss-modal-open {
 }
 
 /* ==========================================================================
-   Schedule page — frequency picker, notices, copy rows
+   Schedule page: frequency picker, notices, copy rows
    ========================================================================== */
 
 /* ── Inline notices ───────────────────────────────────────── */

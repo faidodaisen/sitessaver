@@ -16,7 +16,7 @@ defined('ABSPATH') || exit;
  * be interrupted or resumed. On a host that ends every PHP request after
  * ~30 s, a backup of any real size therefore never finishes. This writer
  * produces a standard ZIP (deflate or stored, data descriptors, ZIP64 when
- * needed) a few files — or a few megabytes of one large file — at a time,
+ * needed) a few files, or a few megabytes of one large file, at a time,
  * and reports a small state array after every unit of work. Handing that
  * state back continues exactly where the last request stopped: the output
  * is cut back to the last committed size, so a request killed mid-write
@@ -165,10 +165,10 @@ final class Zip_Writer {
                         $abs  = $abs ?? ($source_dir . $relative);
                         $size = is_file($abs) ? (int) @filesize($abs) : -1;
                         if ($size < 0 || !is_readable($abs)) {
-                            // Vanished or unreadable: same as Archive::create()
-                            // — skip it, but say so.
+                            // Vanished or unreadable: same as Archive::create(),
+                            // skip it but say so.
                             $state['skipped'] = (int) ($state['skipped'] ?? 0) + 1;
-                            error_log('[SitesSaver] Zip: unreadable, skipped — ' . $relative);
+                            error_log('[SitesSaver] Zip: unreadable, skipped: ' . $relative);
                         } elseif ($size >= self::STREAM_MIN) {
                             self::start_large($out, $relative, $abs, $size, $state, $abs !== $source_dir . $relative);
                             $save(false);
@@ -350,7 +350,7 @@ final class Zip_Writer {
         $data = $size > 0 ? @file_get_contents($abs) : '';
         if (!is_string($data)) {
             $state['skipped'] = (int) ($state['skipped'] ?? 0) + 1;
-            error_log('[SitesSaver] Zip: unreadable, skipped — ' . $relative);
+            error_log('[SitesSaver] Zip: unreadable, skipped: ' . $relative);
             return;
         }
         $size = strlen($data);

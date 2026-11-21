@@ -69,7 +69,7 @@ final class Database {
      * continued. Rows are never written twice and never skipped.
      *
      * @param array<string, mixed> $cursor     [] to start, or a cursor from $commit.
-     * @param callable|null        $should_stop fn(): bool — checked after every page.
+     * @param callable|null        $should_stop fn(): bool, checked after every page.
      * @param callable|null        $commit      fn(array $cursor, bool $force): void.
      * @return array<string, mixed> Cursor; `done` is true when the dump is complete,
      *                              `error` is set when the file could not be opened.
@@ -166,7 +166,7 @@ final class Database {
         // MULTISITE WARNING (do not revert without re-reading this): a plain
         // `LIKE {$wpdb->prefix}%` is only safe on a single-site install. On
         // multisite the network's MAIN site (blog ID 1) uses the bare base
-        // prefix (e.g. `wp_`) with NO numeric suffix — and every subsite's
+        // prefix (e.g. `wp_`) with NO numeric suffix, and every subsite's
         // tables (`wp_2_posts`, `wp_3_options`, ...) also start with that
         // same literal string, because the subsite prefix is
         // `{base_prefix}{blog_id}_`. A LIKE match on `wp_%` therefore also
@@ -174,7 +174,7 @@ final class Database {
         // old query silently vacuumed every OTHER subsite's content and DB
         // credentials-adjacent tables into one archive, and also pulled in
         // the ms-global tables (wp_users, wp_usermeta, wp_blogs, wp_site,
-        // wp_sitemeta, wp_signups, wp_blogmeta) — which then got a blind
+        // wp_sitemeta, wp_signups, wp_blogmeta), which then got a blind
         // `DROP TABLE IF EXISTS` + reinsert on restore, silently wiping every
         // OTHER site's users/blogs list too. tables_for_current_site() scopes
         // this correctly for both the main site and any subsite.
@@ -184,8 +184,8 @@ final class Database {
     /**
      * Resolve exactly the tables that belong to the CURRENT site, and no
      * others. Single-site installs get the pre-existing behaviour (every
-     * table under $wpdb->prefix — there's nothing else in the DB to
-     * confuse it with). Multisite requires real disambiguation — see the
+     * table under $wpdb->prefix; there's nothing else in the DB to
+     * confuse it with). Multisite requires real disambiguation; see the
      * warning in export() for why a bare LIKE match is unsafe there.
      *
      * @return list<string>
@@ -200,11 +200,11 @@ final class Database {
         // ms_global_tables PLUS global_tables (wp_users, wp_usermeta,
         // wp_blogs, wp_site, wp_sitemeta, wp_signups, wp_blogmeta,
         // wp_registration_log, ...) are network-wide and deliberately never
-        // included in a per-site export/import — they aren't "this site's"
+        // included in a per-site export/import. They aren't "this site's"
         // data, and DROP+reinsert on restore would clobber every other
         // site on the network.
         //
-        // IMPORTANT: $wpdb->ms_global_tables alone is NOT enough — real WP
+        // $wpdb->ms_global_tables alone is NOT enough. WP
         // core keeps `users`/`usermeta` in a SEPARATE `$wpdb->global_tables`
         // property (it exists on single-site too, just unused there), while
         // `ms_global_tables` only holds `blogs`/`blogmeta`/`site`/
@@ -212,7 +212,7 @@ final class Database {
         // ms_global_tables misses users/usermeta entirely and lets a
         // "per-site" backup silently capture every account on the network.
         // wpdb::tables('global', false) returns the correct UNION of both,
-        // unprefixed — that's what must be used here, not either property
+        // unprefixed. That's what must be used here, not either property
         // read in isolation. A future network-scoped backup mode (out of
         // scope here) would need to opt into them explicitly instead of
         // inheriting this exclusion.
@@ -257,8 +257,8 @@ final class Database {
      * outside this site's own scope (another subsite's tables, or the
      * ms-global tables). Without this, a DROP TABLE IF EXISTS in the dump
      * silently destroys another site's data on the same network the moment
-     * an admin imports what looks like an ordinary single-site backup —
-     * e.g. a backup taken before this scoping fix existed, or one copied
+     * an admin imports what looks like an ordinary single-site backup,
+     * e.g. a backup taken by an older version without table scoping, or one copied
      * from a different subsite's Backups list.
      *
      * Cheap line scan, not the full tokenizer: the dump format is generated
@@ -297,7 +297,7 @@ final class Database {
 
             $offending[] = $table;
 
-            // Cap how much we collect for the error message — the guard's
+            // Cap how much we collect for the error message. The guard's
             // job is to refuse the import, not enumerate every table in a
             // rogue network-wide dump.
             if (count($offending) >= 10) {
@@ -317,7 +317,7 @@ final class Database {
             : 'another site\'s';
 
         throw new \RuntimeException(sprintf(
-            /* Not user-facing __() text — Import::from_backup() catches this
+            /* Not user-facing __() text. Import::from_backup() catches this
                and wraps it in a translated, non-technical message. Keeping
                table names here only for debug.log / support diagnosis. */
             'SitesSaver refused to import this backup into site #%d: it contains %s tables (%s). ' .
@@ -373,7 +373,7 @@ final class Database {
         // dropped real customer data.
         $generated = self::$table_meta[$table]['generated'];
 
-        // Data — chunked to avoid memory issues.
+        // Data, chunked to keep memory use flat.
         $chunk_size = self::CHUNK_ROWS;
 
         // The options table gets a WHERE clause that drops this plugin's own
@@ -386,9 +386,9 @@ final class Database {
         // Pagination MUST be ordered. `LIMIT/OFFSET` without `ORDER BY` gives
         // MySQL licence to return rows in any order, and OFFSET counts
         // positions in *that* unspecified order. WordPress writes to
-        // wp_options constantly — including this plugin's own progress
+        // wp_options constantly (including this plugin's own progress
         // transient after every export step, plus WP expiring other
-        // transients on read — so rows shift between pages mid-dump. A row
+        // transients on read), so rows shift between pages mid-dump. A row
         // that moves across a page boundary is emitted twice, and the restore
         // then fails with "Duplicate entry for key PRIMARY" and silently
         // drops whatever row took its place.
@@ -405,7 +405,7 @@ final class Database {
         // every page, so a table's dump costs O(rows^2): on a 427k-row log
         // table the late pages took seconds each and the whole database step
         // ran for tens of minutes, visibly slowing down as it went. A keyset
-        // read is an index range scan — every page costs the same, however
+        // read is an index range scan: every page costs the same, however
         // deep into the table it is. It is also immune to rows being inserted
         // or deleted mid-dump, which OFFSET is not even when ordered.
         //
@@ -451,7 +451,7 @@ final class Database {
 
             foreach ($rows as $row) {
                 if ($order_col !== null && array_key_exists($order_col, $row)) {
-                    // Read BEFORE generated columns are stripped — the key is
+                    // Read BEFORE generated columns are stripped. The key is
                     // never generated, but keep the invariant obvious.
                     $last_key = (string) $row[$order_col];
                 }
@@ -499,7 +499,7 @@ final class Database {
      * transient export/import state. Everything else is dumped verbatim.
      *
      * Returns a bare boolean condition, no `WHERE` (or an empty string). The
-     * fragment contains no user input — the LIKE patterns are literals — so it
+     * fragment contains no user input (the LIKE patterns are literals), so it
      * is safe to interpolate.
      */
     private static function row_filter_for(\wpdb $wpdb, string $table): string {
@@ -617,7 +617,7 @@ final class Database {
      * @throws \RuntimeException If the dump contains serialized PHP objects
      *                           (security guardrail against object injection).
      * @throws \RuntimeException If, on multisite, the dump's tables reach
-     *                           outside this site's own scope — see
+     *                           outside this site's own scope. See
      *                           assert_import_scope_is_safe().
      */
     public static function import(string $sql_file, string $old_url = '', string $new_url = '', string $old_prefix = '', bool $stage = false): bool {
@@ -858,7 +858,7 @@ final class Database {
             fseek($handle, (int) $state['offset']);
         }
 
-        // Tokenizer state. All of it must persist across fread() boundaries —
+        // Tokenizer state. All of it must persist across fread() boundaries:
         // a 64 KB chunk can end anywhere, including halfway through a quoted
         // string, a comment, or a multi-character delimiter. Between
         // statements it is always empty, which is what makes the byte
@@ -914,7 +914,7 @@ final class Database {
                     // $current both bloats the statement and (because the body
                     // can contain `*/`-like bytes) confused the terminator scan.
                     // MySQL conditional-execution comments (`/*!40101 ... */`)
-                    // never enter this state — they are executable SQL and are
+                    // never enter this state. They are executable SQL and are
                     // handled as ordinary statement text below.
                     if ($in_blk_c) {
                         if ($blk_star && $char === '/') {
@@ -946,7 +946,7 @@ final class Database {
                             // quote, not a terminator. We can't see the next
                             // byte if the chunk ends here, so we close the
                             // string and let the re-open on the next byte
-                            // restore the state — which yields the identical
+                            // restore the state, which yields the identical
                             // result for the purposes of delimiter detection.
                             $in_string = false;
                             $quote     = '';
@@ -971,7 +971,7 @@ final class Database {
                         continue;
                     }
                     if ($char === '*' && $current !== '' && substr($current, -1) === '/') {
-                        // `/*!` and `/*+` are executable comments — keep them.
+                        // `/*!` and `/*+` are executable comments, keep them.
                         $next = self::peek_byte($buffer, $i + 1, $handle);
                         if ($next !== '!' && $next !== '+') {
                             $in_blk_c = true;
@@ -988,7 +988,7 @@ final class Database {
                         continue;
                     }
 
-                    // DELIMITER directive — mysqldump emits these around
+                    // DELIMITER directive: mysqldump emits these around
                     // triggers, procedures, and events. Without honouring it
                     // the `;` inside a trigger body splits the statement and
                     // the restore fails with a syntax error.
@@ -1265,9 +1265,9 @@ final class Database {
 
     /**
      * Rewrite the TABLE NAMES in one DDL/DML statement from the source prefix
-     * to this site's prefix. Only identifiers in table position are touched —
+     * to this site's prefix. Only identifiers in table position are touched:
      * the backticked name right after DROP/CREATE/ALTER/LOCK TABLE(S), INSERT
-     * INTO / REPLACE INTO, and REFERENCES inside a CREATE — never row data,
+     * INTO / REPLACE INTO, and REFERENCES inside a CREATE. Never row data,
      * so a post that happens to contain the text `bzm_posts` survives as-is.
      */
     public static function rewrite_table_prefix(string $sql, string $from, string $to): string {
@@ -1398,7 +1398,7 @@ final class Database {
      *
      * Why strip-leading-comments matters:
      *   The tokenizer splits on top-level `;`, so a statement can legitimately
-     *   look like `-- Table: wp_users\nDROP TABLE IF EXISTS wp_users;` — the
+     *   look like `-- Table: wp_users\nDROP TABLE IF EXISTS wp_users;`, the
      *   leading comment block is attached to the real DDL. A naive
      *   `str_starts_with('--')` skip would silently drop the DROP TABLE and
      *   cause "Table already exists" + duplicate-PK failures on restore.
@@ -1662,7 +1662,7 @@ final class Database {
      * empty string if the statement was nothing but comments/whitespace.
      *
      * MySQL conditional-execution comments (`/*!40101 SET ... *\/` and optimiser
-     * hints `/*+ ... *\/`) are NOT stripped — they carry executable SQL that
+     * hints `/*+ ... *\/`) are NOT stripped. They carry executable SQL that
      * mysqldump-produced files depend on. Treating them as comments silently
      * dropped charset/sql_mode setup and produced mojibake on restore.
      */
@@ -1685,7 +1685,7 @@ final class Database {
                 $s = ltrim(substr($s, $nl + 1));
                 continue;
             }
-            // `/*!` and `/*+` are executable, not comments — stop stripping.
+            // `/*!` and `/*+` are executable, not comments. Stop stripping.
             if (str_starts_with($s, '/*') && !str_starts_with($s, '/*!') && !str_starts_with($s, '/*+')) {
                 $end = strpos($s, '*/');
                 if ($end === false) {
@@ -1722,19 +1722,19 @@ final class Database {
         string $old_no_scheme,
         string $new_no_scheme
     ): string {
-        // Build a comprehensive replacement map covering every scheme +
-        // escape variant we've encountered in the wild. Why this matters:
+        // Build a replacement map covering every scheme + escape variant
+        // we've seen in real sites. Why:
         //
         // Page builders (Breakdance, Elementor, Oxygen, Bricks) store their
         // tree as JSON-inside-postmeta, and inside that JSON URLs are stored
         // with backslash-escaped slashes: `https:\/\/old.com\/...`. Further,
-        // sites frequently mix schemes — a site running on HTTPS exports
+        // sites often mix schemes. A site running on HTTPS exports
         // with `home_url = https://old.com` but the backup's DB can
         // legitimately contain HTTP variants (hardcoded assets, CDN
         // fallbacks, plugins that force-regenerate URLs). When migrating
         // to a local dev site on HTTP (e.g. Laragon's feldatravel.test),
         // the replacer must swap BOTH `https://old.com` AND `http://old.com`
-        // to the destination's canonical URL — otherwise Breakdance renders
+        // to the destination's canonical URL, otherwise Breakdance renders
         // `<img src="https://feldatravel.test/...">` on a server that only
         // answers HTTP, and the browser shows a broken image.
         //
@@ -1801,7 +1801,7 @@ final class Database {
         $old_no_scheme = rtrim($old_no_scheme, '/');
         $new_no_scheme = rtrim($new_no_scheme, '/');
 
-        // Idempotency guard — if old === new in every respect, skip the
+        // Idempotency guard: if old === new in every respect, skip the
         // whole replacement pass. Running this twice with the same map on
         // already-replaced content is a no-op, but short-circuiting saves
         // the whole byte-walker run on multi-GB dumps.
@@ -1809,18 +1809,18 @@ final class Database {
             return [];
         }
 
-        // Short-pattern safety — refuse to rewrite a bare hostname that
+        // Short-pattern safety: refuse to rewrite a bare hostname that
         // contains no dot (e.g. `localhost`). Substring-matching against
         // `localhost` would catch it inside any longer word and produce
         // destructive collisions (`localhost.example.com`, or the string
         // `localhost` mentioned in prose). A real WordPress site URL always
-        // has either a TLD dot or an explicit port — the latter case users
+        // has either a TLD dot or an explicit port; for the latter, users
         // should keep in the source/dest URL as http://localhost:8080.
         $has_dot = str_contains($old_no_scheme, '.') && str_contains($new_no_scheme, '.');
 
         $new_scheme = str_starts_with($new_url, 'https://') ? 'https' : 'http';
 
-        // www ↔ non-www variants — WordPress sites commonly migrate between
+        // www and non-www variants. WordPress sites commonly migrate between
         // www.example.com and example.com. The canonical pair above handles
         // the configured URLs; these extras catch the other variant that
         // might linger in post_content or widget data from earlier moves.
@@ -1842,7 +1842,7 @@ final class Database {
             $variants['https://' . $old_host] = $new_scheme . '://' . $new_host;
             $variants['http://'  . $old_host] = $new_scheme . '://' . $new_host;
 
-            // JSON-escaped (`https:\/\/old.com`) — page builders store their
+            // JSON-escaped (`https:\/\/old.com`): page builders store their
             // trees as JSON inside postmeta; json_encode() escapes forward
             // slashes by default.
             $variants['https:\\/\\/' . $old_host] = $new_scheme . ':\\/\\/' . $new_host;
@@ -1879,7 +1879,7 @@ final class Database {
 
     /**
      * Log (once per import) whether the SQL contains `O:` or `C:` serialized
-     * class markers. Non-blocking — legitimate WordPress data contains these.
+     * class markers. Non-blocking; legitimate WordPress data contains these.
      *
      * Detects both unescaped (`O:8:"X":...`) and SQL-escaped (`O:8:\"X\":...`)
      * forms so legacy backups (mysqli_real_escape_string era) are also covered.
@@ -1933,7 +1933,7 @@ final class Database {
 
         $replace_in = static function (string $s) use ($from, $to): string {
             // strtr with an associative array is the canonical multi-pattern
-            // single-pass replacer — same approach All-in-One WP Migration
+            // single-pass replacer, the same approach All-in-One WP Migration
             // uses. It's O(n·m) in worst case but much faster in practice
             // than looping str_replace().
             return strtr($s, array_combine($from, $to));
@@ -2021,7 +2021,7 @@ final class Database {
      *       s:53:"a:1:{s:5:"inner";s:27:"https://old/x";}";
      *   A single-level walker rewrites the OUTER length (53 → 60) but leaves
      *   the INNER `s:27:` untouched, so the outer string unserializes fine and
-     *   the inner one fails — the classic "widget/page-builder settings are
+     *   the inner one fails, giving the familiar "widget/page-builder settings are
      *   empty after migration" symptom. Recursing means every nesting level
      *   gets its length prefix recomputed.
      *
@@ -2059,7 +2059,7 @@ final class Database {
     }
 
     /**
-     * Inner recursion entry point — same walker, applied to an already-decoded
+     * Inner recursion entry point: same walker, applied to an already-decoded
      * serialized payload (no SQL escaping involved at this level).
      *
      * @param callable(string):string $replace_in
@@ -2088,7 +2088,7 @@ final class Database {
             $declared_len = (int) substr($payload, $i + 2, $d - ($i + 2));
 
             // The payload here has ALREADY been un-escaped by the outer parser,
-            // so lengths are plain byte offsets — no escape decoding needed.
+            // so lengths are plain byte offsets. No escape decoding needed.
             $content_start = $d + 2;
             $content_end   = $content_start + $declared_len;
             if ($content_end + 1 >= $len || $payload[$content_end] !== '"' || $payload[$content_end + 1] !== ';') {
@@ -2127,14 +2127,14 @@ final class Database {
     /**
      * Parse an unescaped `s:N:"..."` serialized-string token at the given offset.
      *
-     * IMPORTANT: `N` counts *logical* bytes (what PHP's unserialize() sees),
+     * `N` counts *logical* bytes (what PHP's unserialize() sees),
      * but the token lives inside a SQL string literal where the exporter has
      * escaped backslash, NUL, newline, CR, ^Z and apostrophe. So a value like
      *     https://old.com/a\b        (19 logical bytes)
      * is written to the dump as
      *     s:19:"https://old.com/a\\b"   (20 literal bytes)
      * Slicing 19 raw bytes lands mid-token, the parse fails, and the walker
-     * falls back to plain-text replacement — which changes the payload length
+     * falls back to plain-text replacement, which changes the payload length
      * WITHOUT updating the `s:19:` prefix. unserialize() then rejects the whole
      * row, which is why page-builder / widget settings came back empty after a
      * migration whenever a value happened to contain a quote, a backslash, or a
@@ -2243,8 +2243,8 @@ final class Database {
     /**
      * Test seam: apply the URL rewrite to a SQL fragment.
      *
-     * The replacement walker is the riskiest routine in the plugin — it rewrites
-     * serialized payloads byte-by-byte and recomputes their length prefixes — so
+     * The replacement walker is the riskiest routine in the plugin. It rewrites
+     * serialized payloads byte-by-byte and recomputes their length prefixes, so
      * it needs direct regression coverage. Exposing a thin, side-effect-free
      * wrapper is preferable to reaching in with Reflection, whose
      * setAccessible() is deprecated as of PHP 8.5.

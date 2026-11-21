@@ -26,7 +26,7 @@ if ($notify_email === '') {
     <header class="ss-header">
         <h1 class="ss-title">
             <i class="ri-settings-5-fill"></i>
-            <?php esc_html_e('SitesSaver — Settings', 'sitessaver'); ?>
+            <?php esc_html_e('SitesSaver: Settings', 'sitessaver'); ?>
         </h1>
         <div class="ss-header-actions">
             <a href="<?php echo esc_url(admin_url('admin.php?page=sitessaver')); ?>" class="btn btn-outline">

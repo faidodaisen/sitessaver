@@ -7,7 +7,7 @@ namespace SitesSaver;
 defined('ABSPATH') || exit;
 
 /**
- * Main plugin class — singleton that bootstraps all components.
+ * Main plugin class. Singleton that boots all components.
  */
 final class Plugin {
 
@@ -20,12 +20,12 @@ final class Plugin {
     private function __construct() {}
 
     public function init(): void {
-        // Admin pages & assets — only needed in admin requests.
+        // Admin pages & assets, only needed in admin requests.
         if (is_admin()) {
             Admin::instance()->init();
         }
 
-        // AJAX handlers — admin-ajax.php runs under is_admin() so safe to wire
+        // AJAX handlers. admin-ajax.php runs under is_admin() so safe to wire
         // alongside the admin boot, but keeping it unconditional guards against
         // REST/CLI contexts that may reuse the ajax endpoints.
         Ajax::instance()->init();
@@ -37,9 +37,9 @@ final class Plugin {
         // rule, email). Outside is_admin(): WP-Cron fires on the front end.
         Background::init();
 
-        // A4 (multisite addon hook point — see PLAN-multisite-premium-addon.md
-        // §7 Track A/B). Fires once, synchronously, right here at the end of
-        // Plugin::init() — which is itself hooked on 'plugins_loaded' at the
+        // Hook point for add-ons (e.g. the multisite add-on). Fires once,
+        // synchronously, right here at the end of
+        // Plugin::init(), which is itself hooked on 'plugins_loaded' at the
         // default priority (10) by the bootstrap in sitessaver.php.
         //
         // TIMING CONTRACT for anything hooking this (the multisite addon is
@@ -47,7 +47,7 @@ final class Plugin {
         // contract):
         //   1. The addon's main plugin file must call
         //      add_action('sitessaver_loaded', ...) UNCONDITIONALLY at its
-        //      top level — NOT deferred behind the addon's own
+        //      top level, NOT deferred behind the addon's own
         //      'plugins_loaded' callback. Plugin files are include()'d by
         //      WordPress before 'plugins_loaded' fires at all, so a
         //      top-level add_action() call is guaranteed to be registered
@@ -71,7 +71,7 @@ final class Plugin {
         //      own add_action('admin_menu', ...) inside its 'sitessaver_loaded'
         //      callback is guaranteed to be added to the 'admin_menu' hook
         //      AFTER this plugin's callback, at the same default priority
-        //      (10) — WordPress runs same-priority callbacks in registration
+        //      (10). WordPress runs same-priority callbacks in registration
         //      order, so the top-level menu is always registered before any
         //      addon submenu attaches to it. No manual priority bump needed.
         do_action('sitessaver_loaded', $this);

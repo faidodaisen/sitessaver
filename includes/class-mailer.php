@@ -11,7 +11,7 @@ defined('ABSPATH') || exit;
  *
  * Everything is table-based with inline styles. Gmail, Outlook.com, and the
  * Apple Mail stack all strip <style> blocks to varying degrees, and Outlook
- * on Windows renders through Word — flexbox, grid, and external CSS are not
+ * on Windows renders through Word. Flexbox, grid, and external CSS are not
  * options here, however ugly the markup looks in source.
  *
  * Every send carries a plain-text alternative built from the same data, so
@@ -103,7 +103,7 @@ final class Mailer {
     }
 
     /**
-     * Header values must not carry line breaks — that is header injection.
+     * Header values must not carry line breaks (header injection).
      */
     private static function strip_header(string $value): string {
         return trim(str_replace(["\r", "\n"], ' ', $value));
@@ -417,7 +417,7 @@ final class Mailer {
 
         $lines[] = '';
         $lines[] = '--';
-        $lines[] = get_bloginfo('name') . ' — ' . home_url();
+        $lines[] = get_bloginfo('name') . ', ' . home_url();
 
         if (trim($brand['support_url']) !== '') {
             $lines[] = __('Need help with this backup?', 'sitessaver') . ' ' . $brand['support_url'];

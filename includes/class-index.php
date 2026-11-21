@@ -9,15 +9,13 @@ defined('ABSPATH') || exit;
 // phpcs:disable WordPress.WP.AlternativeFunctions -- Streams multi-GB backup archives, SQL dumps and chunked uploads with byte offsets, file locks and atomic renames inside the plugin's own backup folder; WP_Filesystem has no streaming, seek or lock API and may need FTP credentials that a background worker cannot supply.
 
 /**
- * File index and backup chains — the machinery behind incremental backups.
+ * File index and backup chains: the machinery behind incremental backups.
  *
  * Every backup carries a COMPLETE index of the site's files at the moment it
  * ran: `relative path => [mtime, size]`. Not just the files inside that ZIP.
- * That single decision is what keeps the rest simple — the baseline for the
+ * That keeps the rest simple: the baseline for the
  * next incremental is just "the parent's index", so nothing has to merge a
  * stack of deltas together before it can answer "did this file change".
- *
- * See PLAN-incremental-backup.md for the full design.
  */
 final class Index {
 
@@ -90,8 +88,8 @@ final class Index {
     /**
      * Decide whether a file needs to go into an incremental archive.
      *
-     * fast     — size differs OR mtime differs (rsync's default rule).
-     * thorough — contents differ, mtime ignored entirely. For hosts where
+     * fast:     size differs OR mtime differs (rsync's default rule).
+     * thorough: contents differ, mtime ignored entirely. For hosts where
      *            mtime is rewritten wholesale by a deploy or a restore and
      *            `fast` would re-archive the entire site every run.
      *
@@ -129,7 +127,7 @@ final class Index {
     /**
      * Paths present in the parent index but gone from the current one.
      *
-     * Scoped to the prefixes actually scanned this run — an area that was
+     * Scoped to the prefixes actually scanned this run. An area that was
      * switched off did not "delete" anything, it simply was not looked at.
      *
      * @param array<string, mixed> $parent
@@ -322,7 +320,7 @@ final class Index {
      * Decide what kind of backup the next run should produce.
      *
      * Falls back to a full backup whenever a chain cannot be safely
-     * extended — a broken or missing parent must degrade to a slightly
+     * extended. A broken or missing parent must degrade to a slightly
      * larger backup, never to a failed one.
      *
      * @param array<string, mixed> $options
@@ -493,7 +491,7 @@ final class Index {
      * Summarise a backup's place in its chain, for the Backups list.
      *
      * Returns 'standalone' for anything the chain records know nothing
-     * about — every manual export, and every backup made before 1.4.0. Those
+     * about: every manual export, and every backup made before 1.4.0. Those
      * are complete on their own and the UI should not decorate them.
      *
      * @return array{type: string, restore_count: int, followers: int, chain_id: string}
@@ -520,7 +518,7 @@ final class Index {
 
         // A chain of one is a full backup nothing was ever built on, which is
         // indistinguishable from a standalone backup as far as the user is
-        // concerned — so present it as one rather than as a lonely "Full".
+        // concerned, so present it as one rather than as a lonely "Full".
         if (count($members) === 1) {
             return $none;
         }
@@ -540,9 +538,9 @@ final class Index {
      * Group backups into restore points, newest first.
      *
      * A restore point is a full backup plus every incremental descended from
-     * it. A standalone full — a manual export, an imported ZIP — is a
+     * it. A standalone full (a manual export, an imported ZIP) is a
      * restore point of one. This is the unit retention counts, because
-     * counting files would happily delete the full at the head of a chain
+     * counting files would delete the full at the head of a chain
      * and leave a pile of incrementals that restore to nothing.
      *
      * @param list<array<string, mixed>> $backups Output of sitessaver_get_backups().

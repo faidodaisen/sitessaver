@@ -5,7 +5,7 @@
  * Removes every sitessaver_* option, transient, and user meta row; unschedules
  * cron; and best-effort revokes the Google Drive refresh token through the
  * proxy. Backup files on disk (wp-content/sitessaver-backups/) are left intact
- * by design — users may want to keep their backups. They can delete that
+ * on purpose, since users may want to keep their backups. They can delete that
  * folder manually if desired.
  */
 

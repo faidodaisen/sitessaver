@@ -44,26 +44,23 @@ final class Admin {
      *     fully finalised and the banner disappears.
      */
     public function handle_post_import_finalisation(): void {
-        // Finalisation is now driven purely by a signed token in the URL, NOT
-        // by an AJAX call. Why the pivot:
-        //   Previously the client fired `sitessaver_finalize_restore` AJAX,
-        //   which then ran switch_theme() + update_option('active_plugins') +
-        //   wp_logout() inside a request whose auth cookie was signed by the
-        //   PRE-restore DB. That path was fragile across three different
-        //   failure modes (nonce drift, wp_logout action hooks from other
-        //   plugins, Cloudflare-style middleware corrupting the JSON body).
+        // Finalisation is driven by a signed token in the URL, not by an
+        // AJAX call. An AJAX call would run switch_theme() +
+        // update_option('active_plugins') + wp_logout() inside a request
+        // whose auth cookie was signed by the PRE-restore DB, which breaks
+        // in three ways (nonce drift, wp_logout action hooks from other
+        // plugins, Cloudflare-style middleware corrupting the JSON body).
         //
-        //   The flow now: after a successful restore the client redirects
+        //   The flow: after a successful restore the client redirects
         //   straight to wp-login.php with reauth=1 and a root-relative
         //   redirect_to=<permalinks?sitessaver_finalize=TOKEN>.
         //
-        //   `reauth=1` is what actually forces the logout. The old comment
-        //   here claimed the pre-restore cookie "won't validate against the
-        //   restored DB" — that is only true when the backup carries
-        //   different auth salts. Restoring a backup of the SAME site keeps
-        //   the salts, so the session stays valid and the user was never
-        //   logged out at all; wp-login.php just showed a form they could
-        //   ignore. With reauth=1, wp-login.php calls wp_clear_auth_cookie()
+        //   `reauth=1` is what forces the logout. The pre-restore cookie
+        //   only stops validating when the backup carries different auth
+        //   salts. Restoring a backup of the SAME site keeps the salts, so
+        //   the session stays valid and, without reauth, wp-login.php would
+        //   show a form the user could ignore. With reauth=1, wp-login.php
+        //   calls wp_clear_auth_cookie()
         //   server-side, so the prompt is unavoidable either way.
         //
         //   The redirect_to is root-relative because wp-login.php runs it
@@ -93,7 +90,7 @@ final class Admin {
 
         // Accept the finalize token on ANY admin page (WP may strip query
         // params on certain redirects but permalinks is the configured
-        // destination) — the heavy work should run once per restore.
+        // destination). The heavy work should run once per restore.
         if ($token !== '') {
             $pending = get_option('sitessaver_pending_finalize', null);
             $expected = is_array($pending) ? (string) ($pending['token'] ?? '') : '';
@@ -235,14 +232,14 @@ final class Admin {
             // On SitesSaver's own screens, point to the last step.
             $url = admin_url('options-permalink.php?sitessaver_finalize=1');
             echo '<div class="notice notice-warning is-dismissible"><p><strong>SitesSaver:</strong> ' .
-                esc_html__('Site restore is almost done — finish by saving permalinks.', 'sitessaver') .
+                esc_html__('Site restore is almost done. Finish by saving permalinks.', 'sitessaver') .
                 ' <a href="' . esc_url($url) . '" class="button button-primary" style="margin-left:8px;">' .
                 esc_html__('Go to Permalinks', 'sitessaver') . '</a></p></div>';
             return;
         }
 
         $clicks = $remaining === 2
-            ? __('Click "Save Changes" below — twice — to flush rewrite rules and finalise the restore.', 'sitessaver')
+            ? __('Click "Save Changes" below twice to flush rewrite rules and finalise the restore.', 'sitessaver')
             : __('Click "Save Changes" one more time to finalise the restore.', 'sitessaver');
 
         echo '<div class="notice notice-warning is-dismissible"><p><strong>SitesSaver:</strong> ' .
@@ -280,10 +277,9 @@ final class Admin {
         }
 
         // Icons are bundled locally (a subset of RemixIcon containing only the
-        // glyphs this plugin uses). Previously this pulled the full stylesheet
-        // from jsdelivr, which left the admin UI unstyled on offline/intranet
-        // installs and behind strict CSPs, and is disallowed by the
-        // WordPress.org guideline against loading external resources.
+        // glyphs this plugin uses), so the admin UI stays styled on
+        // offline/intranet installs and behind strict CSPs, and nothing is
+        // loaded from a CDN.
         wp_enqueue_style(
             'sitessaver-icons',
             SITESSAVER_URL . 'assets/css/icons.css',

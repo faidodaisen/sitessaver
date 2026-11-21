@@ -26,7 +26,7 @@ $stats   = [
     <header class="ss-header">
         <h1 class="ss-title">
             <i class="ri-shield-check-fill"></i>
-            <?php esc_html_e('SitesSaver — Backups', 'sitessaver'); ?>
+            <?php esc_html_e('SitesSaver: Backups', 'sitessaver'); ?>
         </h1>
         <div class="ss-header-actions">
             <a href="<?php echo esc_url(admin_url('admin.php?page=sitessaver-import')); ?>" class="btn btn-outline">
@@ -56,8 +56,8 @@ $stats   = [
                 printf(
                     /* translators: %d: number of older backups. */
                     esc_html(_n(
-                        '%d older backup on this server has a short file name. Delete it if you no longer need it — newer backups have long, unguessable names.',
-                        '%d older backups on this server have short file names. Delete the ones you no longer need — newer backups have long, unguessable names.',
+                        '%d older backup on this server has a short file name. Delete it if you no longer need it. Newer backups have long, unguessable names.',
+                        '%d older backups on this server have short file names. Delete the ones you no longer need. Newer backups have long, unguessable names.',
                         $sitessaver_short,
                         'sitessaver'
                     )),
@@ -185,7 +185,7 @@ $stats   = [
                                 <?php endif; ?>
                             </td>
                             <td>
-                                <div class="cell-label"><?php echo esc_html($b['label'] ?: '—'); ?></div>
+                                <div class="cell-label"><?php echo esc_html($b['label'] ?: '-'); ?></div>
                                 <span class="badge badge-gray" style="margin-top: 4px;"><?php esc_html_e('Local', 'sitessaver'); ?></span>
                             </td>
                             <td class="cell-meta"><?php echo esc_html($b['size_h']); ?></td>

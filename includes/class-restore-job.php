@@ -11,14 +11,13 @@ defined('ABSPATH') || exit;
 /**
  * A restore that runs in a background request instead of the browser's.
  *
- * Why: the restore used to run inside the single AJAX request that the
- * browser made. Shared hosts cap a request at 60–120 seconds at the web
- * server (LiteSpeed, nginx, Cloudflare), regardless of PHP's own
- * set_time_limit(0). Extracting and importing a large site takes minutes,
- * so the browser got a 500/504 back mid-restore and showed "An error
- * occurred." while PHP was still busy rewriting the site.
+ * Why: shared hosts cap a request at 60-120 seconds at the web server
+ * (LiteSpeed, nginx, Cloudflare), regardless of PHP's own set_time_limit(0).
+ * Extracting and importing a large site takes minutes, so a restore inside
+ * the browser's own AJAX request gets a 500/504 back mid-restore and shows
+ * "An error occurred." while PHP is still busy rewriting the site.
  *
- * Now the browser only starts a job and then polls for its state. Every
+ * The browser only starts a job and then polls for its state. Every
  * request it makes is short. The work runs in a detached loopback request
  * (same mechanism the export worker has used since 1.4.1); on hosts that
  * block loopbacks, the browser runs it in-request instead, and still reads
@@ -291,14 +290,14 @@ final class Restore_Job {
     }
 
     /**
-     * Claim the job for this process. Exactly one caller wins — the
+     * Claim the job for this process. Exactly one caller wins: the
      * background worker and the in-browser fallback can both try, and the
      * restore must never run twice at once.
      */
     public static function claim(string $id): bool {
         // An OS file lock, held for the life of this request. The OS drops
-        // it when the request ends in any way — finished, fatal error, or
-        // the host killing PHP — so a dead worker can never wedge the job,
+        // it when the request ends in any way (finished, fatal error, or
+        // the host killing PHP), so a dead worker can never wedge the job,
         // and a slow-but-alive one can never be raced by a second runner.
         $dir = self::dir();
         if (!is_dir($dir)) {
@@ -382,10 +381,10 @@ final class Restore_Job {
      *
      * The restore is a chain of slices (see Import::restore_slice()): each
      * request works until its time budget is used, saves its place in the
-     * job file, and — in a background worker — starts the next request. In
+     * job file, and (in a background worker) starts the next request. In
      * the browser fallback ('inline') the open tab asks for the next slice.
      *
-     * @param string $mode 'background' or 'inline' — recorded for diagnosis.
+     * @param string $mode 'background' or 'inline', recorded for diagnosis.
      */
     public static function run(string $id, string $mode): void {
         $job = self::get($id);
@@ -469,7 +468,7 @@ final class Restore_Job {
                     return $j;
                 });
                 self::release();
-                Log::warning('restore_slice_timeout', $tech . ' — continuing with a shorter slice.', ['job' => $id]);
+                Log::warning('restore_slice_timeout', $tech . '; continuing with a shorter slice.', ['job' => $id]);
                 if ($mode === 'background') {
                     self::spawn_next($id);
                 }
@@ -766,7 +765,7 @@ final class Restore_Job {
         if ($status === 'running' && !$busy && $now - (int) ($job['updated'] ?? $now) > self::STALL_SECONDS) {
             self::fail(
                 (string) $job['id'],
-                sprintf('No progress for %ds during phase "%s" — the server stopped the restore request.', $now - (int) $job['updated'], (string) ($job['phase'] ?? '')),
+                sprintf('No progress for %ds during phase "%s". The server stopped the restore request.', $now - (int) $job['updated'], (string) ($job['phase'] ?? '')),
                 (string) ($job['phase'] ?? ''),
                 'restore_stalled'
             );

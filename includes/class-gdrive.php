@@ -17,10 +17,10 @@ defined('ABSPATH') || exit;
  */
 final class GDrive {
 
-    /** Proxy relay base URL — handles OAuth on behalf of all installations. */
+    /** Proxy relay base URL. Handles OAuth on behalf of all installations. */
     private const PROXY_URL  = 'https://api.sitessaver.com';
 
-    /** Google Drive API v3 — direct calls for file operations. */
+    /** Google Drive API v3, called directly for file operations. */
     private const API_URL    = 'https://www.googleapis.com/drive/v3';
     private const UPLOAD_URL = 'https://www.googleapis.com/upload/drive/v3';
 
@@ -138,7 +138,7 @@ final class GDrive {
     }
 
     /**
-     * Ensure a SitesSaver folder exists in Google Drive.
+     * Find or create the SitesSaver folder in Google Drive.
      * Auto-creates if missing.
      *
      * `?string` is explicit: an implicitly-nullable parameter (`string $x = null`)
@@ -206,7 +206,7 @@ final class GDrive {
 
     /**
      * Refresh access token via proxy relay.
-     * Proxy holds the Client ID/Secret — we just send our refresh_token.
+     * Proxy holds the Client ID/Secret; we only send our refresh_token.
      */
     private static function refresh_token(string $refresh_token): ?array {
         if (empty($refresh_token)) {
@@ -278,7 +278,7 @@ final class GDrive {
      * state and calls again in a FRESH request, as many times as needed.
      *
      * The session URL is pre-authorized by Google, so a slice never needs the
-     * access token again — an upload may safely outlive the token's lifetime.
+     * access token again, so an upload may outlive the token's lifetime.
      *
      * @param array{session_url?: string, offset?: int, file_size?: int, stalls?: int} $state
      *        Empty on the first call; whatever the previous call returned after that.
@@ -457,7 +457,7 @@ final class GDrive {
                 // Hand control back to the caller BEFORE starting a chunk we
                 // may not be able to finish. The bytes already confirmed by
                 // Google are in $offset, so the next request resumes exactly
-                // here — nothing is re-sent and nothing is lost.
+                // here. Nothing is re-sent and nothing is lost.
                 if ($deadline !== null && time() >= $deadline) {
                     return $carry($offset, $stalled_rounds);
                 }
@@ -488,7 +488,7 @@ final class GDrive {
                 }
 
                 if ($result['status'] === 'incomplete') {
-                    // 308 — per spec, Google may have committed fewer bytes than we
+                    // 308: per spec, Google may have committed fewer bytes than we
                     // sent (rare, but the Range header is authoritative). Advance to
                     // whatever Google confirmed.
                     $previous = $offset;
@@ -497,7 +497,7 @@ final class GDrive {
                         : $offset + $current_size;
 
                     if ($offset <= $previous) {
-                        // No forward progress at all — bail out instead of spinning.
+                        // No forward progress at all. Bail out instead of spinning.
                         if (++$stalled_rounds >= $max_stalls) {
                             return $fail(__('Upload stalled: Google Drive stopped accepting new bytes. Please retry.', 'sitessaver'));
                         }
@@ -547,7 +547,7 @@ final class GDrive {
 
         } finally {
             fclose($handle);
-            // A slice that ran out of time is NOT a dead job — its progress
+            // A slice that ran out of time is NOT a dead job. Its progress
             // transient must survive so the browser keeps seeing the bar move
             // across requests. Only clear it when the upload really died.
             $expired = ($deadline !== null && time() >= $deadline);
@@ -562,7 +562,7 @@ final class GDrive {
      *
      * Google requires every non-final chunk to be a multiple of 256 KiB. We
      * prefer 5 MiB, but the chunk is held entirely in memory (read into a
-     * string, then handed to wp_remote_request as the body — which copies it),
+     * string, then handed to wp_remote_request as the body, which copies it),
      * so on a shared host with a small memory_limit a 5 MiB chunk can exhaust
      * the budget mid-upload and fatal. We therefore scale down to fit, never
      * below the 256 KiB minimum, and always on a 256 KiB boundary.
@@ -573,7 +573,7 @@ final class GDrive {
 
         $limit = wp_convert_hr_to_bytes((string) ini_get('memory_limit'));
         if ($limit <= 0) {
-            // Unlimited (-1) or unparseable — keep the preferred size.
+            // Unlimited (-1) or unparseable: keep the preferred size.
             return $preferred;
         }
 
@@ -618,7 +618,7 @@ final class GDrive {
             ]);
 
             if (is_wp_error($response)) {
-                // Network layer error — treat as transient unless we've exhausted retries.
+                // Network layer error: treat as transient unless we've exhausted retries.
                 if ($attempt >= $max_attempts) {
                     return [
                         'status'      => 'failed',
@@ -674,7 +674,7 @@ final class GDrive {
                 continue;
             }
 
-            // Permanent error — surface Google's message if available.
+            // Permanent error: surface Google's message if available.
             $body    = json_decode((string) wp_remote_retrieve_body($response), true);
             $message = is_array($body) && isset($body['error']['message'])
                 ? (string) $body['error']['message']
@@ -855,7 +855,7 @@ final class GDrive {
     /**
      * Download a file from Google Drive to local storage.
      *
-     * Correctness notes (all three were real data-loss bugs):
+     * Correctness notes (each one loses data if done wrong):
      *  1. `wp_remote_get(..., ['stream' => true])` writes the response body to
      *     `filename` REGARDLESS of the HTTP status. A 404/401 JSON error blob
      *     therefore landed on disk as a `.zip` and was reported as a successful
@@ -911,8 +911,8 @@ final class GDrive {
          * acknowledgeAbuse=true is REQUIRED here.
          *
          * Google runs a malware/abuse scan on Drive content. Files it cannot
-         * scan — which includes any sufficiently large archive, and virtually
-         * every full-site backup ZIP — are flagged. For a flagged file the v3
+         * scan (any large enough archive, so nearly every full-site backup
+         * ZIP) are flagged. For a flagged file the v3
          * API does NOT return an error for `alt=media`: it accepts the TLS
          * connection, accepts the request, and then simply never sends a
          * response body. cURL sits there until it hits its own timeout and
@@ -965,7 +965,7 @@ final class GDrive {
 
         $code = (int) wp_remote_retrieve_response_code($response);
         if ($code < 200 || $code >= 300) {
-            // The body (an error JSON) was already streamed to $staged — bin it.
+            // The body (an error JSON) was already streamed to $staged. Bin it.
             $message = self::staged_error_message($staged, $code);
             @unlink($staged);
             return ['success' => false, 'message' => $message];
@@ -976,7 +976,7 @@ final class GDrive {
             return ['success' => false, 'message' => __('Download failed: empty response from Google Drive.', 'sitessaver')];
         }
 
-        // Truncation check — a partial ZIP will fail confusingly at restore
+        // Truncation check: a partial ZIP will fail confusingly at restore
         // time, so reject it here while we still know the expected size.
         $staged_size = (int) filesize($staged);
         if ($expected_size > 0 && $staged_size !== $expected_size) {
@@ -992,7 +992,7 @@ final class GDrive {
             ];
         }
 
-        // Content check — must actually be a ZIP.
+        // Content check: must actually be a ZIP.
         $handle = @fopen($staged, 'rb');
         $magic  = $handle ? fread($handle, 4) : '';
         if ($handle) {

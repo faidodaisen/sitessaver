@@ -10,7 +10,7 @@ defined('ABSPATH') || exit;
 // phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception messages are never echoed raw; they are logged or returned through wp_send_json_* and escaped at render time in admin.js (escapeHtml).
 
 /**
- * Import engine — restore full site from ZIP backup.
+ * Import engine: restore a full site from a ZIP backup.
  */
 final class Import {
 
@@ -20,8 +20,8 @@ final class Import {
     /**
      * Ordered restore phases, in the order run_from_dir() moves through
      * them. Shared with the admin UI (via Ajax::localize) so the step
-     * checklist can never drift from what the backend actually reports —
-     * one array is the single source of truth for both sides.
+     * checklist can never drift from what the backend reports: both sides
+     * read this one array.
      *
      * @return array<string, string> phase id => human label
      */
@@ -39,10 +39,10 @@ final class Import {
      * Report the restore's current phase for the status poll.
      *
      * The restore runs inside one synchronous AJAX request (it cannot be
-     * safely backgrounded — the browser must hold the admin session that
+     * safely backgrounded: the browser must hold the admin session that
      * authorized it) but transient writes are visible to a concurrent
      * request immediately, so a separate polling request can read this
-     * while the restore is still running — same trick Export::tick() uses,
+     * while the restore is still running (same trick Export::tick() uses).
      * The transient serves the legacy in-request restore path; a background
      * restore job also gets the phase written to its job FILE, which (unlike
      * the options table) survives the database being swapped out mid-restore.
@@ -84,7 +84,7 @@ final class Import {
             return ['success' => false, 'message' => __('Backup file not found.', 'sitessaver')];
         }
 
-        // An incremental backup on its own is not a site — it is the delta
+        // An incremental backup on its own is not a site. It is the delta
         // since its parent. Restoring one means replaying its whole chain,
         // oldest first, into a single merged tree.
         $set = self::chain_restore_set($zip_path, sanitize_file_name($backup_file));
@@ -182,7 +182,7 @@ final class Import {
      * result to the normal restore path.
      *
      * Extracting newest-last means the final tree holds the newest version
-     * of every file, and the newest `database.sql` and `manifest.json` —
+     * of every file, and the newest `database.sql` and `manifest.json`,
      * which is exactly the state the chosen backup represents.
      *
      * @param list<string> $set Filenames, oldest first.
@@ -206,7 +206,7 @@ final class Import {
                 'success' => false,
                 'message' => sprintf(
                     /* translators: %s: comma-separated list of backup filenames. */
-                    __('This incremental backup cannot be restored on its own — these earlier backups in its chain are missing: %s', 'sitessaver'),
+                    __('This incremental backup cannot be restored on its own. These earlier backups in its chain are missing: %s', 'sitessaver'),
                     implode(', ', $missing)
                 ),
             ];
@@ -412,7 +412,7 @@ final class Import {
             self::tick('finalize');
             self::post_import($manifest);
 
-            // 6. Cleanup — scoped to THIS import only.
+            // 6. Cleanup, scoped to THIS import only.
             sitessaver_cleanup_temp($temp_dir);
             Database::drop_previous_tables($db_state);
 
@@ -479,7 +479,7 @@ final class Import {
             if ($missing !== []) {
                 throw new \RuntimeException(sprintf(
                     /* translators: %s: comma-separated list of backup filenames. */
-                    __('This incremental backup cannot be restored on its own — these earlier backups in its chain are missing: %s', 'sitessaver'),
+                    __('This incremental backup cannot be restored on its own. These earlier backups in its chain are missing: %s', 'sitessaver'),
                     implode(', ', $missing)
                 ));
             }
@@ -1038,19 +1038,17 @@ final class Import {
      * $old_url/$new_url are used to rewrite URL references embedded in
      * copied text files (plugins/themes/mu-plugins source). Necessary for
      * custom plugins that hardcode `home_url()`-equivalent strings in PHP
-     * arrays/JSON/CSS — a site migration otherwise leaves those strings
+     * arrays/JSON/CSS. A site migration otherwise leaves those strings
      * pointing at the source domain and renders broken `<img src="...">`
      * tags even though the database was fully rewritten.
      */
     private static function restore_content(string $content_src, string $old_url = '', string $new_url = ''): void {
         // Per-destination skip lists. The critical one is `plugins`: we MUST
-        // NOT overwrite the currently-running SitesSaver plugin files. Prior
-        // to 1.1.7 the export filter was broken (fnmatch didn't recurse) so
-        // old backups contain a `sitessaver/` folder. Without this guard,
-        // restore copies those older files over the live plugin — which is
-        // why every attempted bugfix in 1.1.5 / 1.1.6 appeared to revert
-        // immediately after the user tested a restore. We block both the
-        // running plugin's own slug and any well-known alternate casing.
+        // NOT overwrite the currently-running SitesSaver plugin files. Backups
+        // made by versions before 1.1.7 contain a `sitessaver/` folder.
+        // Without this guard, a restore copies those older files over the
+        // live plugin. We block both the running plugin's own slug and any
+        // well-known alternate casing.
         //
         // `rewrite` flag: if true, merge_directory() runs URL replacement on
         // each text file as it's copied. We enable it for plugins/themes/
@@ -1059,17 +1057,17 @@ final class Import {
         // bytes inside those would corrupt them).
         $running_plugin_dir = basename(dirname(SITESSAVER_FILE));
         // On restore into a MAIN site on multisite, the backup's uploads/
-        // tree is scoped to just that site (A3 export-side fix excludes
-        // uploads/sites/ from a main-site export) — but skip it here too
-        // as defence in depth against restoring an OLDER backup taken
-        // before that fix existed, which would still carry every
+        // tree is scoped to just that site (the export excludes
+        // uploads/sites/ from a main-site export), but skip it here too
+        // in case an OLDER backup made without that exclusion is
+        // restored. It would still carry every
         // subsite's uploads/sites/N folder and silently overwrite them.
         $uploads_skip = (is_multisite() && get_current_blog_id() === 1)
             ? ['sites']
             : [];
         $dirs = [
             // wp_upload_dir()['basedir'], not a hardcoded WP_CONTENT_DIR .
-            // '/uploads' — mirrors the export-side fix (see the 'uploads'
+            // '/uploads', the same as the export side (see the 'uploads'
             // case in Export::run_step()). On multisite this resolves to
             // THIS site's own uploads/sites/{blog_id} subtree, so a restore
             // writes media back into the site it belongs to instead of the
@@ -1107,16 +1105,16 @@ final class Import {
         // and Bricks all compile per-post CSS files to `wp-content/uploads/<builder>/css/`
         // with ABSOLUTE URLs embedded for background-image, font-face, etc.
         // After a cross-domain or cross-scheme restore, those compiled CSS
-        // files still reference the old domain — so images in the builder's
+        // files still reference the old domain, so images in the builder's
         // own stylesheet output render broken even if the DB is correct.
         // Deleting the cache forces each builder to regenerate on first page
         // view using the newly-restored URLs. Full-page caches under
         // `wp-content/cache/` are also wiped (W3TC, WP Rocket, LiteSpeed).
         self::flush_builder_caches();
 
-        // Ensure modern image MIME types are served correctly from uploads.
+        // Serve modern image MIME types correctly from uploads.
         //
-        // Why this matters: on stock Apache (especially Laragon / shared hosts
+        // On stock Apache (especially Laragon / shared hosts
         // with old mime.types) `.webp` / `.avif` / `.svg` are not in the
         // server's default MIME map. The file exists after restore but Apache
         // serves it with `application/octet-stream`, and browsers refuse to
@@ -1143,7 +1141,7 @@ final class Import {
      * (still reference the source domain), so images, background URLs, and
      * icon fonts break until every affected post is re-saved in the builder
      * or the cache is manually cleared. Clearing here runs once at restore
-     * finalisation — each builder regenerates on first front-end view.
+     * finalisation; each builder regenerates on first front-end view.
      *
      * Full-page caches (W3 Total Cache, WP Rocket, LiteSpeed) cache HTML
      * that embeds absolute URLs too, so those get wiped alongside.
@@ -1215,12 +1213,12 @@ final class Import {
 
     /**
      * Write a minimal .htaccess to wp-content/uploads/ that registers modern
-     * image MIME types (webp/avif/svg). Idempotent — if a SitesSaver block
+     * image MIME types (webp/avif/svg). Idempotent: if a SitesSaver block
      * is already present we leave the file alone; if the file doesn't exist
      * or doesn't contain our marker we append our block.
      *
      * Harmless on Nginx (Nginx ignores .htaccess). On Apache shared hosts
-     * without `AllowOverride FileInfo` this is also harmless — directives
+     * without `AllowOverride FileInfo` this is also harmless: directives
      * are ignored but nothing breaks.
      */
     private static function ensure_uploads_mime_htaccess(): void {
@@ -1281,7 +1279,7 @@ final class Import {
             $relative  = ltrim(str_replace('\\', '/', $relative), '/');
             $dest_path = $dest . '/' . $relative;
 
-            // First-segment skip — blocks the entire subtree.
+            // First-segment skip: blocks the entire subtree.
             if (!empty($skip_roots)) {
                 $first = strtok($relative, '/');
                 if (in_array($first, $skip_roots, true)) {
@@ -1299,17 +1297,16 @@ final class Import {
                     wp_mkdir_p($parent);
                 }
 
-                // No error-suppression. Silent @copy() failures were masking
-                // partial restores — on Windows, long paths (>260 chars),
-                // reserved filenames (CON, PRN, NUL…), and unusual UTF-8 byte
-                // sequences cause copy() to return false. Users previously
-                // saw "some images broken" (typically WebP variants from
+                // No error-suppression. A silent @copy() failure hides a
+                // partial restore. On Windows, long paths (>260 chars),
+                // reserved filenames (CON, PRN, NUL...), and unusual UTF-8 byte
+                // sequences make copy() return false, and the user sees
+                // "some images broken" (typically WebP variants from
                 // image-optimizer plugins that nest deep paths like
                 // cache/breakdance-image-optimizer/2024/01/long-name.jpg.webp)
-                // because the copy silently failed and the referencing row
-                // in the DB was fine but pointed at a missing file. We now
+                // while the DB row is fine but points at a missing file. We
                 // track failures and log a summary so the admin can see
-                // exactly which files couldn't be restored.
+                // which files couldn't be restored.
                 $ok = !empty($url_pairs) && self::is_rewritable_text_file($file->getPathname(), $relative)
                     ? self::copy_with_url_rewrite($file->getPathname(), $dest_path, $url_pairs)
                     : copy($file->getPathname(), $dest_path);
@@ -1321,7 +1318,7 @@ final class Import {
                     }
                     if ($failures <= 50) {
                         error_log(sprintf(
-                            '[SitesSaver] merge_directory: copy failed for %s (path length %d) — source: %s',
+                            '[SitesSaver] merge_directory: copy failed for %s (path length %d), source: %s',
                             $relative,
                             strlen($dest_path),
                             $file->getPathname()
@@ -1338,7 +1335,7 @@ final class Import {
                 $dest
             ));
             // Also into the plugin's own log, where the admin can actually
-            // read it — a partial restore with no visible trace is how
+            // read it. A partial restore with no visible trace is how
             // "some images are broken" reports start.
             Log::warning(
                 'restore_files_skipped',
@@ -1354,12 +1351,12 @@ final class Import {
      * We only touch source-text files inside plugins/themes. Skip:
      *   - binary artefacts (images, fonts, archives, compiled bytecode)
      *   - vendor/node_modules/lock bundles (rewriting here is high-risk and
-     *     unnecessary — vendor code never hardcodes the site URL)
+     *     unnecessary; vendor code never hardcodes the site URL)
      *   - files larger than 5 MB (minified bundles; too costly, low signal)
      *
      * The hardcoded-URL problem this guards against is limited to custom
      * user plugins/themes where the author typed the site URL into a PHP
-     * array or a small JSON config — those files are always <1 MB.
+     * array or a small JSON config. Those files are always <1 MB.
      */
     private static function is_rewritable_text_file(string $abs_path, string $relative): bool {
         $rel_lower = strtolower(str_replace('\\', '/', $relative));
@@ -1405,7 +1402,7 @@ final class Import {
      * Uses strtr() with the same pair map the DB importer uses so both
      * layers produce consistent output. If no substring matches, we fall
      * back to a byte-identical copy (saves the write for files that don't
-     * mention the old domain at all — the common case).
+     * mention the old domain at all, the common case).
      */
     private static function copy_with_url_rewrite(string $src, string $dest, array $url_pairs): bool {
         $contents = @file_get_contents($src);
@@ -1430,7 +1427,7 @@ final class Import {
 
         $rewritten = strtr($contents, $url_pairs);
 
-        // Preserve source file permissions where possible — some shared
+        // Preserve source file permissions where possible. Some shared
         // hosts strip exec bits on file_put_contents() creation.
         $written = @file_put_contents($dest, $rewritten);
         if ($written === false) {
@@ -1474,7 +1471,7 @@ final class Import {
         // browser's cookie was issued against the PRE-restore DB. That means
         // the normal nonce + `current_user_can('manage_options')` checks in
         // sitessaver_verify_ajax() can silently fail on the very next AJAX
-        // call (finalize_restore) — the user is effectively a stranger to the
+        // call (finalize_restore): the user is effectively a stranger to the
         // new DB. Instead we hand the client a short-lived random token,
         // persist it alongside the pending state, and accept it in place of
         // the standard nonce for finalize_restore only. Scope is tight: the
@@ -1496,7 +1493,7 @@ final class Import {
 
         // Stash the token in a transient that the JS can read via the
         // localized SitesSaver object on the NEXT admin page load. But the
-        // user won't reload — they're looking at the restore-complete modal
+        // user won't reload. They're looking at the restore-complete modal
         // right now. So we also pass it back through the current AJAX response
         // chain (see Ajax::handle_import return shape).
         set_transient('sitessaver_finalize_token', $finalize_token, HOUR_IN_SECONDS);
@@ -1524,7 +1521,7 @@ final class Import {
      * PRE-restore DB. It will not validate against the restored wp_users +
      * auth salts, so wp-login.php shows the login prompt. When the user
      * re-auths with the backup's credentials, WP redirects to the
-     * redirect_to target — where Admin::handle_post_import_finalisation
+     * redirect_to target, where Admin::handle_post_import_finalisation
      * runs the deferred work under a clean, freshly-authenticated session.
      *
      * Two details below are load-bearing; both were reproduced against a live
@@ -1620,14 +1617,14 @@ final class Import {
      *
      * Hooked to `admin_init` (see Plugin::init). Safe to call switch_theme()
      * and update_option('active_plugins') here because `init` hasn't fired
-     * yet in this request — when it does, the restored plugin set boots
+     * yet in this request. When it does, the restored plugin set boots
      * normally without the too-early textdomain warnings.
      */
     public static function run_deferred_finalisation(): void {
         // Flush BEFORE reading the pending option. On sites with persistent
         // object caches (Redis, Memcached, WP Super Cache) the current
         // request's in-memory alloptions set was populated from the PRE-
-        // restore DB — get_option() would hit that cache and miss the
+        // restore DB, so get_option() would hit that cache and miss the
         // freshly-written pending-finalize row. Flushing first forces a
         // fresh DB read on the very next call.
         wp_cache_flush();
@@ -1649,7 +1646,7 @@ final class Import {
         // A restored theme with a fatal error there would 500 the admin page.
         // Guard so finalisation still completes (permalinks counter gets set,
         // banner shows, user can proceed) even when the restored theme is
-        // broken — they can then switch themes from Appearance after the
+        // broken. They can then switch themes from Appearance after the
         // permalinks round-trip. The error is logged for diagnosis.
         if (!empty($pending['active_theme'])) {
             try {
@@ -1664,7 +1661,7 @@ final class Import {
 
         wp_cache_flush();
 
-        // Counter — starts at 2 (user must save Permalinks twice). Admin
+        // Counter starts at 2 (user must save Permalinks twice). Admin
         // decrements it on each ?settings-updated=true round-trip. When it
         // hits zero the rewrite rules are considered flushed and the
         // restore banner disappears.

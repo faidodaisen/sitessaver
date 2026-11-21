@@ -5,7 +5,7 @@
     <header class="ss-header">
         <h1 class="ss-title">
             <i class="ri-upload-2-fill"></i>
-            <?php esc_html_e('SitesSaver — Export', 'sitessaver'); ?>
+            <?php esc_html_e('SitesSaver: Export', 'sitessaver'); ?>
         </h1>
         <div class="ss-header-actions">
             <a href="<?php echo esc_url(admin_url('admin.php?page=sitessaver')); ?>" class="btn btn-outline">

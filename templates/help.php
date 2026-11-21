@@ -5,7 +5,7 @@
     <header class="ss-header">
         <h1 class="ss-title">
             <i class="ri-question-line"></i>
-            <?php esc_html_e('SitesSaver — Help & Manual', 'sitessaver'); ?>
+            <?php esc_html_e('SitesSaver: Help & Manual', 'sitessaver'); ?>
         </h1>
         <div class="ss-header-actions">
             <a href="<?php echo esc_url(admin_url('admin.php?page=sitessaver')); ?>" class="btn btn-outline">
@@ -37,21 +37,21 @@
                 <p><?php esc_html_e('Go to Settings and click "Connect Google Drive". Once authorized, SitesSaver will automatically create a folder in your Drive. You can then manually upload backups or set up a schedule to do it automatically.', 'sitessaver'); ?></p>
 
                 <h3 style="margin-top: 24px;"><?php esc_html_e('4. Scheduling automatic backups', 'sitessaver'); ?></h3>
-                <p><?php esc_html_e('Go to the Schedule page to enable automated backups. Tick as many frequencies as you need — they each run on their own timer, so Daily plus Monthly gives you recent restore points alongside a long-term archive. You also decide whether to keep them on your server, upload to Google Drive, or both.', 'sitessaver'); ?></p>
+                <p><?php esc_html_e('Go to the Schedule page to enable automated backups. Tick as many frequencies as you need. Each runs on its own timer, so Daily plus Monthly gives you recent restore points alongside a long-term archive. You also decide whether to keep them on your server, upload to Google Drive, or both.', 'sitessaver'); ?></p>
                 <p><?php esc_html_e('Retention controls how many backups stay on your server. After each scheduled run, anything beyond that count is deleted oldest-first so the disk does not fill up. It only counts backups the schedule made: backups you create yourself and files you upload are never deleted by it. Files already uploaded to Google Drive are never deleted by retention.', 'sitessaver'); ?></p>
                 <p><?php esc_html_e('Not sure the schedule works? Use "Run backup now" on the same page. It performs a real scheduled backup immediately using your saved settings, without waiting for the next cron window.', 'sitessaver'); ?></p>
 
                 <h3 style="margin-top: 24px;"><?php esc_html_e('5. My scheduled backups run late, or never', 'sitessaver'); ?></h3>
-                <p><?php esc_html_e('WordPress fires WP-Cron only when someone loads a page, so a quiet site can be hours or days behind — and if DISABLE_WP_CRON is set in wp-config.php, scheduled backups never run at all.', 'sitessaver'); ?></p>
-                <p><?php esc_html_e('The Schedule page has a Server Cron panel with a private trigger URL and ready-made crontab, curl, and WP-CLI lines. No shell access? Point a free uptime monitor at the same URL. It is safe to call more often than your chosen frequency: SitesSaver answers "not due yet" until a backup is genuinely owed. Keep the URL private, and regenerate it from that panel if it ever leaks.', 'sitessaver'); ?></p>
+                <p><?php esc_html_e('WordPress fires WP-Cron only when someone loads a page, so a quiet site can be hours or days behind, and if DISABLE_WP_CRON is set in wp-config.php, scheduled backups never run at all.', 'sitessaver'); ?></p>
+                <p><?php esc_html_e('The Schedule page has a Server Cron panel with a private trigger URL and ready-made crontab, curl, and WP-CLI lines. No shell access? Point a free uptime monitor at the same URL. It is safe to call more often than your chosen frequency: SitesSaver answers "not due yet" until a backup is due. Keep the URL private, and regenerate it from that panel if it ever leaks.', 'sitessaver'); ?></p>
 
                 <h3 style="margin-top: 24px;"><?php esc_html_e('6. Email notifications after each backup', 'sitessaver'); ?></h3>
-                <p><?php esc_html_e('Enter an address in the Email Notification field on the Schedule page and you will get a report after every scheduled run. The report says which file was created and how big it is, which schedule triggered it, what the archive contains, and whether the copy was kept on your server, uploaded to Google Drive, or both — with a link straight to your Drive folder.', 'sitessaver'); ?></p>
+                <p><?php esc_html_e('Enter an address in the Email Notification field on the Schedule page and you will get a report after every scheduled run. The report says which file was created and how big it is, which schedule triggered it, what the archive contains, and whether the copy was kept on your server, uploaded to Google Drive, or both, with a link to your Drive folder.', 'sitessaver'); ?></p>
                 <p><?php esc_html_e('If a backup fails, or the archive was created but the Drive upload did not go through, the email says so explicitly rather than reporting plain success. That distinction matters: a backup that only exists on the same server is lost with the server.', 'sitessaver'); ?></p>
 
                 <h3 style="margin-top: 24px;"><?php esc_html_e('7. Putting your own branding on those emails', 'sitessaver'); ?></h3>
                 <p><?php esc_html_e('Settings → Email Branding controls how the report looks. Add your logo, pick an accent colour for the header and buttons, and set the sender name and address your clients will see in their inbox. A support link and a footer note are optional.', 'sitessaver'); ?></p>
-                <p><?php esc_html_e('Use "Send test email" to see the result before the next backup runs. It saves your changes first and then delivers a real sample to your notification address. If you prefer plain text, untick "Send branded HTML emails" — a text version is always included either way.', 'sitessaver'); ?></p>
+                <p><?php esc_html_e('Use "Send test email" to see the result before the next backup runs. It saves your changes first and then delivers a real sample to your notification address. If you prefer plain text, untick "Send branded HTML emails". A text version is always included either way.', 'sitessaver'); ?></p>
                 <p><?php esc_html_e('For the sender address, use one on this domain, such as noreply@yourdomain.com. An address from another domain is far more likely to be filtered as spam.', 'sitessaver'); ?></p>
 
                 <h3 style="margin-top: 24px;"><?php esc_html_e('8. Keeping the plugin up to date', 'sitessaver'); ?></h3>
@@ -75,11 +75,11 @@
                         <details>
                             <summary><?php esc_html_e('How to close it', 'sitessaver'); ?></summary>
                             <?php if ($ss_info['server'] === 'runcloud') : ?>
-                                <p><?php esc_html_e('This site runs on RunCloud (Nginx in front of Apache). Nginx sends existing files straight to the visitor, before Apache reads the folder’s .htaccess. In RunCloud, open the web application → NGINX Config → add a new config (type location.main-before) with:', 'sitessaver'); ?></p>
+                                <p><?php esc_html_e('This site runs on RunCloud (Nginx in front of Apache). Nginx sends existing files straight to the visitor, before Apache reads the .htaccess file in the folder. In RunCloud, open the web application → NGINX Config → add a new config (type location.main-before) with:', 'sitessaver'); ?></p>
                             <?php elseif ($ss_info['server'] === 'nginx') : ?>
-                                <p><?php esc_html_e('This site runs on Nginx, which ignores .htaccess files. Ask your host to add this to the site’s Nginx configuration:', 'sitessaver'); ?></p>
+                                <p><?php esc_html_e('This site runs on Nginx, which ignores .htaccess files. Ask your host to add this to the Nginx configuration of the site:', 'sitessaver'); ?></p>
                             <?php else : ?>
-                                <p><?php esc_html_e('This server does not apply the folder’s .htaccess file. Ask your host to block web access to the folder, for example with this Nginx rule:', 'sitessaver'); ?></p>
+                                <p><?php esc_html_e('This server does not apply the .htaccess file in the folder. Ask your host to block web access to the folder, for example with this Nginx rule:', 'sitessaver'); ?></p>
                             <?php endif; ?>
                             <code class="ss-notice-code"><?php echo esc_html($ss_rule); ?></code>
                         </details>
@@ -169,7 +169,7 @@
         </div>
 
         <p class="ss-log-intro">
-            <?php esc_html_e('When a backup or restore runs into trouble, SitesSaver writes down what it was doing and why it stopped. Each problem has a reference code — the same one shown in the error message — so whoever helps you can find it quickly. Send them the downloaded log; it contains no passwords or keys.', 'sitessaver'); ?>
+            <?php esc_html_e('When a backup or restore runs into trouble, SitesSaver writes down what it was doing and why it stopped. Each problem has a reference code (the same one shown in the error message), so whoever helps you can find it quickly. Send them the downloaded log; it contains no passwords or keys.', 'sitessaver'); ?>
         </p>
 
         <?php if (empty($ss_log_entries)) : ?>

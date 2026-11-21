@@ -72,14 +72,14 @@ final class Ajax {
         // The background worker is reached by a detached loopback request that
         // carries no auth cookie, so it can only ever arrive as "logged out".
         // Registering it for wp_ajax_ alone made every spawn 400 and silently
-        // fall back to browser-driven steps — the exact thing the worker
+        // fall back to browser-driven steps, the exact thing the worker
         // exists to avoid. Authorization is the single-use key checked inside
         // handle_export_work(), not the session.
         add_action('wp_ajax_nopriv_sitessaver_export_work', [$this, 'handle_export_work']);
 
         // Same for the restore worker. The restore STATUS poll is also open
         // to logged-out requests, because halfway through a restore the
-        // database (and with it the user's login session) is replaced — the
+        // database (and with it the user's login session) is replaced, and the
         // browser can no longer prove who it is with a cookie or nonce. It
         // proves possession of the job's own random token instead.
         add_action('wp_ajax_nopriv_sitessaver_restore_worker', [$this, 'handle_restore_worker']);
@@ -126,12 +126,12 @@ final class Ajax {
         $steps  = Export::get_steps($destination);
 
         // Hand the actual work to a detached background request and answer the
-        // browser immediately. Running the steps inline is what produced the
-        // bogus "An error occurred": a big site blows past the gateway's
-        // request timeout, nginx replies 504 with an HTML body, and the client
-        // — expecting JSON — falls back to a generic error while PHP is still
-        // happily working. The browser now only ever polls for status, so no
-        // single request has to outlive the gateway's patience.
+        // browser immediately. Running the steps inline gives a bogus
+        // "An error occurred": a big site blows past the gateway's request
+        // timeout, nginx replies 504 with an HTML body, and the client, which
+        // expects JSON, shows a generic error while PHP is still working.
+        // The browser only polls for status, so no single request has to
+        // outlive the gateway timeout.
         $spawned = $this->spawn_export_worker($status['uid']);
 
         wp_send_json_success([
@@ -162,7 +162,7 @@ final class Ajax {
     /**
      * Background worker: runs every remaining export step in this request.
      *
-     * No nonce and no capability check — a detached loopback request has no
+     * No nonce and no capability check: a detached loopback request has no
      * cookies, so neither would pass. Authorization is the single-use key
      * handed out by handle_export() and stored server-side; it is deleted the
      * moment it is used, so the endpoint cannot be replayed.
@@ -295,8 +295,8 @@ final class Ajax {
         Background::mark_watched($uid);
 
         // Rebuild the step table for the destination this export was started
-        // with. Resuming an orphaned export used to fall back to the default
-        // local table, which mislabelled the steps of a Drive export.
+        // with. The default local table would mislabel the steps of a
+        // Drive export.
         $destination = (string) ($status['options']['export_destination'] ?? 'local');
         $steps       = Export::get_steps($destination);
 
@@ -310,7 +310,7 @@ final class Ajax {
         // Most phases use the normal stall threshold. A handful of phases
         // are a single uninterruptible blocking call with no way to tick
         // from inside them (currently: ZipArchive::close(), tagged
-        // 'zip-finalizing' by Archive::create()) — those get a much longer
+        // 'zip-finalizing' by Archive::create()). Those get a much longer
         // grace period instead of being flagged dead mid-compress on a
         // large backup. See Export::STALL_SECONDS_FINALIZING's docblock.
         $phase_note      = (string) ($status['detail']['note'] ?? '');
@@ -395,7 +395,7 @@ final class Ajax {
             'seconds_since_update' => $since,
             // The worker refreshes last_update at least every 10s from inside
             // long loops, so a long silence means the process is gone (OOM,
-            // host kill) rather than merely busy — EXCEPT during a tagged
+            // host kill) rather than merely busy, EXCEPT during a tagged
             // "finalizing" phase, which uses the extended threshold above.
             'stalled'       => $stalled,
             'error'         => $error,
@@ -403,7 +403,7 @@ final class Ajax {
     }
 
     /**
-     * Cancel a running export — clears the transient state and removes the
+     * Cancel a running export: clears the transient state and removes the
      * temp working directory. Used when the browser picks up an orphaned
      * export on page load and the user chooses "Discard" instead of resuming.
      */
@@ -665,7 +665,7 @@ final class Ajax {
             'frequency'   => $frequencies[0] ?? 'daily',
             'retention'   => $retention,
             // Backup mode. Anything that isn't an explicit 'incremental'
-            // means full — an unrecognised value must never silently put a
+            // means full. An unrecognised value must never silently put a
             // site onto chained backups it did not ask for.
             'backup_mode'      => sanitize_key(wp_unslash($_POST['backup_mode'] ?? 'full')) === 'incremental' ? 'incremental' : 'full',
             'full_every'       => max(2, min(60, (int) sanitize_text_field(wp_unslash($_POST['full_every'] ?? (string) \SitesSaver\Index::DEFAULT_FULL_EVERY)))),
@@ -721,7 +721,7 @@ final class Ajax {
      * Run the scheduled backup immediately, using the saved schedule settings.
      *
      * Lets the user prove the schedule works without waiting for the next
-     * cron window — the most common support question about scheduled backups
+     * cron window. The most common support question about scheduled backups
      * is "is this actually configured correctly?".
      */
     public function handle_run_schedule_now(): void {
@@ -1152,13 +1152,12 @@ final class Ajax {
      * Receives: chunk (file blob), chunk_index, total_chunks, filename, upload_id.
      *
      * Each chunk is APPENDED to a single growing .part file the moment it
-     * arrives, so every request does the same small amount of work. This
-     * replaced "save each chunk separately, then glue them all together when
-     * the last one lands": that final request had to copy the whole backup
-     * twice over, which on a large site and a throttled shared disk took
-     * minutes — the web server cut it off at its request limit (60s on many
-     * LiteSpeed hosts), the browser showed "An error occurred." at 100%, and
-     * the half-built file was then deleted. Now the last chunk only appends
+     * arrives, so every request does the same small amount of work. Saving
+     * chunks separately and joining them when the last one lands would make
+     * that final request copy the whole backup twice. On a large site and a
+     * throttled shared disk that takes minutes, the web server cuts it off
+     * at its request limit (60s on many LiteSpeed hosts), and the browser
+     * shows "An error occurred." at 100%. Here the last chunk only appends
      * its own few MB and renames the result into place.
      *
      * Idempotent per chunk: if the browser retries a chunk whose response it
@@ -1537,7 +1536,7 @@ final class Ajax {
 
     /**
      * In-browser fallback: run a job that the background worker never picked
-     * up. The response may be cut off by the web server on a long restore —
+     * up. The response may be cut off by the web server on a long restore;
      * the browser ignores this request's outcome and keeps following the job
      * through the status poll, which tells the truth either way.
      */
@@ -1579,7 +1578,7 @@ final class Ajax {
      * Restore progress for the browser. Token-authorized (see init()).
      */
     public function handle_restore_status(): void {
-        // Never cache this — some hosts cache admin-ajax GET/POST responses
+        // Never cache this. Some hosts cache admin-ajax GET/POST responses
         // for logged-out visitors, which is exactly what this request looks
         // like after the database swap.
         nocache_headers();

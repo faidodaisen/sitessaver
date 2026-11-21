@@ -3,7 +3,7 @@
     <header class="ss-header">
         <h1 class="ss-title">
             <i class="ri-download-2-fill"></i>
-            <?php esc_html_e('SitesSaver — Import', 'sitessaver'); ?>
+            <?php esc_html_e('SitesSaver: Import', 'sitessaver'); ?>
         </h1>
         <div class="ss-header-actions">
             <a href="<?php echo esc_url(admin_url('admin.php?page=sitessaver')); ?>" class="btn btn-outline">
@@ -23,7 +23,7 @@
         
         <div class="ss-section-content">
             <p style="margin-bottom: 20px; color: var(--ss-text-muted);">
-                <?php esc_html_e('Upload a previously exported SitesSaver ZIP file to restore or migrate your site. Large files are safely handled using chunked uploads.', 'sitessaver'); ?>
+                <?php esc_html_e('Upload a SitesSaver backup ZIP to restore or migrate your site. Large files are uploaded in chunks.', 'sitessaver'); ?>
             </p>
 
             <div id="sitessaver-drop-zone" class="sitessaver-upload-zone" style="border: 2px dashed var(--ss-border); padding: 40px; text-align: center; border-radius: var(--ss-radius-card); transition: all 0.2s; cursor: pointer;">

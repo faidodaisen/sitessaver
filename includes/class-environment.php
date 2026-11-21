@@ -14,8 +14,8 @@ defined('ABSPATH') || exit;
  * Shared hosts run security software that watches what PHP writes and can
  * refuse or kill it (Imunify360 Proactive Defense, real-time malware
  * scanners). From inside PHP that looks exactly like a damaged backup or a
- * permissions problem, so restores used to be reported as "backup damaged"
- * and users re-downloaded a perfectly good file over and over.
+ * permissions problem. Reported as "backup damaged", it sends users off to
+ * re-download a perfectly good file.
  *
  * This class gives the rest of the plugin three things:
  *   - the operating system's own reason when a write fails;

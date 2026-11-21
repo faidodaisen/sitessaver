@@ -108,7 +108,7 @@ define('SITESSAVER_PATH', plugin_dir_path(__FILE__));
 define('SITESSAVER_URL', plugin_dir_url(__FILE__));
 define('SITESSAVER_SLUG', 'sitessaver');
 
-// Storage paths — inside wp-content so plugin updates don't wipe backups.
+// Storage paths, inside wp-content so plugin updates don't wipe backups.
 define('SITESSAVER_STORAGE_DIR', WP_CONTENT_DIR . '/sitessaver-backups');
 define('SITESSAVER_TEMP_DIR', SITESSAVER_STORAGE_DIR . '/tmp');
 
@@ -145,9 +145,9 @@ add_action('plugins_loaded', static function (): void {
         update_option('sitessaver_cleaned_export_options', '1', false);
     }
 
-    // One-time autoload correction: previously the plugin stored several
-    // sizable or sensitive options with autoload=yes (WP default). Flip
-    // them to 'no' so they no longer ride on every page load.
+    // One-time autoload correction: older versions stored several sizable
+    // or sensitive options with autoload=yes (WP default). Flip them to
+    // 'no' so they don't load on every page.
     if (get_option('sitessaver_autoload_migrated') !== '1') {
         global $wpdb;
         $targets = [
@@ -169,9 +169,9 @@ add_action('plugins_loaded', static function (): void {
     }
 });
 
-// Activation hook — create storage directories.
+// Activation hook: create storage directories.
 register_activation_hook(__FILE__, static function (): void {
-    // Hard requirements — abort activation with a friendly message if missing.
+    // Hard requirements. Abort activation with a readable message if missing.
     if (version_compare(PHP_VERSION, '8.1', '<')) {
         deactivate_plugins(plugin_basename(__FILE__));
         wp_die(
@@ -203,7 +203,7 @@ register_activation_hook(__FILE__, static function (): void {
     }
 
     // Protect backup directory from direct access (Apache 2.4 and 2.2 syntax;
-    // Nginx hosts must add a location block manually — see README). Shared
+    // Nginx hosts must add a location block manually, see README). Shared
     // with sitessaver_storage_dir()'s per-site subfolders on multisite so
     // the guard logic lives in exactly one place.
     sitessaver_protect_directory(SITESSAVER_STORAGE_DIR);
@@ -224,7 +224,7 @@ register_activation_hook(__FILE__, static function (): void {
     }
 });
 
-// Deactivation hook — clear scheduled events.
+// Deactivation hook: clear scheduled events.
 register_deactivation_hook(__FILE__, static function (): void {
     if (class_exists(\SitesSaver\Background::class)) {
         \SitesSaver\Background::disarm_watchdog();

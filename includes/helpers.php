@@ -52,14 +52,13 @@ function sitessaver_backup_filename(string $ext = 'zip'): string {
  * On a single-site install this is identical to SITESSAVER_STORAGE_DIR, so
  * existing installs are byte-for-byte unaffected.
  *
- * On multisite, SITESSAVER_STORAGE_DIR used to be one network-wide folder
- * with no per-site scoping: sitessaver_get_backups() globbed it directly,
- * so any subsite admin could see, download, and DELETE another subsite's
- * backups. This namespaces storage by blog ID so each site only ever sees
+ * On multisite, SITESSAVER_STORAGE_DIR is one network-wide folder. Globbing
+ * it directly would let any subsite admin see, download, and DELETE another
+ * subsite's backups. This namespaces storage by blog ID so each site only ever sees
  * its own archives. The directory is created (and protected with the same
  * .htaccess/index.php guard the activation hook uses) lazily on first call,
  * since WordPress only runs register_activation_hook() for sites that
- * existed at activation time — a subsite created afterwards would otherwise
+ * existed at activation time. A subsite created afterwards would otherwise
  * never get a protected folder.
  */
 function sitessaver_storage_dir(): string {
@@ -123,7 +122,7 @@ function sitessaver_protect_directory(string $dir): void {
 /**
  * Capability needed to use SitesSaver at all (pages, AJAX, downloads).
  *
- * Single site: manage_options, i.e. an administrator — unchanged.
+ * Single site: manage_options, i.e. an administrator.
  *
  * Multisite: manage_network_options, i.e. a super admin. A restore writes
  * plugins, themes and mu-plugins and replays the backup's SQL; an export
@@ -379,7 +378,7 @@ function sitessaver_get_backups(): array {
         return [];
     }
 
-    // Hoist out of the loop — single option read.
+    // Hoisted out of the loop: single option read.
     $labels = get_option('sitessaver_backup_labels', []);
 
     foreach ($files as $file) {
@@ -409,7 +408,7 @@ function sitessaver_get_backups(): array {
  *
  * With no argument: removes only **stale** temp artefacts (orphan chunk dirs
  * older than 6h AND any top-level non-chunk dir/file older than 6h). This is
- * safe to call concurrently with an active export/import — it will NOT wipe
+ * safe to call concurrently with an active export/import: it will NOT wipe
  * another in-flight job's working directory.
  *
  * With a $scope_dir argument: removes exactly that directory and its contents
@@ -450,7 +449,7 @@ function sitessaver_cleanup_temp(?string $scope_dir = null): void {
     }
 
     // Clean stale top-level temp items (not chunks, older than 6h).
-    // Do NOT do a deep recursive wipe — that nukes active jobs.
+    // Do NOT do a deep recursive wipe; that nukes active jobs.
     $top = glob($tmp . '/*');
     if ($top) {
         foreach ($top as $entry) {
@@ -459,7 +458,7 @@ function sitessaver_cleanup_temp(?string $scope_dir = null): void {
                 continue;
             }
             if (filemtime($entry) >= $cutoff) {
-                continue; // Active job — leave alone.
+                continue; // Active job, leave alone.
             }
             sitessaver_rm_recursive($entry);
         }
@@ -467,7 +466,7 @@ function sitessaver_cleanup_temp(?string $scope_dir = null): void {
 }
 
 /**
- * Remove a specific temp subdirectory if — and only if — it lives under
+ * Remove a specific temp subdirectory if, and only if, it lives under
  * SITESSAVER_TEMP_DIR. Hardens against path traversal.
  */
 function sitessaver_remove_scoped_temp(string $tmp, string $scope_dir): void {

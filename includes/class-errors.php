@@ -14,9 +14,9 @@ defined('ABSPATH') || exit;
  * guessing whether their site is now broken. Every message here answers the
  * three questions they actually have, in order:
  *
- *   title   — what happened, in a few words;
- *   message — whether anything on the site changed (the first worry);
- *   hint    — what to do next.
+ *   title:   what happened, in a few words;
+ *   message: whether anything on the site changed (the first worry);
+ *   hint:    what to do next.
  *
  * The technical detail is never thrown away: it goes to the troubleshooting
  * log under a reference code, and the notice shows that code plus a
@@ -37,28 +37,28 @@ final class Errors {
         return [
             // ---- Upload -------------------------------------------------
             'upload_interrupted' => [
-                'title'   => __('The upload didn’t finish', 'sitessaver'),
+                'title'   => __('The upload did not finish', 'sitessaver'),
                 'message' => __('The connection to your server dropped partway through the upload.', 'sitessaver') . ' ' . $nothing_changed,
                 'hint'    => __('Try again. If it keeps stopping, upload the backup file into wp-content/sitessaver-backups/ with your hosting File Manager or FTP, then restore it from the Backups page.', 'sitessaver'),
             ],
             'upload_page_outdated' => [
                 'title'   => __('This page needs a refresh', 'sitessaver'),
-                'message' => __('SitesSaver was updated while this page was open, so the upload couldn’t continue.', 'sitessaver') . ' ' . $nothing_changed,
+                'message' => __('SitesSaver was updated while this page was open, so the upload could not continue.', 'sitessaver') . ' ' . $nothing_changed,
                 'hint'    => __('Reload the page and upload the file again.', 'sitessaver'),
             ],
             'upload_not_zip' => [
-                'title'   => __('This isn’t a SitesSaver backup', 'sitessaver'),
-                'message' => __('The file you chose isn’t a ZIP archive, so it can’t be restored.', 'sitessaver') . ' ' . $nothing_changed,
+                'title'   => __('This is not a SitesSaver backup', 'sitessaver'),
+                'message' => __('The file you chose is not a ZIP archive, so it cannot be restored.', 'sitessaver') . ' ' . $nothing_changed,
                 'hint'    => __('Choose the .zip file SitesSaver created when the backup was made.', 'sitessaver'),
             ],
             'upload_disk_full' => [
                 'title'   => __('Your server is out of space', 'sitessaver'),
-                'message' => __('There isn’t enough free disk space on your hosting account to store this backup.', 'sitessaver') . ' ' . $nothing_changed,
+                'message' => __('There is not enough free disk space on your hosting account to store this backup.', 'sitessaver') . ' ' . $nothing_changed,
                 'hint'    => __('Delete old backups on the Backups page, or ask your host for more space, then try again.', 'sitessaver'),
             ],
             'upload_failed' => [
-                'title'   => __('The upload didn’t finish', 'sitessaver'),
-                'message' => __('Your server couldn’t save the uploaded file.', 'sitessaver') . ' ' . $nothing_changed,
+                'title'   => __('The upload did not finish', 'sitessaver'),
+                'message' => __('Your server could not save the uploaded file.', 'sitessaver') . ' ' . $nothing_changed,
                 'hint'    => __('Try again. If it happens again, share the reference code below with whoever looks after your site.', 'sitessaver'),
             ],
             'import_cancelled' => [
@@ -70,12 +70,12 @@ final class Errors {
 
             // ---- Restore ------------------------------------------------
             'restore_file_missing' => [
-                'title'   => __('We couldn’t find that backup', 'sitessaver'),
+                'title'   => __('We could not find that backup', 'sitessaver'),
                 'message' => __('The backup file is no longer on the server.', 'sitessaver') . ' ' . $nothing_changed,
                 'hint'    => __('Refresh the Backups page and choose the backup again.', 'sitessaver'),
             ],
             'restore_damaged' => [
-                'title'   => __('This backup can’t be opened', 'sitessaver'),
+                'title'   => __('This backup cannot be opened', 'sitessaver'),
                 'message' => __('The backup file seems damaged or incomplete, so the restore stopped before changing anything.', 'sitessaver'),
                 'hint'    => __('Download the backup again from the site it was made on and upload that copy.', 'sitessaver'),
             ],
@@ -86,18 +86,18 @@ final class Errors {
             ],
             'restore_wrong_site' => [
                 'title'   => __('This backup belongs to another site', 'sitessaver'),
-                'message' => __('It was made on a different site in your network, so it can’t be restored here.', 'sitessaver') . ' ' . $nothing_changed,
+                'message' => __('It was made on a different site in your network, so it cannot be restored here.', 'sitessaver') . ' ' . $nothing_changed,
                 'hint'    => __('Restore it from the site it was made on.', 'sitessaver'),
             ],
             'restore_write_blocked' => [
                 'title'   => __('Your server blocked the restore', 'sitessaver'),
                 'message' => __('Your backup file is fine. The server would not let SitesSaver write the files it needs, so the restore stopped before changing anything.', 'sitessaver'),
-                'hint'    => __('This is almost always hosting security software. If your cPanel has Imunify360, open it → Proactive Defense and set the mode to “Log only” (or add wp-content/plugins/sitessaver/ to its Ignore list), run the restore, then switch it back. No such option? Send your host the reference code below and ask them to allow SitesSaver to write to wp-content for a few minutes.', 'sitessaver'),
+                'hint'    => __('This is almost always hosting security software. If your cPanel has Imunify360, open it, go to Proactive Defense and set the mode to "Log only" (or add wp-content/plugins/sitessaver/ to its Ignore list), run the restore, then switch it back. No such option? Send your host the reference code below and ask them to allow SitesSaver to write to wp-content for a few minutes.', 'sitessaver'),
             ],
             'export_write_blocked' => [
                 'title'   => __('Your server blocked the backup', 'sitessaver'),
-                'message' => __('The server would not let SitesSaver write the backup file. Your site itself is fine — nothing was changed.', 'sitessaver'),
-                'hint'    => __('This is usually hosting security software or folder permissions. If your cPanel has Imunify360, set Proactive Defense to “Log only” while the backup runs, or ask your host to allow writes to wp-content/sitessaver-backups/. The reference code below shows the exact reason.', 'sitessaver'),
+                'message' => __('The server would not let SitesSaver write the backup file. Your site itself is fine. Nothing was changed.', 'sitessaver'),
+                'hint'    => __('This is usually hosting security software or folder permissions. If your cPanel has Imunify360, set Proactive Defense to "Log only" while the backup runs, or ask your host to allow writes to wp-content/sitessaver-backups/. The reference code below shows the exact reason.', 'sitessaver'),
             ],
             'restore_db_privileges' => [
                 'title'   => __('Your database user lacks a permission', 'sitessaver'),
@@ -111,59 +111,59 @@ final class Errors {
             ],
             'restore_disk_full' => [
                 'title'   => __('Your server ran out of space', 'sitessaver'),
-                'message' => __('There wasn’t enough free disk space to unpack the backup, so the restore stopped.', 'sitessaver'),
+                'message' => __('There was not enough free disk space to unpack the backup, so the restore stopped.', 'sitessaver'),
                 'hint'    => __('Free up space (old backups on the Backups page are a good start) and run the restore again.', 'sitessaver'),
             ],
             'restore_stalled' => [
                 'title'   => __('The restore stopped partway', 'sitessaver'),
                 'message' => __('Your server stopped the restore before it finished, so the site may be only partly restored.', 'sitessaver'),
-                'hint'    => __('Your backup file is still safe. Run the restore again from the Backups page — it starts over cleanly. If it stops again, ask your host to allow longer-running background tasks. On hosts with Imunify360, its Proactive Defense can end the request without a message: set it to “Log only” while you restore.', 'sitessaver'),
+                'hint'    => __('Your backup file is still safe. Run the restore again from the Backups page. It starts over cleanly. If it stops again, ask your host to allow longer-running background tasks. On hosts with Imunify360, its Proactive Defense can end the request without a message: set it to "Log only" while you restore.', 'sitessaver'),
             ],
             'restore_failed_early' => [
-                'title'   => __('The restore couldn’t start', 'sitessaver'),
+                'title'   => __('The restore could not start', 'sitessaver'),
                 'message' => __('Something went wrong while preparing the backup.', 'sitessaver') . ' ' . $nothing_changed,
                 'hint'    => __('Try again. If it happens again, share the reference code below with whoever looks after your site.', 'sitessaver'),
             ],
             'restore_rolled_back' => [
-                'title'   => __('The restore didn’t finish — your site was put back', 'sitessaver'),
+                'title'   => __('The restore did not finish. Your site was put back', 'sitessaver'),
                 'message' => __('Something went wrong part-way through, so SitesSaver switched your previous database back in and returned the files it had replaced. Your posts, pages, users, settings, images, plugins and themes are as they were before the restore.', 'sitessaver'),
                 'hint'    => __('Run the restore again. If it fails a second time, download the log from Help → Troubleshooting Log and send it to SitesSaver support.', 'sitessaver'),
             ],
             'restore_failed' => [
-                'title'   => __('The restore didn’t finish', 'sitessaver'),
+                'title'   => __('The restore did not finish', 'sitessaver'),
                 'message' => __('Something went wrong while putting your site back, so it may be only partly restored.', 'sitessaver'),
                 'hint'    => __('Your backup file is still safe. Run the restore again. If it fails a second time, share the reference code below with whoever looks after your site.', 'sitessaver'),
             ],
             'remote_download_failed' => [
-                'title'   => __('We couldn’t download the backup from cloud storage', 'sitessaver'),
-                'message' => __('The file didn’t come through from your cloud storage.', 'sitessaver') . ' ' . $nothing_changed,
+                'title'   => __('We could not download the backup from cloud storage', 'sitessaver'),
+                'message' => __('The file did not come through from your cloud storage.', 'sitessaver') . ' ' . $nothing_changed,
                 'hint'    => __('Check that the storage account is still connected in Settings, then try again.', 'sitessaver'),
             ],
             'gdrive_download_failed' => [
-                'title'   => __('We couldn’t download the backup from Google Drive', 'sitessaver'),
-                'message' => __('The file didn’t come through from Google Drive.', 'sitessaver') . ' ' . $nothing_changed,
+                'title'   => __('We could not download the backup from Google Drive', 'sitessaver'),
+                'message' => __('The file did not come through from Google Drive.', 'sitessaver') . ' ' . $nothing_changed,
                 'hint'    => __('Check that Google Drive is still connected in Settings, then try again.', 'sitessaver'),
             ],
 
             // ---- Backup -------------------------------------------------
             'export_stalled' => [
                 'title'   => __('The backup stopped partway', 'sitessaver'),
-                'message' => __('Your server stopped the backup before it finished, even after SitesSaver restarted it a few times. Your site itself is fine — nothing was changed.', 'sitessaver'),
-                'hint'    => __('Try again. If it stops again, open Help → Troubleshooting Log, download the log and send it to SitesSaver support — it shows exactly where it stopped.', 'sitessaver'),
+                'message' => __('Your server stopped the backup before it finished, even after SitesSaver restarted it a few times. Your site itself is fine. Nothing was changed.', 'sitessaver'),
+                'hint'    => __('Try again. If it stops again, open Help → Troubleshooting Log, download the log and send it to SitesSaver support. It shows where it stopped.', 'sitessaver'),
             ],
             'export_stalled_file' => [
                 'title'   => __('The backup got stuck on one large file', 'sitessaver'),
-                'message' => __('Adding one very large file to the backup took longer than your server allows. Your site itself is fine — nothing was changed.', 'sitessaver'),
-                'hint'    => __('The file is named under Technical details. If it is an old backup, video or archive you don’t need in the backup, move it out of the uploads folder and try again. Otherwise, download the log from Help → Troubleshooting Log and send it to SitesSaver support.', 'sitessaver'),
+                'message' => __('Adding one very large file to the backup took longer than your server allows. Your site itself is fine. Nothing was changed.', 'sitessaver'),
+                'hint'    => __('The file is named under Technical details. If it is an old backup, video or archive you do not need in the backup, move it out of the uploads folder and try again. Otherwise, download the log from Help → Troubleshooting Log and send it to SitesSaver support.', 'sitessaver'),
             ],
             'export_killed' => [
                 'title'   => __('Your server stopped the backup', 'sitessaver'),
-                'message' => __('The server ended the backup because it hit one of its limits (time or memory). Your site itself is fine — nothing was changed.', 'sitessaver'),
-                'hint'    => __('Try again. If it happens again, download the log from Help → Troubleshooting Log and send it to SitesSaver support — it names the limit that was hit.', 'sitessaver'),
+                'message' => __('The server ended the backup because it hit one of its limits (time or memory). Your site itself is fine. Nothing was changed.', 'sitessaver'),
+                'hint'    => __('Try again. If it happens again, download the log from Help → Troubleshooting Log and send it to SitesSaver support. It names the limit that was hit.', 'sitessaver'),
             ],
             'export_failed' => [
-                'title'   => __('The backup didn’t finish', 'sitessaver'),
-                'message' => __('Something went wrong while creating the backup. Your site itself is fine — nothing was changed.', 'sitessaver'),
+                'title'   => __('The backup did not finish', 'sitessaver'),
+                'message' => __('Something went wrong while creating the backup. Your site itself is fine. Nothing was changed.', 'sitessaver'),
                 'hint'    => __('Try again. If it happens again, share the reference code below with whoever looks after your site.', 'sitessaver'),
             ],
             'export_cancelled' => [
@@ -175,13 +175,13 @@ final class Errors {
 
             // ---- Connection / session ----------------------------------
             'session_expired' => [
-                'title'   => __('You’ve been signed out', 'sitessaver'),
-                'message' => __('Your login session ended, so SitesSaver couldn’t continue.', 'sitessaver'),
+                'title'   => __('You have been signed out', 'sitessaver'),
+                'message' => __('Your login session ended, so SitesSaver could not continue.', 'sitessaver'),
                 'hint'    => __('Reload the page, sign in again, and retry.', 'sitessaver'),
             ],
             'server_timeout' => [
                 'title'   => __('The server took too long to answer', 'sitessaver'),
-                'message' => __('Your server didn’t reply in time. The job may still be running in the background.', 'sitessaver'),
+                'message' => __('Your server did not reply in time. The job may still be running in the background.', 'sitessaver'),
                 'hint'    => __('Wait a minute, then reload this page to see where things stand.', 'sitessaver'),
             ],
             'server_error' => [
@@ -191,7 +191,7 @@ final class Errors {
             ],
             'request_blocked' => [
                 'title'   => __('A security filter on your server blocked the request', 'sitessaver'),
-                'message' => __('Your server’s firewall (for example ModSecurity, Imunify360 or Cloudflare) refused a SitesSaver request before WordPress saw it.', 'sitessaver'),
+                'message' => __('Your server firewall (for example ModSecurity, Imunify360 or Cloudflare) refused a SitesSaver request before WordPress saw it.', 'sitessaver'),
                 'hint'    => __('Ask your host to whitelist requests to wp-admin/admin-ajax.php for this site (the blocked rule is often named under Technical details), or pause the firewall while you back up or restore.', 'sitessaver'),
             ],
             'request_too_large' => [
@@ -206,7 +206,7 @@ final class Errors {
             ],
             'generic' => [
                 'title'   => __('Something went wrong', 'sitessaver'),
-                'message' => __('SitesSaver couldn’t finish that.', 'sitessaver'),
+                'message' => __('SitesSaver could not finish that.', 'sitessaver'),
                 'hint'    => __('Try again. If it happens again, share the reference code below with whoever looks after your site.', 'sitessaver'),
             ],
         ];

@@ -15,7 +15,7 @@ defined('ABSPATH') || exit;
  * either off, unreadable from wp-admin, or buried under thousands of lines
  * from other plugins. When a backup or restore fails, the person who has to
  * fix it needs one place that says what SitesSaver was doing, when, and why
- * it stopped — readable from the Help screen without server access.
+ * it stopped, readable from the Help screen without server access.
  *
  * Storage: one JSON object per line in a plain .log data file under
  * wp-content/sitessaver-backups/logs/. The folder carries the deny-all

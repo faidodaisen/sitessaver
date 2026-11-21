@@ -29,7 +29,7 @@ $log          = get_option('sitessaver_schedule_log', []);
 $last_log     = is_array($log) && !empty($log) ? end($log) : null;
 $disable_cron = defined('DISABLE_WP_CRON') && DISABLE_WP_CRON;
 
-// Staleness is judged against the SHORTEST selected interval — that is the
+// Staleness is judged against the SHORTEST selected interval. That is the
 // promise the user is most likely to notice being broken. Seeded from the
 // selection itself rather than a fixed day, so a Monthly-only schedule is not
 // reported as stale two days after its last run.
@@ -53,12 +53,12 @@ $cron_expression = $shortest_interval <= HOUR_IN_SECONDS ? '*/15 * * * *' : '0 *
 
 // The trigger URL contains a query string, and hosting panels paste these
 // straight into a shell. Unquoted, the browser-safe `&` would background the
-// command at that point and the key would never be sent — so quote it once,
+// command at that point and the key would never be sent. So quote it once,
 // here, and reuse the quoted form everywhere.
 //
 // Double quotes, deliberately. The command is itself wrapped in single quotes
 // for panels that run it through `bash -c '...'`, and a single-quoted URL
-// nested inside that has to be escaped as '\'' — which is correct POSIX but
+// nested inside that has to be escaped as '\'', which is correct POSIX but
 // looks like line noise in a field the user is expected to eyeball before
 // pasting. Double quotes nest cleanly and still protect the `&`.
 // Escape the four characters the shell still expands inside double quotes.
@@ -98,7 +98,7 @@ $field_labels = [
     <header class="ss-header">
         <h1 class="ss-title">
             <i class="ri-calendar-event-fill"></i>
-            <?php esc_html_e('SitesSaver — Schedule', 'sitessaver'); ?>
+            <?php esc_html_e('SitesSaver: Schedule', 'sitessaver'); ?>
         </h1>
         <div class="ss-header-actions">
             <a href="<?php echo esc_url(admin_url('admin.php?page=sitessaver')); ?>" class="btn btn-outline">
@@ -113,7 +113,7 @@ $field_labels = [
             <i class="ri-alert-line"></i>
             <div>
                 <strong><?php esc_html_e('Scheduled backup missed.', 'sitessaver'); ?></strong>
-                <?php esc_html_e('The last run is older than two scheduled intervals. WP-Cron only fires when someone visits the site — if traffic is low, set up the server cron below to keep the schedule reliable.', 'sitessaver'); ?>
+                <?php esc_html_e('The last run is older than two scheduled intervals. WP-Cron only fires when someone visits the site. If traffic is low, set up the server cron below to keep the schedule reliable.', 'sitessaver'); ?>
             </div>
         </div>
     <?php elseif (!empty($schedule['enabled']) && $disable_cron) : ?>
@@ -121,7 +121,7 @@ $field_labels = [
             <i class="ri-information-line"></i>
             <div>
                 <strong><?php esc_html_e('WP-Cron is disabled on this site.', 'sitessaver'); ?></strong>
-                <?php esc_html_e('DISABLE_WP_CRON is set in wp-config.php, so WordPress will not fire scheduled backups on its own. Use the server cron setup below — it does not depend on WP-Cron at all.', 'sitessaver'); ?>
+                <?php esc_html_e('DISABLE_WP_CRON is set in wp-config.php, so WordPress will not fire scheduled backups on its own. Use the server cron setup below. It does not depend on WP-Cron at all.', 'sitessaver'); ?>
             </div>
         </div>
     <?php endif; ?>
@@ -190,7 +190,7 @@ $field_labels = [
                                 <?php endforeach; ?>
                             </div>
                             <p class="description">
-                                <?php esc_html_e('Pick as many as you need — each runs on its own timer. A common setup is Daily for recent restore points plus Monthly as a long-term archive. Monthly means every 30 days.', 'sitessaver'); ?>
+                                <?php esc_html_e('Pick as many as you need. Each runs on its own timer. A common setup is Daily for recent restore points plus Monthly as a long-term archive. Monthly means every 30 days.', 'sitessaver'); ?>
                             </p>
                         </td>
                     </tr>
@@ -242,8 +242,8 @@ $field_labels = [
                                     <label>
                                         <?php esc_html_e('Change detection', 'sitessaver'); ?>
                                         <select name="change_detection" class="ss-input-text">
-                                            <option value="fast" <?php selected($schedule['change_detection'], 'fast'); ?>><?php esc_html_e('Fast — size and modified date', 'sitessaver'); ?></option>
-                                            <option value="thorough" <?php selected($schedule['change_detection'], 'thorough'); ?>><?php esc_html_e('Thorough — verify contents with a checksum', 'sitessaver'); ?></option>
+                                            <option value="fast" <?php selected($schedule['change_detection'], 'fast'); ?>><?php esc_html_e('Fast (size and modified date)', 'sitessaver'); ?></option>
+                                            <option value="thorough" <?php selected($schedule['change_detection'], 'thorough'); ?>><?php esc_html_e('Thorough (verify contents with a checksum)', 'sitessaver'); ?></option>
                                         </select>
                                     </label>
                                 </p>
@@ -281,7 +281,7 @@ $field_labels = [
                         <th><?php esc_html_e('Retention', 'sitessaver'); ?></th>
                         <td>
                             <input type="number" name="retention" value="<?php echo (int) $schedule['retention']; ?>" min="1" max="100" class="ss-input-text" style="width: 80px;" />
-                            <p class="description"><?php esc_html_e('How many restore points to keep on this server. Applied after each scheduled run, oldest deleted first. With incremental backups a restore point is a full backup plus everything that followed it, and those are removed together — so keeping 5 restore points can mean more than 5 files in the folder. Manual backups count as one restore point each.', 'sitessaver'); ?></p>
+                            <p class="description"><?php esc_html_e('How many restore points to keep on this server. Applied after each scheduled run, oldest deleted first. With incremental backups a restore point is a full backup plus everything that followed it, and those are removed together, so keeping 5 restore points can mean more than 5 files in the folder. Manual backups count as one restore point each.', 'sitessaver'); ?></p>
                         </td>
                     </tr>
                     <tr>
@@ -318,14 +318,14 @@ $field_labels = [
             </h2>
             <?php if ($disable_cron) : ?>
                 <span class="badge badge-red" style="font-weight: normal;">
-                    <?php esc_html_e('WP-Cron disabled — required', 'sitessaver'); ?>
+                    <?php esc_html_e('WP-Cron disabled: required', 'sitessaver'); ?>
                 </span>
             <?php endif; ?>
         </div>
 
         <div class="ss-section-content">
             <p class="description" style="margin-top: 0;">
-                <?php esc_html_e('WordPress fires WP-Cron only when someone loads a page, so on a quiet site a scheduled backup can be hours or days late — and if DISABLE_WP_CRON is set, it never runs at all. The URL below triggers backups directly and does not depend on WP-Cron.', 'sitessaver'); ?>
+                <?php esc_html_e('WordPress fires WP-Cron only when someone loads a page, so on a quiet site a scheduled backup can be hours or days late, and if DISABLE_WP_CRON is set, it never runs at all. The URL below triggers backups directly and does not depend on WP-Cron.', 'sitessaver'); ?>
                 <?php esc_html_e('It also keeps a backup you started from the Export screen moving after you close the page, on hosts that stop background work. Run it every minute if your host allows.', 'sitessaver'); ?>
             </p>
 
@@ -369,7 +369,7 @@ $field_labels = [
             ?>
             <div class="ss-setup-body is-active" id="ss-setup-panel">
                 <p class="description" style="margin-top: 0;">
-                    <?php esc_html_e('Copy each value into the matching field. Do not paste the schedule into the command box — the panel adds it for you.', 'sitessaver'); ?>
+                    <?php esc_html_e('Copy each value into the matching field. Do not paste the schedule into the command box. The panel adds it for you.', 'sitessaver'); ?>
                 </p>
 
                 <div class="ss-field-group">

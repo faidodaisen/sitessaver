@@ -13,11 +13,11 @@ defined('ABSPATH') || exit;
  *
  * Two ways in:
  *
- *   1. WP-Cron — one `sitessaver_scheduled_backup` event per selected
+ *   1. WP-Cron: one `sitessaver_scheduled_backup` event per selected
  *      frequency. Fine on sites with steady traffic, since WP-Cron only
  *      fires when someone loads a page.
  *
- *   2. An external trigger URL — for hosts where WP-Cron is disabled
+ *   2. An external trigger URL, for hosts where WP-Cron is disabled
  *      (`DISABLE_WP_CRON`) or where traffic is too low to fire it reliably.
  *      A real server cron (or an uptime pinger) hits the URL and any backup
  *      that is due runs inside that request. See handle_external_trigger().
@@ -25,7 +25,7 @@ defined('ABSPATH') || exit;
  * Both paths converge on run_scheduled_backup(), so behaviour, retention, and
  * notifications stay identical no matter what started the run.
  *
- * Several frequencies can be active at once — Daily plus Monthly, say, to keep
+ * Several frequencies can be active at once (Daily plus Monthly, say) to keep
  * a rolling week of recent restore points alongside a long-term archive. Each
  * frequency is scheduled and rate-limited independently, so they never
  * collapse into one another.
@@ -58,7 +58,7 @@ final class Schedule {
         add_action('sitessaver_scheduled_export_finished', [$this, 'on_export_finished'], 10, 2);
         add_filter('cron_schedules', [$this, 'add_custom_schedules']);
 
-        // Must run early and on every request type — a server cron hitting the
+        // Must run early and on every request type: a server cron hitting the
         // trigger URL is an anonymous front-end request, not an admin one.
         add_action('init', [$this, 'handle_external_trigger'], 5);
     }
@@ -66,10 +66,10 @@ final class Schedule {
     /**
      * The frequencies SitesSaver offers, in ascending order.
      *
-     * Single source of truth: the cron_schedules filter, the AJAX validator,
-     * the settings form, and the staleness check all read this. They used to
-     * keep separate copies of the interval table, so adding a frequency meant
-     * editing four places and any miss produced a schedule that saved but
+     * The cron_schedules filter, the AJAX validator, the settings form, and
+     * the staleness check all read this. Separate copies of the interval
+     * table would mean editing four places per new frequency, and any miss
+     * would produce a schedule that saved but
      * never fired.
      *
      * @return array<string, array{label: string, interval: int, description: string}>
@@ -178,7 +178,7 @@ final class Schedule {
     public function add_custom_schedules(array $schedules): array {
         foreach (self::frequencies() as $key => $meta) {
             // Never clobber a core schedule (hourly, twicedaily, daily) or one
-            // another plugin registered first — overriding those would change
+            // another plugin registered first. Overriding those would change
             // the cadence of unrelated events.
             if (isset($schedules[$key])) {
                 continue;
@@ -201,7 +201,7 @@ final class Schedule {
      * Rebuild the WP-Cron events so they match the saved selection exactly.
      *
      * Every event carries its frequency as an argument, which is what lets
-     * several of them coexist under one hook — wp_next_scheduled() and
+     * several of them coexist under one hook: wp_next_scheduled() and
      * wp_unschedule_event() both key on the args, so 'daily' and
      * 'sitessaver_monthly' are distinct events rather than one overwriting
      * the other.
@@ -292,7 +292,7 @@ final class Schedule {
      * Seed every selected frequency's last-run marker.
      *
      * Called when the schedule is saved so the external trigger endpoint
-     * agrees with WP-Cron about when the first backup is owed — otherwise
+     * agrees with WP-Cron about when the first backup is owed. Otherwise
      * "never run before" reads as due and a server cron fires a backup the
      * instant the settings are saved.
      *
@@ -342,7 +342,7 @@ final class Schedule {
             $last = self::last_run_for($frequency);
 
             if ($last <= 0) {
-                return 0; // Never run — due right now.
+                return 0; // Never run, so due right now.
             }
 
             $candidates[] = $last + self::interval_for($frequency);
@@ -435,7 +435,7 @@ final class Schedule {
 
         // `force=1` runs regardless of when the last backup happened. Without
         // it the endpoint is safe to call more often than the chosen
-        // frequency — a cron running every 5 minutes will still only produce
+        // frequency. A cron running every 5 minutes will still only produce
         // one daily backup, which is exactly what you want when the server
         // cron interval and the plugin frequency are configured separately.
         $force = isset($_GET['force']) && sanitize_key(wp_unslash($_GET['force'])) === '1';
@@ -488,7 +488,7 @@ final class Schedule {
         }
 
         self::respond(500, sprintf(
-            'sitessaver: backup failed for [%s] — %s',
+            'sitessaver: backup failed for [%s]: %s',
             $label,
             (string) ($result['message'] ?? 'unknown error')
         ));
@@ -579,7 +579,7 @@ final class Schedule {
         // one. Only scheduled runs build a file index and join a chain;
         // the Export screen still produces standalone full backups.
         // Drive upload happens inside the export's last step, in slices that
-        // resume from the confirmed byte offset — not afterwards in one long
+        // resume from the confirmed byte offset, not afterwards in one long
         // request that a 30-second host limit would cut off.
         $remotes = [];
         if (!empty($settings['storage_gdrive']) && GDrive::is_connected()) {
@@ -608,8 +608,8 @@ final class Schedule {
             'change_detection'=> ($settings['change_detection'] ?? 'fast') === 'thorough' ? 'thorough' : 'fast',
         ]);
 
-        // Drive upload, retention and the email run when the export finishes
-        // — in this request, or in a later slice (on_export_finished()).
+        // Drive upload, retention and the email run when the export finishes,
+        // in this request or in a later slice (on_export_finished()).
         return $result;
     }
 
@@ -688,7 +688,7 @@ final class Schedule {
 
         // 3. Handle Local Storage.
         if (empty($settings['storage_local']) && $file_uploaded) {
-            // User only wants GDrive and it succeeded — delete local file
+            // User only wants GDrive and it succeeded: delete local file
             // (already gone when the export uploaded it as gdrive-only).
             if (!empty($result['path']) && is_file($result['path'])) {
                 @unlink($result['path']);
@@ -743,7 +743,7 @@ final class Schedule {
      *
      * Retention counts RESTORE POINTS, not files. With incremental backups a
      * chain of `full + inc1..inc6` is seven files but only one thing you can
-     * restore to — and deleting newest-first by file count would take out the
+     * restore to. Deleting newest-first by file count would take out the
      * full at the head and leave six incrementals that restore to nothing,
      * while the Backups list still showed seven healthy-looking entries.
      * Chains are therefore aged out whole.
@@ -894,7 +894,7 @@ final class Schedule {
                 } else {
                     $storage[] = [
                         'state'  => 'warn',
-                        'label'  => __('Google Drive — upload failed', 'sitessaver'),
+                        'label'  => __('Google Drive upload failed', 'sitessaver'),
                         'detail' => sprintf(
                             /* translators: %s: error message from Google Drive */
                             __('%s The archive is still on the server. Retry the upload from the Backups page.', 'sitessaver'),
@@ -920,7 +920,7 @@ final class Schedule {
                     : [
                         'state'  => 'warn',
                         /* translators: %s: provider name */
-                        'label'  => sprintf(__('%s — upload failed', 'sitessaver'), $label),
+                        'label'  => sprintf(__('%s upload failed', 'sitessaver'), $label),
                         'detail' => sprintf(
                             /* translators: %s: error message from the provider */
                             __('%s The archive is still on the server. Retry the upload from the Backups page.', 'sitessaver'),

@@ -5,8 +5,8 @@
 
     // ---------- NOTIFICATIONS (toasts + dialogs) ----------
     //
-    // Everything here replaces the native alert() / confirm() / prompt()
-    // calls this file used to make. Native dialogs were a poor fit:
+    // Used instead of native alert() / confirm() / prompt(), which are a
+    // poor fit here:
     //   - they block the JS thread, so in-flight progress modals freeze
     //   - they can't be styled, so they break the plugin's visual language
     //   - Chrome suppresses them outright in cross-origin iframes, which
@@ -25,8 +25,8 @@
 
         // Body scroll-lock is shared between the progress modal, the
         // restore-complete modal, and dialogs. Deriving it from what is
-        // actually on screen avoids the classic refcount drift where one
-        // layer closes and unlocks scrolling for a layer still open.
+        // actually on screen avoids refcount drift, where one layer closes
+        // and unlocks scrolling for a layer that is still open.
         function syncScrollLock() {
             var open = $('.sitessaver-modal-backdrop:visible, .ss-dialog-backdrop').length > 0;
             $('body').toggleClass('ss-modal-open', open);
@@ -75,7 +75,7 @@
             opts = opts || {};
             var type = ICONS[opts.type] ? opts.type : 'info';
             var title = opts.title !== undefined ? opts.title : DEFAULT_TITLES[type];
-            // Errors stay longer — they usually carry text worth reading.
+            // Errors stay longer; they usually carry text worth reading.
             var duration = opts.duration !== undefined
                 ? opts.duration
                 : (type === 'error' ? 9000 : 5000);
@@ -140,7 +140,7 @@
         };
 
         /**
-         * Modal dialog. Async by design — pass onConfirm / onCancel.
+         * Modal dialog. Async: pass onConfirm / onCancel.
          *
          * @param {Object} o
          *   title, message, html
@@ -318,7 +318,7 @@
         try {
             var f = JSON.parse(raw);
             ssNotify.toast({ type: f.type, message: f.message, title: f.title });
-        } catch (e) { /* malformed entry — ignore */ }
+        } catch (e) { /* malformed entry, ignore */ }
     }
 
     $(ssReplayFlash);
@@ -386,7 +386,7 @@
         var http = xhr && xhr.status ? xhr.status : 0;
         var body = xhr && xhr.responseJSON;
 
-        // The server answered with our own JSON error — use it as is.
+        // The server answered with our own JSON error, so use it as is.
         if (body && body.data && (body.data.title || body.data.message)) {
             return normalizeError(body.data);
         }
@@ -400,7 +400,7 @@
         // (LiteSpeed, nginx, Cloudflare, ModSecurity).
         if (xhr && typeof xhr.responseText === 'string' && xhr.responseText && !body) {
             var text = xhr.responseText.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-            if (text) detail += ' — ' + text.slice(0, 180);
+            if (text) detail += ': ' + text.slice(0, 180);
         }
 
         // WordPress answers a dead login/nonce with a bare "-1" or "0". A 403
@@ -494,7 +494,7 @@
     //   capability checks, wp_logout action hooks from third-party plugins,
     //   even some Cloudflare/WAF rules) can fail because user context is
     //   effectively undefined. Navigating straight to wp-login.php sidesteps
-    //   all of it — the user re-authenticates with the backup's credentials,
+    //   all of it. The user re-authenticates with the backup's credentials,
     //   and the deferred finalization runs under the fresh session when the
     //   browser lands on options-permalink.php?sitessaver_finalize=TOKEN.
     var ssFinalizeUrl = '';
@@ -537,18 +537,17 @@
             var $btn = $(this).prop('disabled', true);
             $btn.html('<i class="ri-loader-4-line ri-spin"></i> Logging out...');
 
-            // NOTE: we deliberately do NOT try to clear the auth cookies from
-            // JavaScript. WordPress sets them HttpOnly (see pluggable.php,
+            // We don't clear the auth cookies from JavaScript. WordPress sets
+            // them HttpOnly (see pluggable.php,
             // `setcookie( LOGGED_IN_COOKIE, ..., true )`), so document.cookie
-            // cannot touch the only cookies that actually matter -- the sweep
-            // that used to live here silently did nothing. The logout is
+            // cannot touch the only cookies that matter. The logout is
             // forced server-side instead: the finalize URL carries `reauth=1`,
             // which makes wp-login.php call wp_clear_auth_cookie() and show
             // the login prompt even when the existing session is still valid
             // (which it is whenever the backup came from this same site, since
             // the auth salts are unchanged).
 
-            // Direct navigation -- no AJAX. If for any reason the server-built
+            // Direct navigation, no AJAX. If for any reason the server-built
             // URL isn't available (e.g. a modal rendered by an older build),
             // fall back to wp-login.php.
             var target = ssFinalizeUrl;
@@ -688,7 +687,7 @@
         // Build the step checklist for flows with named, ordered phases
         // (export's 9-step pipeline, import's restore phases). Flows that
         // don't pass steps keep the plain bar + single label they always
-        // had — the list only appears where there is something real to list.
+        // had. The list only appears where there is something real to list.
         //
         // @param steps list<{id: string, label: string}>
         setSteps: function (steps) {
@@ -714,7 +713,7 @@
 
         // Mark every step before `key` done, `key` itself active, the rest
         // still pending. `key` is either a step id (import's phases, which
-        // can repeat — e.g. 'extract' fires once per chain member — so
+        // can repeat (e.g. 'extract' fires once per chain member), so
         // matching by id rather than a fixed index still lands on the right
         // row) or a numeric index (export's flat step list).
         setActiveStep: function (key) {
@@ -744,7 +743,7 @@
         },
 
         // All steps done (the final "completed" frame just before done()
-        // swaps the header icon) — called once a flow's last status report
+        // swaps the header icon). Called once a flow's last status report
         // confirms completion, never assumed from the client's own count.
         completeSteps: function () {
             $('#ss-pm-step-list').children().each(function () {
@@ -841,8 +840,8 @@
 
             // The server spawned a background worker: the browser must NOT
             // run the steps itself, it just watches. This is what stops a
-            // big backup from dying on a gateway 504 — no request the browser
-            // makes now lasts longer than a status poll.
+            // big backup from dying on a gateway 504: no request the browser
+            // makes lasts longer than a status poll.
             if (res.background) {
                 watchExportProgress({
                     $form:     $form,
@@ -947,7 +946,7 @@
     });
 
 
-    // "Uploading to Google Drive... — 57 of 61 MB". Sizes, not a second
+    // "Uploading to Google Drive... 57 of 61 MB". Sizes, not a second
     // percentage: the bar already shows one and two numbers that disagree
     // read as a bug.
     function gdriveLabel(base, job) {
@@ -955,7 +954,7 @@
         var total = Number(job && job.total);
         if (!isFinite(sent) || !isFinite(total) || total <= 0 || sent <= 0 || sent >= total) return base;
         var mb = function (b) { return (b >= 10485760 ? Math.round(b / 1048576) : (b / 1048576).toFixed(1)) + ' MB'; };
-        return base + ' — ' + mb(sent).replace(' MB', '') + ' of ' + mb(total);
+        return base + ' ' + mb(sent).replace(' MB', '') + ' of ' + mb(total);
     }
 
     // ---- Live Google Drive upload progress ----
@@ -1103,7 +1102,7 @@
                 }
 
                 // The worker refreshes its heartbeat at least every 10s, even
-                // mid-zip. A long silence means the process is gone — report
+                // mid-zip. A long silence means the process is gone, so report
                 // it instead of spinning a progress bar forever.
                 if (s.stalled) {
                     clearInterval(poll); ended = true;
@@ -1138,9 +1137,9 @@
                     // One big file: show its name and how much of it is done,
                     // so a long copy reads as progress, not a freeze.
                     var mb = function (b) { return Math.round(b / 1048576) + ' MB'; };
-                    label += ' — ' + String(d.file).split('/').pop() + ' (' + mb(d.copied || d.done || 0) + ' of ' + mb(d.size) + ')';
+                    label += ' ' + String(d.file).split('/').pop() + ' (' + mb(d.copied || d.done || 0) + ' of ' + mb(d.size) + ')';
                 } else if (d.note && String(d.note).indexOf('db:') === 0) {
-                    label += ' — ' + String(d.note).slice(3) + (d.done ? ' (' + d.done + ' rows)' : '');
+                    label += ' ' + String(d.note).slice(3) + (d.done ? ' (' + d.done + ' rows)' : '');
                 } else if (d.note === 'zip-large' && d.done) {
                     label += ' (' + Math.round(d.done / 1048576) + ' MB of a large file)';
                 } else if (d.done && d.note !== 'zip-finalizing' && d.note !== 'cleanup') {
@@ -1149,7 +1148,7 @@
                 ssModal.setActiveStep(s.step_index);
                 ssModal.setProgress(s.step_pct, label);
             }, function () {
-                // One failed poll is not fatal — the worker keeps running
+                // One failed poll is not fatal; the worker keeps running
                 // regardless. Try again on the next tick.
             });
         }, 2000);
@@ -1168,7 +1167,7 @@
         var keepsLocal = dest === 'local' || dest === 'both' || /\+local$/.test(dest || '');
         if (keepsLocal && result.file) {
             var dlUrl = SS.ajaxUrl + '?action=sitessaver_download_backup&file=' + encodeURIComponent(result.file) + '&nonce=' + SS.downloadNonce;
-            msg += escapeHtml(SS.strings.done) + ' — ' + escapeHtml(result.file) + ' (' + escapeHtml(result.size) + ')<br><br>';
+            msg += escapeHtml(SS.strings.done) + ' ' + escapeHtml(result.file) + ' (' + escapeHtml(result.size) + ')<br><br>';
             msg += '<a href="' + dlUrl + '" class="ss-download-link" target="_blank"><i class="ri-download-2-line"></i> Download backup</a>';
         }
 
@@ -1383,7 +1382,7 @@
         }
 
         // Network blip or a gateway error: ask the server where the upload
-        // actually stands before doing anything — the chunk may have been
+        // actually stands before doing anything. The chunk may have been
         // written and only the reply lost. Never delete what's there while
         // we're still trying.
         function retryChunk(err) {
@@ -1394,7 +1393,7 @@
                 return;
             }
             var wait = Math.min(30, Math.pow(2, attempt)) * 1000;
-            ssModal.setProgress(Math.round((currentChunk / totalChunks) * 100), 'Connection hiccup — retrying (' + attempt + '/' + MAX_ATTEMPTS + ')…');
+            ssModal.setProgress(Math.round((currentChunk / totalChunks) * 100), 'Connection problem, retrying (' + attempt + '/' + MAX_ATTEMPTS + ')…');
 
             setTimeout(function () {
                 if (cancelled) return;
@@ -1407,7 +1406,7 @@
                     currentChunk = st.received;
                     sendNextChunk();
                 }, function () {
-                    // Status unreachable too — just resend the same chunk;
+                    // Status unreachable too. Resend the same chunk;
                     // the server ignores it if it already has it.
                     sendNextChunk();
                 });
@@ -1421,7 +1420,7 @@
         }
 
         function startRestoration(filename) {
-            ssModal.disableCancel('Restoring — cannot cancel');
+            ssModal.disableCancel('Restoring, cannot cancel');
             $('#ss-pm-title').text('Restoring Site');
             $('#ss-pm-subtitle').text('Database and files are being restored. This cannot be interrupted.');
             $('#ss-pm-caution').text('Keep this tab open until the restore finishes. If it does close, the restore carries on on the server.');
@@ -1622,7 +1621,7 @@
         var dependents = parseInt($(this).data('dependents'), 10) || 0;
 
         // Deleting a full backup that incrementals were built on top of does
-        // not just remove one file — it makes every one of those incrementals
+        // not just remove one file. It makes every one of those incrementals
         // unrestorable. Say so plainly instead of discovering it at restore.
         var message = 'The backup file "' + file + '" will be permanently removed from this server. This cannot be undone.';
         if (dependents > 0) {
@@ -1659,7 +1658,7 @@
 
     // Reveal a dependent block only while its controlling radio is chosen.
     // Declared on the element as data-ss-when="field=value" so the markup
-    // stays the single source of truth for what depends on what.
+    // is the one place that says what depends on what.
     function ssSyncConditionals($scope) {
         $scope.find('[data-ss-when]').each(function () {
             var parts = String($(this).data('ss-when')).split('=');
@@ -1863,7 +1862,7 @@
 
         ajax('sitessaver_save_settings', { gdrive_folder_id: $(this).find('[name=gdrive_folder_id]').val() }, function (res) {
             $btn.prop('disabled', false);
-            // No reload needed — nothing else on this page derives from the
+            // No reload needed: nothing else on this page derives from the
             // folder ID, so a toast is less disruptive than a full refresh.
             ssNotify.success(res.message || SS.strings.done);
         }, function (err) {
@@ -1952,7 +1951,7 @@
         ajax('sitessaver_save_email_brand', ssBrandFormData($form), function (res) {
             $btn.prop('disabled', false);
             ssNotify.success(res.message || SS.strings.done);
-            // The header badge reflects the HTML on/off state, so keep it honest.
+            // The header badge reflects the HTML on/off state, so keep it in sync.
             var on = $form.find('[name=enabled]').is(':checked');
             $form.closest('.ss-section').find('.ss-section-header .badge')
                 .toggleClass('badge-blue', on)
@@ -1963,7 +1962,7 @@
         });
     });
 
-    // Save first, then send: otherwise the test shows the previously saved
+    // Save first, then send: otherwise the test shows the last saved
     // branding and the user thinks their edits did nothing.
     $(document).on('click', '#sitessaver-send-test-email', function () {
         var $btn = $(this).prop('disabled', true).addClass('loading');
@@ -2170,8 +2169,8 @@
 
                 // The whole operation (download + extract + DB import + file
                 // restore) runs in one request and cannot be interrupted, so
-                // use the blocking progress modal rather than the inline bar
-                // that used to sit behind other page content.
+                // use the blocking progress modal rather than an inline bar
+                // that can sit behind other page content.
                 ssModal.open({
                     title:      'Restoring from Google Drive',
                     subtitle:   'Downloading the backup and restoring your site. Please wait.',
@@ -2399,7 +2398,7 @@
                 return;
             }
 
-            // Host blocks loopback requests — fall back to the step runner.
+            // Host blocks loopback requests, so fall back to the step runner.
             runNextStep();
         }, function () {
             runNextStep();
@@ -2444,7 +2443,7 @@
             ajax('sitessaver_export_step', { uid: uid, step_index: currentStep }, function (stepRes) {
                 gdrivePoll = stopPoll(gdrivePoll);
                 if (stepRes.success) {
-                    // Drive upload sliced by the request deadline — repeat the
+                    // Drive upload sliced by the request deadline. Repeat the
                     // same step, which resumes from the stored byte offset.
                     if (stepRes.pending) {
                         runNextStep();
@@ -2583,9 +2582,8 @@
             var stepLabel   = (steps[currentStep] && steps[currentStep].label) || 'in progress';
             var pct         = (steps[currentStep] && steps[currentStep].pct) || 0;
 
-            // Show a banner above the form. User picks Resume or Discard —
-            // we never auto-run the export. Previously an orphaned scheduled
-            // export would silently resume on page load.
+            // Show a banner above the form and let the user pick Resume or
+            // Discard. An orphaned export is never resumed on page load.
             var banner =
                 '<div class="ss-resume-banner ss-result-card" style="background:#fef7e0;border:1px solid #fde293;color:#9a6400;align-items:flex-start;">' +
                     '<i class="ri-time-line" style="font-size:24px;"></i>' +
