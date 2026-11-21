@@ -35,7 +35,7 @@ final class Restore_Job {
     /** Running job with no sign of life for this long is presumed dead. */
     public const STALL_SECONDS = 900;
 
-    /** A queued job the worker never picked up after this long → run inline. */
+    /** A queued job the worker never picked up after this long runs inline. */
     public const START_GRACE_SECONDS = 25;
 
     /** Persist a heartbeat at most this often. */

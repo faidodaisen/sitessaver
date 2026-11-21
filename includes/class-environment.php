@@ -38,7 +38,7 @@ final class Environment {
         }
         $msg = (string) $err['message'];
         // "fopen(/home/x/.../database.sql): Failed to open stream: Permission denied"
-        // → keep the reason, drop the absolute path (the log must not leak paths).
+        // so keep the reason, drop the absolute path (the log must not leak paths).
         $pos = strrpos($msg, ': ');
         $msg = $pos !== false ? substr($msg, $pos + 2) : $msg;
         return trim(substr($msg, 0, 160));

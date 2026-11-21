@@ -284,7 +284,7 @@ final class Log {
         $n   = 0;
         foreach ($context as $k => $v) {
             if (++$n > 40) {
-                $out['…'] = 'truncated';
+                $out['...'] = 'truncated';
                 break;
             }
             $lk = strtolower((string) $k);
@@ -306,7 +306,7 @@ final class Log {
     }
 
     private static function truncate(string $s, int $max): string {
-        return strlen($s) > $max ? substr($s, 0, $max) . '…' : $s;
+        return strlen($s) > $max ? substr($s, 0, $max) . '...' : $s;
     }
 
     private static function clean_code(string $code): string {

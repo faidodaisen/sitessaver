@@ -1739,7 +1739,7 @@ final class Database {
         // answers HTTP, and the browser shows a broken image.
         //
         // We derive bare hosts from both old_url and new_url, then build
-        // the cross-product of schemes × escape-forms so strtr() can do a
+        // the cross-product of schemes and escape forms so strtr() can do a
         // single-pass replacement with array_combine(). This mirrors how
         // All-in-One WP Migration handles the problem.
         $pairs = self::build_replacement_pairs($old_url, $new_url, $old_no_scheme, $new_no_scheme);
@@ -1770,12 +1770,12 @@ final class Database {
     /**
      * Build the full replacement map. Returns [from => to, ...] with:
      *   - scheme variants: https://, http://, and protocol-relative //
-     *   - bare host variant (feldatravel.fidodesign.dev → feldatravel.test)
+     *   - bare host variant (old.example.com to new.test)
      *   - JSON-escaped variants (forward slashes as \/ )
      *   - trailing-slash variants dropped (str_replace is substring-based)
      *
      * All entries map TO the new canonical URL (with its new scheme), so
-     * cross-scheme migrations (https → http or vice-versa) flatten to the
+     * cross-scheme migrations (https to http or the other way) flatten to the
      * destination's canonical form.
      *
      * Order matters: longest patterns come first so strtr() (which is
@@ -2019,7 +2019,7 @@ final class Database {
      *   `maybe_serialize()`, which serializes it a SECOND time. A meta value
      *   like `serialize(['inner' => 'https://old/x'])` is therefore stored as
      *       s:53:"a:1:{s:5:"inner";s:27:"https://old/x";}";
-     *   A single-level walker rewrites the OUTER length (53 → 60) but leaves
+     *   A single-level walker rewrites the OUTER length (53 to 60) but leaves
      *   the INNER `s:27:` untouched, so the outer string unserializes fine and
      *   the inner one fails, giving the familiar "widget/page-builder settings are
      *   empty after migration" symptom. Recursing means every nesting level

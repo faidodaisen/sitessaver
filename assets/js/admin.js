@@ -978,7 +978,7 @@
     }
 
     function uploadingNote(poll) {
-        return (!poll || poll === 'gdrive') ? 'Uploading to Drive…' : 'Uploading…';
+        return (!poll || poll === 'gdrive') ? 'Uploading to Drive...' : 'Uploading...';
     }
 
     function pollGdriveInto(modal, jobId, step, existing) {
@@ -1393,7 +1393,7 @@
                 return;
             }
             var wait = Math.min(30, Math.pow(2, attempt)) * 1000;
-            ssModal.setProgress(Math.round((currentChunk / totalChunks) * 100), 'Connection problem, retrying (' + attempt + '/' + MAX_ATTEMPTS + ')…');
+            ssModal.setProgress(Math.round((currentChunk / totalChunks) * 100), 'Connection problem, retrying (' + attempt + '/' + MAX_ATTEMPTS + ')...');
 
             setTimeout(function () {
                 if (cancelled) return;
@@ -2500,7 +2500,7 @@
                 '<i class="ri-loader-4-line ri-spin" aria-hidden="true"></i>' +
                 '<div class="ss-banner-body">' +
                     '<strong class="ss-banner-title">A backup is running in the background</strong>' +
-                    '<span>' + (mins ? 'Started ' + mins + ' min ago. ' : '') + 'Now: ' + escapeHtml(stepLabel.replace(/[.…]+$/, '')) +
+                    '<span>' + (mins ? 'Started ' + mins + ' min ago. ' : '') + 'Now: ' + escapeHtml(stepLabel.replace(/(\.|\u2026)+$/, '')) +
                     '. It keeps going if you leave this page.</span>' +
                     '<div class="ss-banner-actions">' +
                         '<button type="button" class="btn btn-primary ss-watch-btn">Show progress</button>' +

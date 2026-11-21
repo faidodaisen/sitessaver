@@ -50,7 +50,7 @@
                 <p><?php esc_html_e('If a backup fails, or the archive was created but the Drive upload did not go through, the email says so explicitly rather than reporting plain success. That distinction matters: a backup that only exists on the same server is lost with the server.', 'sitessaver'); ?></p>
 
                 <h3 style="margin-top: 24px;"><?php esc_html_e('7. Putting your own branding on those emails', 'sitessaver'); ?></h3>
-                <p><?php esc_html_e('Settings → Email Branding controls how the report looks. Add your logo, pick an accent colour for the header and buttons, and set the sender name and address your clients will see in their inbox. A support link and a footer note are optional.', 'sitessaver'); ?></p>
+                <p><?php esc_html_e('Settings > Email Branding controls how the report looks. Add your logo, pick an accent colour for the header and buttons, and set the sender name and address your clients will see in their inbox. A support link and a footer note are optional.', 'sitessaver'); ?></p>
                 <p><?php esc_html_e('Use "Send test email" to see the result before the next backup runs. It saves your changes first and then delivers a real sample to your notification address. If you prefer plain text, untick "Send branded HTML emails". A text version is always included either way.', 'sitessaver'); ?></p>
                 <p><?php esc_html_e('For the sender address, use one on this domain, such as noreply@yourdomain.com. An address from another domain is far more likely to be filtered as spam.', 'sitessaver'); ?></p>
 
@@ -75,7 +75,7 @@
                         <details>
                             <summary><?php esc_html_e('How to close it', 'sitessaver'); ?></summary>
                             <?php if ($ss_info['server'] === 'runcloud') : ?>
-                                <p><?php esc_html_e('This site runs on RunCloud (Nginx in front of Apache). Nginx sends existing files straight to the visitor, before Apache reads the .htaccess file in the folder. In RunCloud, open the web application → NGINX Config → add a new config (type location.main-before) with:', 'sitessaver'); ?></p>
+                                <p><?php esc_html_e('This site runs on RunCloud (Nginx in front of Apache). Nginx sends existing files straight to the visitor, before Apache reads the .htaccess file in the folder. In RunCloud, open the web application > NGINX Config > add a new config (type location.main-before) with:', 'sitessaver'); ?></p>
                             <?php elseif ($ss_info['server'] === 'nginx') : ?>
                                 <p><?php esc_html_e('This site runs on Nginx, which ignores .htaccess files. Ask your host to add this to the Nginx configuration of the site:', 'sitessaver'); ?></p>
                             <?php else : ?>
@@ -88,7 +88,7 @@
 
                 <h3 style="margin-top: 24px;" id="ss-blocked"><?php esc_html_e('10. "Your server blocked the restore" (Imunify360 and other security software)', 'sitessaver'); ?></h3>
                 <p><?php esc_html_e('Many cPanel hosts run security software, most often Imunify360, that watches what PHP writes. A restore writes a database file and thousands of site files in a few minutes, which can look suspicious to it, so it refuses the write or stops the request. SitesSaver checks this before it changes anything: if the server will not let it write, the restore stops with "Your server blocked the restore" and your site stays exactly as it was. Your backup file is fine, so downloading it again will not help.', 'sitessaver'); ?></p>
-                <p><?php esc_html_e('To get past it: in cPanel open Imunify360 → Proactive Defense and set the mode to "Log only", run the restore, then set it back. Alternatively, add wp-content/plugins/sitessaver/ to the Proactive Defense Ignore list. If your cPanel has no Imunify360 settings, send your host the reference code from the error and ask them to allow SitesSaver to write to wp-content while you restore.', 'sitessaver'); ?></p>
+                <p><?php esc_html_e('To get past it: in cPanel open Imunify360 > Proactive Defense and set the mode to "Log only", run the restore, then set it back. Alternatively, add wp-content/plugins/sitessaver/ to the Proactive Defense Ignore list. If your cPanel has no Imunify360 settings, send your host the reference code from the error and ask them to allow SitesSaver to write to wp-content while you restore.', 'sitessaver'); ?></p>
                 <?php $ss_layers = \SitesSaver\Environment::security_layers(); ?>
                 <div class="ss-storage-status">
                     <?php if (in_array('imunify360', $ss_layers, true)) : ?>

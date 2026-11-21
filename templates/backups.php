@@ -44,7 +44,7 @@ $stats   = [
     // Only worth a word when it matters: the folder is reachable by direct
     // link AND there are backups with the short pre-1.5.1 names, the only
     // ones a stranger could realistically guess. Everything else lives in
-    // Help → "Where are my backups stored?".
+    // Help > "Where are my backups stored?".
     $sitessaver_short = sitessaver_count_short_named_backups($backups);
     if ($sitessaver_short > 0
         && sitessaver_storage_exposure() === 'exposed'
@@ -79,7 +79,7 @@ $stats   = [
                 <span class="ss-stat-label"><?php esc_html_e('Backups Created', 'sitessaver'); ?></span>
                 <span class="ss-stat-value" id="ss-stat-count"><?php echo esc_html($stats['count']); ?></span>
                 <?php if ($sitessaver_drive_on) : ?>
-                    <span class="ss-stat-sub" id="ss-stat-count-sub"><?php esc_html_e('Checking Google Drive…', 'sitessaver'); ?></span>
+                    <span class="ss-stat-sub" id="ss-stat-count-sub"><?php esc_html_e('Checking Google Drive...', 'sitessaver'); ?></span>
                 <?php endif; ?>
             </div>
         </div>
@@ -253,7 +253,7 @@ $stats   = [
                  data-autoload="1"
                  data-local="<?php echo esc_attr(wp_json_encode(array_map(static fn($b) => ['name' => $b['file'], 'size' => (int) $b['size']], $backups))); ?>">
                 <p style="padding: 24px; text-align: center; color: var(--ss-text-muted);">
-                    <?php esc_html_e('Loading cloud backups…', 'sitessaver'); ?>
+                    <?php esc_html_e('Loading cloud backups...', 'sitessaver'); ?>
                 </p>
             </div>
         </div>
@@ -280,7 +280,7 @@ $stats   = [
             </div>
             <div class="sitessaver-remote-files" data-dest="<?php echo esc_attr($ss_dest->id()); ?>" data-label="<?php echo esc_attr($ss_dest->label()); ?>" data-autoload="1">
                 <p style="padding: 24px; text-align: center; color: var(--ss-text-muted);">
-                    <?php esc_html_e('Loading cloud backups…', 'sitessaver'); ?>
+                    <?php esc_html_e('Loading cloud backups...', 'sitessaver'); ?>
                 </p>
             </div>
         </div>

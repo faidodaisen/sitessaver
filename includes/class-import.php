@@ -455,9 +455,9 @@ final class Import {
      * in one request. Each call does as much as $should_stop allows and
      * leaves its place in $c (committed through $commit); the next call
      * continues. Stages: extract (every chain member, entry by entry, large
-     * entries resumable mid-file) → manifest → database (staged, switched
-     * in atomically at the end) → files (from a list, one file at a time,
-     * large files resumable) → finalize.
+     * entries resumable mid-file), then manifest, then database (staged, switched
+     * in atomically at the end), then files (from a list, one file at a time,
+     * large files resumable), then finalize.
      *
      * @param array<string, mixed> $c Cursor; [] to start.
      * @return bool True when the restore is complete.
@@ -1397,7 +1397,7 @@ final class Import {
     }
 
     /**
-     * Read → rewrite URLs → write. Returns true on success, false otherwise.
+     * Read, rewrite URLs, write. Returns true on success, false otherwise.
      *
      * Uses strtr() with the same pair map the DB importer uses so both
      * layers produce consistent output. If no substring matches, we fall

@@ -102,7 +102,7 @@ final class Errors {
             'restore_db_privileges' => [
                 'title'   => __('Your database user lacks a permission', 'sitessaver'),
                 'message' => __('The database account your site uses is not allowed to create, change, rename or remove tables, which a restore needs. The restore stopped before changing anything.', 'sitessaver'),
-                'hint'    => __('In cPanel → MySQL Databases, give the database user named in wp-config.php ALL PRIVILEGES on its database (or ask your host to), then run the restore again. The exact permission is named under Technical details.', 'sitessaver'),
+                'hint'    => __('In cPanel > MySQL Databases, give the database user named in wp-config.php ALL PRIVILEGES on its database (or ask your host to), then run the restore again. The exact permission is named under Technical details.', 'sitessaver'),
             ],
             'restore_db_packet' => [
                 'title'   => __('Your database server refused a large row', 'sitessaver'),
@@ -127,7 +127,7 @@ final class Errors {
             'restore_rolled_back' => [
                 'title'   => __('The restore did not finish. Your site was put back', 'sitessaver'),
                 'message' => __('Something went wrong part-way through, so SitesSaver switched your previous database back in and returned the files it had replaced. Your posts, pages, users, settings, images, plugins and themes are as they were before the restore.', 'sitessaver'),
-                'hint'    => __('Run the restore again. If it fails a second time, download the log from Help → Troubleshooting Log and send it to SitesSaver support.', 'sitessaver'),
+                'hint'    => __('Run the restore again. If it fails a second time, download the log from Help > Troubleshooting Log and send it to SitesSaver support.', 'sitessaver'),
             ],
             'restore_failed' => [
                 'title'   => __('The restore did not finish', 'sitessaver'),
@@ -149,17 +149,17 @@ final class Errors {
             'export_stalled' => [
                 'title'   => __('The backup stopped partway', 'sitessaver'),
                 'message' => __('Your server stopped the backup before it finished, even after SitesSaver restarted it a few times. Your site itself is fine. Nothing was changed.', 'sitessaver'),
-                'hint'    => __('Try again. If it stops again, open Help → Troubleshooting Log, download the log and send it to SitesSaver support. It shows where it stopped.', 'sitessaver'),
+                'hint'    => __('Try again. If it stops again, open Help > Troubleshooting Log, download the log and send it to SitesSaver support. It shows where it stopped.', 'sitessaver'),
             ],
             'export_stalled_file' => [
                 'title'   => __('The backup got stuck on one large file', 'sitessaver'),
                 'message' => __('Adding one very large file to the backup took longer than your server allows. Your site itself is fine. Nothing was changed.', 'sitessaver'),
-                'hint'    => __('The file is named under Technical details. If it is an old backup, video or archive you do not need in the backup, move it out of the uploads folder and try again. Otherwise, download the log from Help → Troubleshooting Log and send it to SitesSaver support.', 'sitessaver'),
+                'hint'    => __('The file is named under Technical details. If it is an old backup, video or archive you do not need in the backup, move it out of the uploads folder and try again. Otherwise, download the log from Help > Troubleshooting Log and send it to SitesSaver support.', 'sitessaver'),
             ],
             'export_killed' => [
                 'title'   => __('Your server stopped the backup', 'sitessaver'),
                 'message' => __('The server ended the backup because it hit one of its limits (time or memory). Your site itself is fine. Nothing was changed.', 'sitessaver'),
-                'hint'    => __('Try again. If it happens again, download the log from Help → Troubleshooting Log and send it to SitesSaver support. It names the limit that was hit.', 'sitessaver'),
+                'hint'    => __('Try again. If it happens again, download the log from Help > Troubleshooting Log and send it to SitesSaver support. It names the limit that was hit.', 'sitessaver'),
             ],
             'export_failed' => [
                 'title'   => __('The backup did not finish', 'sitessaver'),
