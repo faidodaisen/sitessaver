@@ -1048,8 +1048,8 @@ final class Ajax {
     // `dest` id and work for every registered Destination.
     // ---------------------------------------------------------------
 
-    private function remote_from_request(): Destination {
-        $dest = Destinations::get(sanitize_key(wp_unslash($_POST['dest'] ?? '')));
+    private function remote_from_request(string $id): Destination {
+        $dest = Destinations::get($id);
         if ($dest === null) {
             wp_send_json_error(['message' => __('Unknown storage destination.', 'sitessaver')], 400);
         }
@@ -1063,7 +1063,7 @@ final class Ajax {
         if (!current_user_can(sitessaver_capability())) {
             wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
         }
-        $dest = $this->remote_from_request();
+        $dest = $this->remote_from_request(sanitize_key(wp_unslash($_POST['dest'] ?? '')));
         $dest->disconnect();
         /* translators: %s: provider name */
         wp_send_json_success(['message' => sprintf(__('%s disconnected.', 'sitessaver'), $dest->label())]);
@@ -1077,7 +1077,7 @@ final class Ajax {
             wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
         }
 
-        $dest   = $this->remote_from_request();
+        $dest   = $this->remote_from_request(sanitize_key(wp_unslash($_POST['dest'] ?? '')));
         $job_id = sanitize_text_field(wp_unslash($_POST['job_id'] ?? ''));
         $file   = sanitize_file_name(wp_unslash($_POST['file'] ?? ''));
         $path   = sitessaver_resolve_backup_path($file);
@@ -1096,7 +1096,7 @@ final class Ajax {
         if (!current_user_can(sitessaver_capability())) {
             wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
         }
-        $dest   = $this->remote_from_request();
+        $dest   = $this->remote_from_request(sanitize_key(wp_unslash($_POST['dest'] ?? '')));
         $job_id = sanitize_text_field(wp_unslash($_POST['job_id'] ?? ''));
         if ($job_id === '') {
             wp_send_json_error(['message' => __('Missing Job ID.', 'sitessaver')]);
@@ -1111,7 +1111,7 @@ final class Ajax {
         if (!current_user_can(sitessaver_capability())) {
             wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
         }
-        wp_send_json_success($this->remote_from_request()->list_files());
+        wp_send_json_success($this->remote_from_request(sanitize_key(wp_unslash($_POST['dest'] ?? '')))->list_files());
     }
 
     public function handle_remote_download(): void {
@@ -1122,7 +1122,7 @@ final class Ajax {
             wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
         }
 
-        $dest    = $this->remote_from_request();
+        $dest    = $this->remote_from_request(sanitize_key(wp_unslash($_POST['dest'] ?? '')));
         $file_id = sanitize_text_field(wp_unslash($_POST['file_id'] ?? ''));
         if ($file_id === '') {
             wp_send_json_error(['message' => __('No file specified.', 'sitessaver')]);
@@ -1139,7 +1139,7 @@ final class Ajax {
             wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
         }
 
-        $dest    = $this->remote_from_request();
+        $dest    = $this->remote_from_request(sanitize_key(wp_unslash($_POST['dest'] ?? '')));
         $file_id = sanitize_text_field(wp_unslash($_POST['file_id'] ?? ''));
         if ($file_id === '') {
             wp_send_json_error(['message' => __('No file specified.', 'sitessaver')]);
@@ -1313,7 +1313,7 @@ final class Ajax {
         $chunk_err = isset($_FILES['chunk']['error']) ? absint($_FILES['chunk']['error']) : -1;
         // tmp_name is the path PHP itself gave the uploaded part; it is
         // checked with is_uploaded_file() rather than altered.
-        $chunk_tmp = isset($_FILES['chunk']['tmp_name']) ? (string) $_FILES['chunk']['tmp_name'] : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
+        $chunk_tmp = isset($_FILES['chunk']['tmp_name']) ? sanitize_text_field((string) $_FILES['chunk']['tmp_name']) : '';
         if ($chunk_err !== UPLOAD_ERR_OK || $chunk_tmp === '' || !is_uploaded_file($chunk_tmp)) {
             $php_err = $chunk_err;
             wp_send_json_error(Errors::report(

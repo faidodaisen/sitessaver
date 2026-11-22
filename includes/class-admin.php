@@ -83,7 +83,6 @@ final class Admin {
         // No nonce here by design: the restore replaced the database, so a
         // nonce issued before it cannot verify. The single-use finalize token
         // is the CSRF guard (hash_equals below).
-        // phpcs:disable WordPress.Security.NonceVerification.Recommended
         $token = isset($_GET['sitessaver_finalize'])
             ? sanitize_text_field(wp_unslash($_GET['sitessaver_finalize']))
             : '';
@@ -117,7 +116,6 @@ final class Admin {
                 }
             }
         }
-        // phpcs:enable WordPress.Security.NonceVerification.Recommended
     }
 
     /**
@@ -127,7 +125,8 @@ final class Admin {
      * browser history. The one-time `state` check is in handle_callback().
      */
     public function handle_remote_callback(): void {
-        // phpcs:disable WordPress.Security.NonceVerification.Recommended -- An OAuth return cannot carry a nonce; the single-use state value is checked instead.
+        // An OAuth return cannot carry a nonce; the single-use state value
+        // is checked in handle_callback().
         $page = isset($_GET['page']) ? sanitize_key(wp_unslash($_GET['page'])) : '';
         if ($page !== 'sitessaver-settings') {
             return;
@@ -144,7 +143,6 @@ final class Admin {
                 }
             }
         }
-        // phpcs:enable WordPress.Security.NonceVerification.Recommended
         if ($callback === null) {
             return;
         }
@@ -176,7 +174,7 @@ final class Admin {
      */
     public function handle_finalize_logout(): void {
         // The finalize token is the guard (a pre-restore nonce cannot verify).
-        $supplied = isset($_GET['token']) ? sanitize_text_field(wp_unslash($_GET['token'])) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+        $supplied = isset($_GET['token']) ? sanitize_text_field(wp_unslash($_GET['token'])) : '';
         $expected = Import::current_finalize_token();
 
         if ($expected === '' || $supplied === '' || !hash_equals($expected, $supplied)) {

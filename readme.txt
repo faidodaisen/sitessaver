@@ -8,17 +8,17 @@ Stable tag: 1.6.3
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
-Full site backup, restore and migration with schedules and Google Drive. No file size limit and no paid version holding features back.
+Backup, restore and migration of your database and wp-content, with schedules and Google Drive. No file size limit and no paid version.
 
 == Description ==
 
-SitesSaver puts your whole WordPress site, the database and every file, into one ZIP. You can download it, keep it on the server, send it to your own Google Drive, and restore it on the same site or on a new domain.
+SitesSaver puts the content of your WordPress site, the database and the wp-content folder, into one ZIP. You can download it, keep it on the server, send it to your own Google Drive, and restore it on the same site or on a new domain.
 
 Everything in the plugin is free. There is no file size limit, no license key and no locked feature.
 
 **What it does**
 
-* Full backup: the database and every file under your WordPress install go into one ZIP.
+* Backup: the database and the wp-content folder (uploads, plugins, themes and other files there) go into one ZIP. WordPress core files and wp-config.php are not included; the site you restore onto has its own. Cache folders, logs and SitesSaver's own folder are left out.
 * Restore: drag a backup ZIP onto the Import screen, or restore one that is already on the server or in Google Drive. If a restore fails, the previous database and files are put back.
 * Migration: restore onto a new domain and the URLs are rewritten everywhere, including inside serialized data. A different table prefix on the new site is handled too.
 * Scheduled backups: hourly to monthly, with several frequencies running at once. Optional incremental mode, retention, and a private trigger URL for real server cron.
@@ -31,7 +31,8 @@ Everything in the plugin is free. There is no file size limit, no license key an
 * Backups are stored in `wp-content/sitessaver-backups/`, outside the plugin folder, so updating or removing the plugin does not delete them.
 * On Nginx, block web access to that folder in the server config. Help > Where are my backups stored? shows whether it is reachable and gives the exact rule.
 * WP-Cron only runs when someone visits the site. For dependable schedules, use the Server Cron panel on the Schedule page.
-* On multisite, only a super admin can use the plugin. The `sitessaver_capability` filter changes this.
+* On multisite, the plugin works per site: each site has its own SitesSaver menu and its own backup folder (`sitessaver-backups/site-<id>/`), and there is no network admin screen. Only a super admin can use it; the `sitessaver_capability` filter changes this.
+* Restore needs a MySQL or MariaDB database. On a site that uses SQLite (such as WordPress Playground) backups work, and restore is switched off with a notice.
 
 Full documentation: [sitessaver.com/docs.html](https://sitessaver.com/docs.html)
 
@@ -41,13 +42,13 @@ Full documentation: [sitessaver.com/docs.html](https://sitessaver.com/docs.html)
 2. Open the SitesSaver menu. It has Backups, Export, Import, Schedule, Settings and Help.
 3. Click Export to make your first backup. To move a site, install SitesSaver on the new site and drop the backup ZIP onto its Import screen.
 
-Requirements: PHP 8.1 or newer, WordPress 6.0 or newer, and the ZipArchive PHP extension to restore (enabled on most hosts).
+Requirements: PHP 8.1 or newer, WordPress 6.0 or newer. To restore, the ZipArchive PHP extension (enabled on most hosts) and a MySQL or MariaDB database.
 
 == Frequently Asked Questions ==
 
 = Is there a file size limit? =
 
-No. Large sites are backed up and restored in short background slices, so the size of the site is limited only by your disk space and your host.
+No. Large sites are backed up and restored in short background slices, so the size is limited only by your disk space and your host.
 
 = Is there a paid version? =
 
@@ -71,7 +72,7 @@ Yes. Backups and restores run as a chain of short background requests to your ow
 
 = What happens if a restore fails halfway? =
 
-The previous database is kept until the restore has finished, and the files it replaced are put back. Your site goes back to how it was before the restore started.
+The previous database is kept until the restore has finished, and the files it replaced are put back. Your site goes back to how it was before the restore started. A damaged backup (a file that does not match its checksum) or a database file with statements a restore never runs is refused the same way.
 
 = Where do I get help? =
 
@@ -108,6 +109,10 @@ To run long backups and restores in the background, and to check once a day whet
 **PayPal donation link**
 
 The Help page has an optional Donate link to PayPal. Nothing is sent to PayPal and nothing is loaded from it unless you click the link, which opens PayPal in a new tab. PayPal terms: https://www.paypal.com/legalhub/home and privacy: https://www.paypal.com/myaccount/privacy/privacyhub
+
+== Third-party resources ==
+
+* Remix Icon 3.5.0 (icon font, a subset with only the icons the plugin uses: `assets/fonts/remixicon.woff2`, `assets/css/icons.css`). Copyright Remix Design. License: Apache License 2.0, see `assets/fonts/remixicon-LICENSE.txt`. Source: https://github.com/Remix-Design/RemixIcon
 
 == Changelog ==
 

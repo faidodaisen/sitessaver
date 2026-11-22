@@ -1821,10 +1821,10 @@ final class Database {
         // with `home_url = https://old.com` but the backup's DB can
         // legitimately contain HTTP variants (hardcoded assets, CDN
         // fallbacks, plugins that force-regenerate URLs). When migrating
-        // to a local dev site on HTTP (e.g. Laragon's feldatravel.test),
+        // to a local dev site on HTTP (such as http://example.test),
         // the replacer must swap BOTH `https://old.com` AND `http://old.com`
-        // to the destination's canonical URL, otherwise Breakdance renders
-        // `<img src="https://feldatravel.test/...">` on a server that only
+        // to the destination's canonical URL, otherwise a page builder renders
+        // `<img src="https://example.test/...">` on a server that only
         // answers HTTP, and the browser shows a broken image.
         //
         // We derive bare hosts from both old_url and new_url, then build

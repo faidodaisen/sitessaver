@@ -106,11 +106,9 @@ final class GDrive {
     public static function handle_callback(): array {
         // An OAuth redirect cannot carry a WordPress nonce; the one-time
         // `state` value issued before the redirect is checked below instead.
-        // phpcs:disable WordPress.Security.NonceVerification.Recommended
         $refresh_token = sanitize_text_field(wp_unslash($_GET['sitessaver_gdrive_token'] ?? ''));
         $status        = sanitize_text_field(wp_unslash($_GET['sitessaver_gdrive_status'] ?? ''));
         $received_state = sanitize_text_field(wp_unslash($_GET['state'] ?? ''));
-        // phpcs:enable WordPress.Security.NonceVerification.Recommended
 
         if ($refresh_token === '' || $status !== 'connected') {
             return ['success' => false, 'message' => __('Google Drive connection failed.', 'sitessaver')];
@@ -931,20 +929,9 @@ final class GDrive {
          * Drive could not scan. It is a no-op for unflagged files, so it is
          * safe to send unconditionally. This is the user's own backup, which
          * this same plugin uploaded.
-         *
-         * Also pass a stall guard: if the transfer delivers less than 1 byte/s
-         * for 30s straight, fail fast with a clear message instead of hanging
-         * for the full timeout and letting PHP-FPM kill the request first.
          */
         $media_url = self::API_URL . '/files/' . rawurlencode($file_id)
             . '?alt=media&acknowledgeAbuse=true&supportsAllDrives=true';
-
-        $stall_guard = static function ($handle) {
-            // The download itself uses wp_remote_get(); this only adds a stall timeout to WP's own cURL handle via the http_api_curl hook, which the HTTP API has no argument for.
-            curl_setopt($handle, CURLOPT_LOW_SPEED_LIMIT, 1); // phpcs:ignore WordPress.WP.AlternativeFunctions.curl_curl_setopt
-            curl_setopt($handle, CURLOPT_LOW_SPEED_TIME, 30); // phpcs:ignore WordPress.WP.AlternativeFunctions.curl_curl_setopt
-        };
-        add_action('http_api_curl', $stall_guard);
 
         $response = wp_remote_get($media_url, [
             'headers'  => ['Authorization' => 'Bearer ' . $token],
@@ -952,8 +939,6 @@ final class GDrive {
             'stream'   => true,
             'filename' => $staged,
         ]);
-
-        remove_action('http_api_curl', $stall_guard);
 
         if (is_wp_error($response)) {
             @unlink($staged);

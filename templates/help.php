@@ -104,7 +104,10 @@
                 <?php
                 $sitessaver_ls_on    = \SitesSaver\Background::is_litespeed();
                 $sitessaver_ls_has   = \SitesSaver\Background::rules_installed();
-                $sitessaver_ls_state = isset($_GET['sitessaver_rule']) ? sanitize_key(wp_unslash($_GET['sitessaver_rule'])) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- display only.
+                $sitessaver_ls_state = '';
+                if (isset($_GET['sitessaver_rule'], $_GET['sitessaver_rule_nonce']) && wp_verify_nonce(sanitize_text_field(wp_unslash($_GET['sitessaver_rule_nonce'])), 'sitessaver_rule')) {
+                    $sitessaver_ls_state = sanitize_key(wp_unslash($_GET['sitessaver_rule']));
+                }
                 ?>
                 <div class="sitessaver-storage-status">
                     <?php if ($sitessaver_ls_state === 'added') : ?>

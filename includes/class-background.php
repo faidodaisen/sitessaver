@@ -303,7 +303,7 @@ final class Background {
         }
 
         wp_safe_redirect(add_query_arg(
-            ['page' => 'sitessaver-help', 'sitessaver_rule' => $result],
+            ['page' => 'sitessaver-help', 'sitessaver_rule' => $result, 'sitessaver_rule_nonce' => wp_create_nonce('sitessaver_rule')],
             admin_url('admin.php')
         ) . '#sitessaver-litespeed');
         exit;
