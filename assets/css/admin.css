@@ -1,6 +1,6 @@
 /* SitesSaver admin styles */
 
-:root {
+:where(.sitessaver-wrap, .sitessaver-modal-backdrop, .ss-dialog-backdrop, .ss-toast-stack) {
     /* Color Palette */
     --ss-bg: #f0f0f1; 
     --ss-surface: #ffffff;
@@ -77,7 +77,7 @@
 }
 
 /* Utility Buttons */
-.btn {
+:where(.sitessaver-wrap, .sitessaver-modal-backdrop, .ss-dialog-backdrop, .ss-toast-stack) .btn {
     display: inline-flex;
     align-items: center;
     gap: 8px;
@@ -92,36 +92,36 @@
     line-height: 1.4;
 }
 
-.btn-success {
+:where(.sitessaver-wrap, .sitessaver-modal-backdrop, .ss-dialog-backdrop, .ss-toast-stack) .btn-success {
     background-color: var(--ss-success);
     color: white;
     border-color: var(--ss-success);
     box-shadow: var(--ss-shadow-sm);
 }
 
-.btn-success:hover {
+:where(.sitessaver-wrap, .sitessaver-modal-backdrop, .ss-dialog-backdrop, .ss-toast-stack) .btn-success:hover {
     background-color: var(--ss-success-hover);
     border-color: var(--ss-success-hover);
     transform: translateY(-1px);
 }
 
-.btn-primary {
+:where(.sitessaver-wrap, .sitessaver-modal-backdrop, .ss-dialog-backdrop, .ss-toast-stack) .btn-primary {
     background-color: var(--ss-primary);
     color: white;
     border-color: var(--ss-primary);
 }
 
-.btn-primary:hover {
+:where(.sitessaver-wrap, .sitessaver-modal-backdrop, .ss-dialog-backdrop, .ss-toast-stack) .btn-primary:hover {
     background-color: var(--ss-primary-hover);
 }
 
-.btn-outline {
+:where(.sitessaver-wrap, .sitessaver-modal-backdrop, .ss-dialog-backdrop, .ss-toast-stack) .btn-outline {
     background-color: transparent;
     color: var(--ss-primary);
     border-color: var(--ss-primary);
 }
 
-.btn-outline:hover {
+:where(.sitessaver-wrap, .sitessaver-modal-backdrop, .ss-dialog-backdrop, .ss-toast-stack) .btn-outline:hover {
     background-color: rgba(34, 113, 177, 0.05);
 }
 
@@ -237,30 +237,30 @@
     background-color: #fcfcfc;
 }
 
-.cell-filename {
+:where(.sitessaver-wrap, .sitessaver-modal-backdrop, .ss-dialog-backdrop, .ss-toast-stack) .cell-filename {
     display: flex;
     align-items: center;
     gap: 12px;
     font-weight: 500;
 }
 
-.cell-filename i {
+:where(.sitessaver-wrap, .sitessaver-modal-backdrop, .ss-dialog-backdrop, .ss-toast-stack) .cell-filename i {
     font-size: 24px;
     color: var(--ss-text-muted);
 }
 
-.cell-label {
+:where(.sitessaver-wrap, .sitessaver-modal-backdrop, .ss-dialog-backdrop, .ss-toast-stack) .cell-label {
     font-size: 14px;
     font-weight: 500;
 }
 
-.cell-meta {
+:where(.sitessaver-wrap, .sitessaver-modal-backdrop, .ss-dialog-backdrop, .ss-toast-stack) .cell-meta {
     font-size: 13px;
     color: var(--ss-text-muted);
 }
 
 /* State Indicators */
-.badge {
+:where(.sitessaver-wrap, .sitessaver-modal-backdrop, .ss-dialog-backdrop, .ss-toast-stack) .badge {
     display: inline-flex;
     padding: 4px 10px;
     border-radius: 20px;
@@ -268,16 +268,16 @@
     font-weight: 600;
 }
 
-.badge-gray { background: #f0f0f1; color: var(--ss-text-muted); }
-.badge-blue { background: rgba(34, 113, 177, 0.1); color: var(--ss-primary); }
-.badge-red  { background: rgba(var(--ss-danger-rgb), 0.1); color: var(--ss-danger); }
+:where(.sitessaver-wrap, .sitessaver-modal-backdrop, .ss-dialog-backdrop, .ss-toast-stack) .badge-gray { background: #f0f0f1; color: var(--ss-text-muted); }
+:where(.sitessaver-wrap, .sitessaver-modal-backdrop, .ss-dialog-backdrop, .ss-toast-stack) .badge-blue { background: rgba(34, 113, 177, 0.1); color: var(--ss-primary); }
+:where(.sitessaver-wrap, .sitessaver-modal-backdrop, .ss-dialog-backdrop, .ss-toast-stack) .badge-red  { background: rgba(var(--ss-danger-rgb), 0.1); color: var(--ss-danger); }
 
-.action-btns {
+:where(.sitessaver-wrap, .sitessaver-modal-backdrop, .ss-dialog-backdrop, .ss-toast-stack) .action-btns {
     display: flex;
     gap: 6px;
 }
 
-.btn-icon {
+:where(.sitessaver-wrap, .sitessaver-modal-backdrop, .ss-dialog-backdrop, .ss-toast-stack) .btn-icon {
     width: 32px;
     height: 32px;
     border-radius: var(--ss-radius);
@@ -291,12 +291,12 @@
     transition: all 0.2s;
 }
 
-.btn-icon:hover {
+:where(.sitessaver-wrap, .sitessaver-modal-backdrop, .ss-dialog-backdrop, .ss-toast-stack) .btn-icon:hover {
     background: var(--ss-bg);
     color: var(--ss-text-main);
 }
 
-.btn-icon.danger:hover {
+:where(.sitessaver-wrap, .sitessaver-modal-backdrop, .ss-dialog-backdrop, .ss-toast-stack) .btn-icon.danger:hover {
     color: var(--ss-danger);
     border-color: var(--ss-danger);
 }
@@ -448,8 +448,8 @@
     justify-content: space-between;
     gap: 12px;
 }
-.step-label { color: var(--ss-text-main); min-width: 0; }
-.step-pct { color: var(--ss-primary); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+:where(.sitessaver-wrap, .sitessaver-modal-backdrop, .ss-dialog-backdrop, .ss-toast-stack) .step-label { color: var(--ss-text-main); min-width: 0; }
+:where(.sitessaver-wrap, .sitessaver-modal-backdrop, .ss-dialog-backdrop, .ss-toast-stack) .step-pct { color: var(--ss-primary); font-variant-numeric: tabular-nums; flex-shrink: 0; }
 
 /* Empty States */
 .ss-empty-state {
@@ -768,7 +768,7 @@
     font-style: italic;
 }
 
-.ri-spin {
+:where(.sitessaver-wrap, .sitessaver-modal-backdrop, .ss-dialog-backdrop, .ss-toast-stack) .ri-spin {
     display: inline-block;
     animation: sitessaver-spin 0.8s linear infinite;
 }
@@ -1700,7 +1700,7 @@ body.ss-modal-open {
 }
 
 .ss-field-group code,
-.description code {
+:where(.sitessaver-wrap, .sitessaver-modal-backdrop, .ss-dialog-backdrop, .ss-toast-stack) .description code {
     font-size: 12px;
     background: #f0f0f1;
     padding: 2px 6px;
@@ -1709,7 +1709,7 @@ body.ss-modal-open {
 }
 
 /* Help page: PayPal donate button (was an inline <style> in templates/help.php). */
-.pp-4WBDKC57TT5DL {
+:where(.sitessaver-wrap, .sitessaver-modal-backdrop, .ss-dialog-backdrop, .ss-toast-stack) .pp-4WBDKC57TT5DL {
     text-align: center;
     border: none;
     border-radius: 0.25rem;
