@@ -18,7 +18,7 @@ final class Import {
     private const PROGRESS_KEY = 'sitessaver_import_progress';
 
     /**
-     * Ordered restore phases, in the order run_from_dir() moves through
+     * Ordered restore phases, in the order restore_slice() moves through
      * them. Shared with the admin UI (via Ajax::localize) so the step
      * checklist can never drift from what the backend reports: both sides
      * read this one array.
@@ -27,7 +27,7 @@ final class Import {
      */
     public static function phases(): array {
         return [
-            'extract'  => __('Extracting archive...', 'sitessaver'),
+            'extract'  => __('Reading the backup...', 'sitessaver'),
             'manifest' => __('Validating backup...', 'sitessaver'),
             'database' => __('Restoring database...', 'sitessaver'),
             'files'    => __('Restoring files...', 'sitessaver'),
@@ -67,33 +67,6 @@ final class Import {
     public static function get_progress(): array {
         $progress = get_transient(self::PROGRESS_KEY);
         return is_array($progress) ? $progress : [];
-    }
-
-    /**
-     * Import from a backup file in storage.
-     *
-     * @param string $backup_file Backup filename (in storage dir).
-     * @return array{success: bool, message: string}
-     */
-    public static function from_backup(string $backup_file): array {
-        delete_transient(self::PROGRESS_KEY);
-
-        $zip_path = sitessaver_storage_dir() . '/' . sanitize_file_name($backup_file);
-
-        if (!file_exists($zip_path)) {
-            return ['success' => false, 'message' => __('Backup file not found.', 'sitessaver')];
-        }
-
-        // An incremental backup on its own is not a site. It is the delta
-        // since its parent. Restoring one means replaying its whole chain,
-        // oldest first, into a single merged tree.
-        $set = self::chain_restore_set($zip_path, sanitize_file_name($backup_file));
-
-        if (count($set) > 1) {
-            return self::run_chain($set);
-        }
-
-        return self::run($zip_path);
     }
 
     /**
@@ -155,12 +128,9 @@ final class Import {
      * @return array<string, mixed>|null
      */
     private static function peek_manifest(string $zip_path): ?array {
-        if (!class_exists('ZipArchive')) {
-            return null;
-        }
-
-        $zip = new \ZipArchive();
-        if ($zip->open($zip_path) !== true) {
+        try {
+            $zip = Archive::open($zip_path);
+        } catch (\RuntimeException $e) {
             return null;
         }
 
@@ -176,274 +146,6 @@ final class Import {
         return is_array($data) ? $data : null;
     }
 
-    /**
-     * Restore a chain: extract every member oldest-first into one merged
-     * tree, applying each member's deletions as it goes, then hand the
-     * result to the normal restore path.
-     *
-     * Extracting newest-last means the final tree holds the newest version
-     * of every file, and the newest `database.sql` and `manifest.json`,
-     * which is exactly the state the chosen backup represents.
-     *
-     * @param list<string> $set Filenames, oldest first.
-     * @return array{success: bool, message: string}
-     */
-    private static function run_chain(array $set): array {
-        $storage = sitessaver_storage_dir();
-
-        // Verify the whole chain BEFORE touching the live site. A restore
-        // that discovers a missing member halfway through has already
-        // overwritten files with a partial state.
-        $missing = [];
-        foreach ($set as $member) {
-            if (!is_readable($storage . '/' . $member)) {
-                $missing[] = $member;
-            }
-        }
-
-        if ($missing !== []) {
-            return [
-                'success' => false,
-                'message' => sprintf(
-                    /* translators: %s: comma-separated list of backup filenames. */
-                    __('This incremental backup cannot be restored on its own. These earlier backups in its chain are missing: %s', 'sitessaver'),
-                    implode(', ', $missing)
-                ),
-            ];
-        }
-
-        $merged = SITESSAVER_TEMP_DIR . '/chain-' . wp_generate_password(20, false);
-
-        try {
-            sitessaver_cleanup_temp();
-            wp_mkdir_p($merged);
-
-            foreach ($set as $member) {
-                self::tick('extract');
-                if (!Archive::extract($storage . '/' . $member, $merged)) {
-                    throw new \RuntimeException(sprintf(
-                        /* translators: %s: backup filename. */
-                        __('Failed to extract %s while rebuilding the backup chain.', 'sitessaver'),
-                        $member
-                    ));
-                }
-
-                // Apply this member's deletions immediately, not at the end:
-                // a path deleted in member 2 and recreated in member 3 must
-                // survive, and only in-order application gets that right.
-                $manifest = self::read_manifest($merged);
-                if (is_array($manifest)) {
-                    self::apply_deletions($merged, $manifest['deleted'] ?? []);
-                }
-            }
-
-            // The merged tree is now byte-for-byte what a full backup of that
-            // moment would have contained, so the ordinary restore applies.
-            return self::run_from_dir($merged, basename((string) end($set)));
-
-        } catch (\Throwable $e) {
-            delete_transient(self::PROGRESS_KEY);
-            sitessaver_cleanup_temp($merged);
-
-            return ['success' => false, 'message' => $e->getMessage()];
-        }
-    }
-
-    /**
-     * Remove chain-deleted paths from the merged tree.
-     *
-     * Paths are relative to the archive root and are validated against it:
-     * a manifest is data from a file the user supplied, so it is not
-     * permitted to reach outside the directory being assembled.
-     *
-     * @param mixed $paths
-     */
-    private static function apply_deletions(string $root, $paths): void {
-        if (!is_array($paths)) {
-            return;
-        }
-
-        $real_root = realpath($root);
-        if ($real_root === false) {
-            return;
-        }
-
-        foreach ($paths as $relative) {
-            if (!is_string($relative) || $relative === '') {
-                continue;
-            }
-
-            $relative = str_replace('\\', '/', $relative);
-
-            if (Archive::is_unsafe_relative_path($relative)) {
-                continue;
-            }
-
-            $target = $real_root . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $relative);
-
-            if (!file_exists($target)) {
-                continue;
-            }
-
-            $real_target = realpath($target);
-            if ($real_target === false
-                || !str_starts_with($real_target, $real_root . DIRECTORY_SEPARATOR)
-            ) {
-                continue;
-            }
-
-            if (is_dir($real_target)) {
-                sitessaver_rm_recursive($real_target);
-            } else {
-                @unlink($real_target);
-            }
-        }
-    }
-
-    /**
-     * Check the first 4 bytes for the ZIP local-file-header (PK\x03\x04) or
-     * empty-archive (PK\x05\x06) magic.
-     */
-    private static function is_zip_file(string $path): bool {
-        $handle = @fopen($path, 'rb');
-        if ($handle === false) {
-            return false;
-        }
-        $header = fread($handle, 4);
-        fclose($handle);
-
-        return $header === "PK\x03\x04" || $header === "PK\x05\x06";
-    }
-
-    /**
-     * Run the import process.
-     */
-    private static function run(string $zip_path): array {
-        $temp_dir = SITESSAVER_TEMP_DIR . '/import-' . wp_generate_password(20, false);
-
-        try {
-            // Opportunistic stale-only sweep (won't touch active export temps).
-            sitessaver_cleanup_temp();
-            wp_mkdir_p($temp_dir);
-            $blocked = Environment::probe_write($temp_dir);
-            if ($blocked !== '') {
-                throw new \RuntimeException($blocked);
-            }
-
-            // 1. Extract archive.
-            self::tick('extract');
-            if (!Archive::extract($zip_path, $temp_dir)) {
-                throw new \RuntimeException(__('Failed to extract backup archive.', 'sitessaver'));
-            }
-
-            return self::run_from_dir($temp_dir, basename($zip_path));
-
-        } catch (\Throwable $e) {
-            delete_transient(self::PROGRESS_KEY);
-            sitessaver_cleanup_temp($temp_dir);
-
-            return [
-                'success' => false,
-                'message' => $e->getMessage(),
-            ];
-        }
-    }
-
-    /**
-     * Restore from an already-extracted backup tree.
-     *
-     * Split out of run() so a rebuilt chain and a plain single archive go
-     * through byte-for-byte the same restore, rather than two code paths
-     * that can drift apart.
-     *
-     * @param string $source_label Filename to report to the completion hook.
-     * @return array{success: bool, message: string}
-     */
-    private static function run_from_dir(string $temp_dir, string $source_label): array {
-        $db_state = [];
-        try {
-            // 2. Read and validate manifest.
-            self::tick('manifest');
-            $manifest = self::read_manifest($temp_dir);
-            if ($manifest === null) {
-                throw new \RuntimeException(__('Invalid backup: manifest.json not found.', 'sitessaver'));
-            }
-            if (!self::is_sitessaver_manifest($manifest)) {
-                throw new \RuntimeException(__('This ZIP is not a SitesSaver backup. Please upload a file created by the SitesSaver Export tool.', 'sitessaver'));
-            }
-
-            // 3. Restore database.
-            $db_file = $temp_dir . '/database.sql';
-            if (file_exists($db_file)) {
-                self::tick('database');
-                $old_url = $manifest['home_url'] ?? '';
-                $new_url = home_url();
-
-                // Source table prefix: from the manifest (1.2+), else sniffed
-                // from the dump itself so older backups migrate too.
-                $old_prefix = (string) ($manifest['db_prefix'] ?? '');
-                if ($old_prefix === '') {
-                    $old_prefix = Database::detect_dump_prefix($db_file);
-                }
-
-                // Into staging tables first, switched in only when complete:
-                // a failure before the switch leaves the live site untouched.
-                if (!Database::import($db_file, $old_url, $new_url, $old_prefix, true)) {
-                    throw new \RuntimeException(__('Failed to import database.', 'sitessaver'));
-                }
-                $db_state = Database::$last_import;
-
-                // The options table is now the backup's. Listeners (the
-                // background restore job) re-assert anything the rest of
-                // this restore depends on.
-                do_action('sitessaver_database_restored');
-            }
-
-            // 4. Restore wp-content files.
-            $content_src = $temp_dir . '/wp-content';
-            if (is_dir($content_src)) {
-                self::tick('files');
-                $old_url = $manifest['home_url'] ?? '';
-                $new_url = home_url();
-                self::restore_content($content_src, $old_url, $new_url);
-            }
-
-            // 5. Post-import tasks.
-            self::tick('finalize');
-            self::post_import($manifest);
-
-            // 6. Cleanup, scoped to THIS import only.
-            sitessaver_cleanup_temp($temp_dir);
-            Database::drop_previous_tables($db_state);
-
-            delete_transient(self::PROGRESS_KEY);
-            do_action('sitessaver_import_complete', $source_label);
-
-            return [
-                'success' => true,
-                'message' => __('Site restored successfully. Please log in again.', 'sitessaver'),
-            ];
-
-        } catch (\Throwable $e) {
-            delete_transient(self::PROGRESS_KEY);
-            sitessaver_cleanup_temp($temp_dir);
-
-            // Put the previous database back (or drop the half-staged copy).
-            $message = $e->getMessage();
-            if ($db_state === [] ) {
-                $db_state = Database::failed_state();
-            }
-            if (!empty($db_state['stage']) && Database::rollback_swap($db_state) && !empty($db_state['swapped'])) {
-                $message .= ' ' . __('The previous database was put back.', 'sitessaver');
-            }
-
-            return [
-                'success' => false,
-                'message' => $message,
-            ];
-        }
-    }
-
     // ------------------------------------------------------------------
     // Resumable restore (background jobs, any host time limit)
     // ------------------------------------------------------------------
@@ -454,10 +156,12 @@ final class Import {
      * A host that stops every request after ~30 s cannot restore a real site
      * in one request. Each call does as much as $should_stop allows and
      * leaves its place in $c (committed through $commit); the next call
-     * continues. Stages: extract (every chain member, entry by entry, large
-     * entries resumable mid-file), then manifest, then database (staged, switched
-     * in atomically at the end), then files (from a list, one file at a time,
-     * large files resumable), then finalize.
+     * continues. Stages: extract (list what every chain member holds and
+     * take out database.sql and manifest.json, the two data files the
+     * restore reads), then manifest, then database (staged, switched in
+     * atomically at the end), then files (each file written straight from
+     * the backup archive to its place, large files resumable), then
+     * finalize. Site files are never unpacked into a staging folder.
      *
      * @param array<string, mixed> $c Cursor; [] to start.
      * @return bool True when the restore is complete.
@@ -470,6 +174,9 @@ final class Import {
         };
 
         if (empty($c['stage'])) {
+            if (!Requirements::can_restore()) {
+                throw new \RuntimeException('The PHP zip extension is missing on this server.');
+            }
             $file = sanitize_file_name($backup_file);
             if (!file_exists($storage . '/' . $file)) {
                 throw new \RuntimeException(__('Backup file not found.', 'sitessaver'));
@@ -489,7 +196,7 @@ final class Import {
                 'set'   => array_values($set),
                 'm'     => 0,
                 'x'     => [],
-                'temp'  => SITESSAVER_TEMP_DIR . '/import-' . wp_generate_password(20, false),
+                'temp'  => sitessaver_temp_dir() . '/import-' . wp_generate_password(20, false),
                 'label' => basename((string) end($set)),
             ];
             wp_mkdir_p($c['temp']);
@@ -507,38 +214,48 @@ final class Import {
 
         $temp = (string) $c['temp'];
 
-        // 1. Extract (every member of a chain, oldest first).
+        // 1. Read the backup: list its files (the newest copy of each, for a
+        //    chain) and take out database.sql and manifest.json.
         if ($c['stage'] === 'extract') {
             self::tick('extract');
-            $set = (array) $c['set'];
-            while ((int) $c['m'] < count($set)) {
-                $member = (string) $set[(int) $c['m']];
-                $x      = (array) $c['x'];
-                $done   = Archive::extract_resumable($storage . '/' . $member, $temp, $x, $should_stop, static function (bool $force) use (&$c, &$x, $save): void {
-                    $c['x'] = $x;
-                    $save($force);
-                });
-                $c['x'] = $x;
-                if (!$done) {
-                    return false;
-                }
-                // Apply this member's deletions now, not at the end: a path
-                // deleted in member 2 and recreated in member 3 must survive.
-                if (count($set) > 1) {
-                    $manifest = self::read_manifest($temp);
-                    if (is_array($manifest)) {
-                        self::apply_deletions($temp, $manifest['deleted'] ?? []);
-                    }
-                }
-                $c['m'] = (int) $c['m'] + 1;
-                $c['x'] = [];
+            if (empty($c['plan'])) {
+                $c['plan'] = self::write_plan((array) $c['set'], $storage, $temp . '.plan');
+                $c['dbo']  = 0;
                 $save(true);
-                if ($should_stop()) {
+            }
+            $set  = (array) $c['set'];
+            $plan = (array) $c['plan'];
+            if ((int) $plan['manifest'] >= 0 && !is_file($temp . '/manifest.json')) {
+                $zip = Archive::open($storage . '/' . (string) $set[(int) $plan['manifest']]);
+                try {
+                    $raw = $zip->getFromName('manifest.json');
+                } finally {
+                    $zip->close();
+                }
+                if (!is_string($raw) || file_put_contents($temp . '/manifest.json', $raw) === false) {
+                    throw new \RuntimeException('Failed to extract backup archive: cannot read manifest.json');
+                }
+            }
+            if ((int) $plan['db'] >= 0 && empty($c['dbx'])) {
+                $zip = Archive::open($storage . '/' . (string) $set[(int) $plan['db']]);
+                try {
+                    $off  = (int) ($c['dbo'] ?? 0);
+                    $done = Archive::extract_entry($zip, 'database.sql', (int) $plan['db_size'], $temp . '/database.sql', $off, $should_stop);
+                    $c['dbo'] = $off;
+                } finally {
+                    $zip->close();
+                }
+                if (!$done) {
+                    $save(true);
                     return false;
                 }
+                $c['dbx'] = true;
             }
             $c['stage'] = 'manifest';
             $save(true);
+            if ($should_stop()) {
+                return false;
+            }
         }
 
         // 2. Manifest.
@@ -624,10 +341,9 @@ final class Import {
 
         // 4. wp-content files.
         if ($c['stage'] === 'files') {
-            $content_src = $temp . '/wp-content';
-            if (is_dir($content_src)) {
+            if ((int) ($c['plan']['files'] ?? 0) > 0) {
                 self::tick('files');
-                if (!self::restore_files_slice($c, $content_src, $old_url, $new_url, $should_stop, $save)) {
+                if (!self::restore_files_slice($c, $storage, $old_url, $new_url, $should_stop, $save)) {
                     return false;
                 }
             }
@@ -636,12 +352,14 @@ final class Import {
             if (function_exists('opcache_reset')) {
                 @opcache_reset();
             }
+            // Last point where a failure still rolls the files back.
+            do_action('sitessaver_restore_files_written', (string) ($c['label'] ?? ''));
             $c['stage'] = 'finalize';
             $save(true);
         }
 
         // The restore can no longer fail in a way that needs the replaced
-        // files: drop them, a slice at a time.
+        // files: drop their archive, a slice at a time.
         if (!empty($c['fl']['rb']) && is_dir((string) $c['fl']['rb'])) {
             if (!self::remove_tree_slice((string) $c['fl']['rb'], $should_stop)) {
                 $save(true);
@@ -656,9 +374,10 @@ final class Import {
         self::tick('finalize');
         self::post_import((array) ($c['manifest'] ?? []));
         sitessaver_cleanup_temp($temp);
-        $list = $temp . '.files';
-        if (is_file($list)) {
-            unlink($list);
+        foreach ([$temp . '.plan', $temp . '.files'] as $list) {
+            if (is_file($list)) {
+                unlink($list);
+            }
         }
         delete_transient(self::PROGRESS_KEY);
         do_action('sitessaver_import_complete', (string) ($c['label'] ?? ''));
@@ -667,133 +386,256 @@ final class Import {
         return true;
     }
 
+    /** Most originals kept per rollback archive part, by count and by size. */
+    private const ROLLBACK_FILES = 400;
+    private const ROLLBACK_BYTES = 128 * 1024 * 1024;
+    /** Most plan lines looked at for one part. */
+    private const BATCH_LINES = 2000;
+
     /**
-     * The files step, from a list built once, one file per unit of work.
+     * List what the backup holds, one line per entry under wp-content:
+     * "member TAB size TAB name". For a chain, the newest copy of every
+     * path wins and each member's deletions are applied in order, so the
+     * list is exactly what a full backup of that moment would contain.
+     *
+     * @param list<string> $set Filenames, oldest first.
+     * @return array{db: int, db_size: int, manifest: int, wpe: bool, files: int}
+     */
+    private static function write_plan(array $set, string $storage, string $plan_file): array {
+        $info   = ['db' => -1, 'db_size' => 0, 'manifest' => -1, 'wpe' => false, 'files' => 0];
+        $single = count($set) === 1;
+        $map    = [];
+        $out    = fopen($plan_file, 'wb');
+        if ($out === false) {
+            throw new \RuntimeException('Server refused the restore: cannot write the restore file list (' . Environment::WRITE_BLOCKED . ')');
+        }
+
+        $emit = static function (int $m, int $size, string $name) use ($out, &$info): void {
+            if (str_starts_with($name, 'wp-content/mu-plugins/wpengine-common/')) {
+                $info['wpe'] = true;
+            }
+            fwrite($out, $m . "\t" . $size . "\t" . $name . "\n");
+            $info['files']++;
+        };
+
+        try {
+            foreach (array_values($set) as $m => $member) {
+                $zip = Archive::open($storage . '/' . $member);
+                try {
+                    Archive::each_entry($zip, static function (string $name, int $size) use ($m, $single, &$map, &$info, $emit): void {
+                        if ($name === 'database.sql') {
+                            $info['db']      = $m;
+                            $info['db_size'] = $size;
+                            return;
+                        }
+                        if ($name === 'manifest.json') {
+                            $info['manifest'] = $m;
+                            return;
+                        }
+                        if (!str_starts_with($name, 'wp-content/') || str_contains($name, "\n") || str_contains($name, "\t") || str_contains($name, "\r")) {
+                            return;
+                        }
+                        if ($single) {
+                            $emit($m, $size, $name);
+                        } else {
+                            $map[$name] = [$m, $size];
+                        }
+                    });
+                    if (!$single) {
+                        $raw      = $zip->getFromName('manifest.json');
+                        $manifest = is_string($raw) ? json_decode($raw, true) : null;
+                        if (is_array($manifest)) {
+                            self::drop_deleted($map, $manifest['deleted'] ?? []);
+                        }
+                    }
+                } finally {
+                    $zip->close();
+                }
+            }
+            foreach ($map as $name => [$m, $size]) {
+                $emit((int) $m, (int) $size, (string) $name);
+            }
+        } finally {
+            fclose($out);
+        }
+
+        return $info;
+    }
+
+    /**
+     * Remove paths a chain member deleted (files, or whole folders) from
+     * the list built so far. Paths come from a file the user supplied, so
+     * unsafe ones are ignored.
+     *
+     * @param array<string, array{0: int, 1: int}> $map
+     * @param mixed                                $paths
+     */
+    private static function drop_deleted(array &$map, $paths): void {
+        if (!is_array($paths) || $paths === []) {
+            return;
+        }
+        $gone = [];
+        foreach ($paths as $p) {
+            if (is_string($p) && $p !== '' && !Archive::is_unsafe_relative_path($p)) {
+                $gone[rtrim(str_replace('\\', '/', $p), '/')] = true;
+            }
+        }
+        if ($gone === []) {
+            return;
+        }
+        foreach (array_keys($map) as $name) {
+            $p = rtrim((string) $name, '/');
+            while ($p !== '' && $p !== '.') {
+                if (isset($gone[$p])) {
+                    unset($map[$name]);
+                    break;
+                }
+                $up = dirname($p);
+                if ($up === $p) {
+                    break;
+                }
+                $p = $up;
+            }
+        }
+    }
+
+    /**
+     * Where one plan line goes, or null when it is not restored (unknown
+     * area, a skipped folder).
+     *
+     * @param array<string, array{dest: string, skip: list<string>, rewrite: bool}> $dirs
+     * @return array{m: int, size: int, name: string, key: string, rel: string, dest: string, dir: bool, rewrite: bool}|null
+     */
+    private static function plan_target(string $line, array $dirs): ?array {
+        $parts = explode("\t", rtrim($line, "\n"), 3);
+        if (count($parts) !== 3) {
+            return null;
+        }
+        [$m, $size, $name] = $parts;
+        $inner = substr($name, strlen('wp-content/'));
+        $area  = (string) strtok($inner, '/');
+        if (!isset($dirs[$area])) {
+            return null;
+        }
+        $rel = rtrim(substr($inner, strlen($area) + 1), '/');
+        if ($rel === '' || (!empty($dirs[$area]['skip']) && in_array(strtok($rel, '/'), $dirs[$area]['skip'], true))) {
+            return null;
+        }
+        return [
+            'm'       => (int) $m,
+            'size'    => (int) $size,
+            'name'    => $name,
+            'key'     => $area . '/' . $rel,
+            'rel'     => $rel,
+            'dest'    => $dirs[$area]['dest'] . '/' . $rel,
+            'dir'     => str_ends_with($name, '/'),
+            'rewrite' => $dirs[$area]['rewrite'],
+        ];
+    }
+
+    /**
+     * The files step. Works through the plan in parts: for each part, the
+     * site files it is about to replace are first stored in a rollback ZIP
+     * (written with Zip_Writer, so it too can stop and continue), then each
+     * file of the part is written straight from the backup archive to its
+     * place. Files that did not exist yet are listed in `new`. A restore
+     * that fails later deletes those and puts the originals back from the
+     * rollback ZIPs (rollback_files()). No copy of a site file is ever
+     * left loose on disk.
      *
      * @param array<string, mixed> $c
      */
-    private static function restore_files_slice(array &$c, string $content_src, string $old_url, string $new_url, callable $should_stop, callable $save): bool {
-        [$dirs, $pairs] = self::content_targets($old_url, $new_url, $content_src);
-        $list_file      = (string) $c['temp'] . '.files';
+    private static function restore_files_slice(array &$c, string $storage, string $old_url, string $new_url, callable $should_stop, callable $save): bool {
+        [$dirs, $pairs] = self::content_targets($old_url, $new_url, !empty($c['plan']['wpe']));
+        $plan_file      = (string) $c['temp'] . '.plan';
 
         if (empty($c['fl'])) {
-            $fh = fopen($list_file, 'wb');
-            if ($fh === false) {
-                throw new \RuntimeException('Could not write the restore file list.');
-            }
-            $host_skipped = [];
-            foreach ($dirs as $name => $cfg) {
-                $src = $content_src . '/' . $name;
-                if (!is_dir($src)) {
-                    continue;
-                }
-                if ($name === 'mu-plugins') {
-                    foreach ((array) $cfg['skip'] as $entry) {
-                        if (file_exists($src . '/' . $entry)) {
-                            $host_skipped[] = $entry;
-                        }
-                    }
-                }
-                $it = new \RecursiveIteratorIterator(
-                    new \RecursiveDirectoryIterator($src, \RecursiveDirectoryIterator::SKIP_DOTS),
-                    \RecursiveIteratorIterator::SELF_FIRST
-                );
-                foreach ($it as $file) {
-                    $relative = ltrim(str_replace('\\', '/', substr($file->getPathname(), strlen($src))), '/');
-                    if ($relative === '' || str_contains($relative, "\n") || str_contains($relative, "\t")) {
-                        continue;
-                    }
-                    if (!empty($cfg['skip']) && in_array(strtok($relative, '/'), $cfg['skip'], true)) {
-                        continue;
-                    }
-                    fwrite($fh, $name . "\t" . ($file->isDir() ? 'D' : 'F') . "\t" . $relative . "\n");
-                }
-            }
-            fclose($fh);
-            if ($host_skipped !== []) {
-                Log::warning('restore_host_mu_plugins_skipped', 'Not restored, because they belong to the old hosting company and would break this site: mu-plugins/' . implode(', mu-plugins/', $host_skipped) . '. Filter sitessaver_host_mu_plugins to change this.');
-            }
+            self::log_host_skipped($plan_file, $dirs);
             $c['fl'] = [
                 'lp'       => 0,
                 'failures' => 0,
                 'failed'   => [],
-                // Every file this restore replaces is MOVED here first (a
-                // rename: no extra disk, no copy time), and every file it
-                // creates is listed in `new`. A restore that fails later
-                // puts both back (rollback_files()).
-                'rb'       => (string) $c['temp'] . '-prev',
+                'rb'       => (string) $c['temp'] . '/rollback',
                 'new'      => (string) $c['temp'] . '.new',
+                'part'     => 0,
+                'batch'    => null,
             ];
-            wp_mkdir_p($c['fl']['rb']);
+            wp_mkdir_p($c['fl']['rb'] . '/empty');
             $save(true);
         }
 
-        $fh = fopen($list_file, 'rb');
+        $fh = fopen($plan_file, 'rb');
         if ($fh === false) {
             throw new \RuntimeException('Could not read the restore file list.');
         }
-        fseek($fh, (int) $c['fl']['lp']);
+        $zips = [];
 
         try {
-            while (($line = fgets($fh)) !== false) {
-                $parts = explode("\t", rtrim($line, "\n"), 3);
-                if (count($parts) === 3 && isset($dirs[$parts[0]])) {
-                    [$name, $kind, $relative] = $parts;
-                    $cfg       = $dirs[$name];
-                    $src_path  = $content_src . '/' . $name . '/' . $relative;
-                    $dest_path = $cfg['dest'] . '/' . $relative;
+            while (true) {
+                if (!is_array($c['fl']['batch'] ?? null)) {
+                    $batch = self::plan_batch($fh, $c, $dirs);
+                    if ($batch === null) {
+                        break;
+                    }
+                    $c['fl']['batch'] = $batch;
+                    $save(true);
+                }
 
-                    if ($kind === 'D') {
-                        if (!is_dir($dest_path)) {
-                            wp_mkdir_p($dest_path);
-                        }
-                    } elseif (is_file($src_path)) {
-                        $parent = dirname($dest_path);
-                        if (!is_dir($parent)) {
-                            wp_mkdir_p($parent);
-                        }
-                        self::keep_previous($c, $name . '/' . $relative, $dest_path);
-                        $use_rewrite = $cfg['rewrite'] && $pairs !== [] && self::is_rewritable_text_file($src_path, $relative);
-                        if ($use_rewrite) {
-                            $ok = self::copy_with_url_rewrite($src_path, $dest_path, $pairs);
-                        } else {
-                            $res = Export::copy_file($src_path, $dest_path, $name . '/' . $relative);
-                            if ($res === 'paused') {
-                                // Large file, slice over: its .part is kept
-                                // and this same line runs again next time.
-                                $save(true);
-                                return false;
-                            }
-                            $ok = $res === 'ok';
-                        }
-                        if (!$ok) {
-                            $c['fl']['failures'] = (int) $c['fl']['failures'] + 1;
-                            if (count((array) $c['fl']['failed']) < 10) {
-                                $c['fl']['failed'][] = $name . '/' . $relative;
-                            }
-                            error_log('[SitesSaver] restore: copy failed for ' . $name . '/' . $relative);
-                            // Keep the site's own copy rather than leave a gap.
-                            $kept = (string) ($c['fl']['rb'] ?? '') . '/' . $name . '/' . $relative;
-                            if (!empty($c['fl']['rb']) && is_file($kept)) {
-                                if (is_file($dest_path)) {
-                                    @unlink($dest_path);
-                                }
-                                @rename($kept, $dest_path);
-                            }
-                        }
+                // Keep the originals of this part before any of them changes.
+                if ((int) $c['fl']['batch']['keep'] > 0 && empty($c['fl']['batch']['z']['done'])) {
+                    $rb    = (string) $c['fl']['rb'];
+                    $state = Zip_Writer::build(
+                        $rb . '/empty',
+                        $rb . '/rollback-' . (int) $c['fl']['part'] . '.zip',
+                        [],
+                        $rb . '/work',
+                        (array) $c['fl']['batch']['z'],
+                        $should_stop,
+                        static function (array $st, bool $force) use (&$c, $save): void {
+                            $c['fl']['batch']['z'] = $st;
+                            $save($force);
+                        },
+                        null,
+                        [$rb . '/part.txt']
+                    );
+                    if (empty($state['done'])) {
+                        $c['fl']['batch']['z'] = $state;
+                        $save(true);
+                        return false;
+                    }
+                    $c['fl']['batch']['z'] = ['done' => true];
+                    $save(true);
+                }
+
+                fseek($fh, (int) $c['fl']['batch']['wlp']);
+                while ((int) $c['fl']['batch']['wlp'] < (int) $c['fl']['batch']['to'] && ($line = fgets($fh)) !== false) {
+                    if (!self::restore_line($line, $dirs, $pairs, $c, $storage, $zips, $should_stop)) {
+                        $save(true);
+                        return false;
+                    }
+                    $c['fl']['batch']['wlp'] = (int) ftell($fh);
+                    $c['fl']['batch']['off'] = 0;
+                    do_action('sitessaver_heartbeat');
+                    $save(false);
+                    if ($should_stop()) {
+                        $save(true);
+                        return false;
                     }
                 }
 
-                $c['fl']['lp'] = (int) ftell($fh);
-                do_action('sitessaver_heartbeat');
-                $save(false);
+                $c['fl']['lp']    = (int) $c['fl']['batch']['to'];
+                $c['fl']['part']  = (int) $c['fl']['part'] + 1;
+                $c['fl']['batch'] = null;
+                $save(true);
                 if ($should_stop()) {
-                    $save(true);
                     return false;
                 }
             }
         } finally {
             fclose($fh);
+            foreach ($zips as $zip) {
+                $zip->close();
+            }
         }
 
         if ((int) $c['fl']['failures'] > 0) {
@@ -807,38 +649,187 @@ final class Import {
     }
 
     /**
-     * Before a restore writes $dest, move the file already there aside (or
-     * note that $dest is new). Idempotent: a replayed line finds the file
-     * already moved and leaves it.
+     * Pick the next part of the plan: list the existing files it replaces
+     * (for the rollback ZIP) and note the files it creates.
      *
+     * @param resource             $fh
      * @param array<string, mixed> $c
+     * @param array<string, array{dest: string, skip: list<string>, rewrite: bool}> $dirs
+     * @return array<string, mixed>|null Null when the plan is done.
      */
-    private static function keep_previous(array $c, string $key, string $dest): void {
-        $rb = (string) ($c['fl']['rb'] ?? '');
-        if ($rb === '') {
-            return;
+    private static function plan_batch($fh, array $c, array $dirs): ?array {
+        $from = (int) $c['fl']['lp'];
+        fseek($fh, $from);
+        $keep_list = fopen((string) $c['fl']['rb'] . '/part.txt', 'wb');
+        $new_list  = fopen((string) $c['fl']['new'], 'ab');
+        if ($keep_list === false || $new_list === false) {
+            throw new \RuntimeException('Server refused the restore: cannot write the rollback list (' . Environment::WRITE_BLOCKED . ')');
         }
-        $kept = $rb . '/' . $key;
-        if (file_exists($kept)) {
-            return; // moved by an earlier slice
-        }
-        if (is_file($dest)) {
-            $dir = dirname($kept);
-            if (!is_dir($dir)) {
-                wp_mkdir_p($dir);
+
+        $lines = 0;
+        $keep  = 0;
+        $bytes = 0;
+        try {
+            while (($line = fgets($fh)) !== false) {
+                $lines++;
+                $t = self::plan_target($line, $dirs);
+                if ($t !== null && !$t['dir']) {
+                    if (is_file($t['dest'])) {
+                        fwrite($keep_list, $t['key'] . "\0" . $t['dest'] . "\n");
+                        $keep++;
+                        $bytes += (int) @filesize($t['dest']);
+                    } elseif (!file_exists($t['dest'])) {
+                        fwrite($new_list, $t['dest'] . "\n");
+                    }
+                }
+                if ($keep >= self::ROLLBACK_FILES || $bytes >= self::ROLLBACK_BYTES || $lines >= self::BATCH_LINES) {
+                    break;
+                }
             }
-            if (!@rename($dest, $kept) && !@copy($dest, $kept)) {
-                error_log('[SitesSaver] restore: could not keep the previous copy of ' . $key);
-            }
-            return;
+            $to = (int) ftell($fh);
+        } finally {
+            fclose($keep_list);
+            fclose($new_list);
         }
-        @file_put_contents((string) $c['fl']['new'], $dest . "\n", FILE_APPEND | LOCK_EX);
+
+        if ($lines === 0) {
+            return null;
+        }
+        return ['to' => $to, 'wlp' => $from, 'keep' => $keep, 'z' => [], 'off' => 0];
     }
 
     /**
-     * Undo the files step: delete files the restore created, move the kept
-     * originals back. Resumable and idempotent (each original leaves the
-     * keep folder as it is moved back).
+     * Write one plan line to the site. Returns false when stopped part way
+     * through a large file (the place is kept in the cursor).
+     *
+     * @param array<string, array{dest: string, skip: list<string>, rewrite: bool}> $dirs
+     * @param array<string, string>     $pairs
+     * @param array<string, mixed>      $c
+     * @param array<int, \ZipArchive>   $zips Open backup archives, by member.
+     */
+    private static function restore_line(string $line, array $dirs, array $pairs, array &$c, string $storage, array &$zips, callable $should_stop): bool {
+        $t = self::plan_target($line, $dirs);
+        if ($t === null) {
+            return true;
+        }
+        if ($t['dir']) {
+            if (!is_dir($t['dest'])) {
+                wp_mkdir_p($t['dest']);
+            }
+            return true;
+        }
+
+        $parent = dirname($t['dest']);
+        if (!is_dir($parent)) {
+            wp_mkdir_p($parent);
+        }
+        if (!isset($zips[$t['m']])) {
+            $zips[$t['m']] = Archive::open($storage . '/' . (string) $c['set'][$t['m']]);
+        }
+        $zip = $zips[$t['m']];
+
+        try {
+            if ($t['rewrite'] && $pairs !== [] && self::is_rewritable_text_file($t['rel'], $t['size'])) {
+                $data = $zip->getFromName($t['name']);
+                if (!is_string($data)) {
+                    throw new \RuntimeException('Failed to extract backup archive: cannot read ' . $t['name']);
+                }
+                if (!self::write_with_url_rewrite($data, $t['dest'], $pairs)) {
+                    throw new \RuntimeException('Server refused the restore: could not write ' . $t['name']);
+                }
+            } else {
+                $off  = (int) ($c['fl']['batch']['off'] ?? 0);
+                $done = Archive::extract_entry($zip, $t['name'], $t['size'], $t['dest'], $off, $should_stop);
+                $c['fl']['batch']['off'] = $off;
+                if (!$done) {
+                    return false;
+                }
+            }
+        } catch (\RuntimeException $e) {
+            // A damaged archive fails the restore (and rolls it back). A
+            // single file the server would not let us write is skipped, as
+            // before, and the site keeps its own copy.
+            if (!str_starts_with($e->getMessage(), 'Server refused the restore')) {
+                throw $e;
+            }
+            $c['fl']['failures'] = (int) $c['fl']['failures'] + 1;
+            if (count((array) $c['fl']['failed']) < 10) {
+                $c['fl']['failed'][] = $t['key'];
+            }
+            error_log('[SitesSaver] restore: copy failed for ' . $t['key']);
+            self::put_back_original($c, $t);
+        }
+        return true;
+    }
+
+    /**
+     * After a failed write, put the site's own copy of that file back from
+     * the current rollback part, or remove the partial file when the file
+     * is new.
+     *
+     * @param array<string, mixed> $c
+     * @param array<string, mixed> $t
+     */
+    private static function put_back_original(array $c, array $t): void {
+        $part = (string) $c['fl']['rb'] . '/rollback-' . (int) $c['fl']['part'] . '.zip';
+        if (is_file($part) && class_exists('ZipArchive')) {
+            $zip = new \ZipArchive();
+            if ($zip->open($part) === true) {
+                $stat = $zip->statName((string) $t['key']);
+                if (is_array($stat)) {
+                    try {
+                        $off = 0;
+                        Archive::extract_entry($zip, (string) $t['key'], (int) $stat['size'], (string) $t['dest'], $off, static fn(): bool => false);
+                    } catch (\RuntimeException $e) {
+                        error_log('[SitesSaver] restore: could not put back ' . $t['key']);
+                    }
+                    $zip->close();
+                    return;
+                }
+                $zip->close();
+            }
+        }
+        if (is_file((string) $t['dest'])) {
+            @unlink((string) $t['dest']);
+        }
+    }
+
+    /**
+     * Must-use plugins in the backup that are not restored (they belong to
+     * the old host). Logged once, when the files step starts.
+     *
+     * @param array<string, array{dest: string, skip: list<string>, rewrite: bool}> $dirs
+     */
+    private static function log_host_skipped(string $plan_file, array $dirs): void {
+        $skip = (array) ($dirs['mu-plugins']['skip'] ?? []);
+        if ($skip === []) {
+            return;
+        }
+        $found = [];
+        $fh    = @fopen($plan_file, 'rb');
+        if ($fh === false) {
+            return;
+        }
+        while (($line = fgets($fh)) !== false) {
+            $parts = explode("\t", rtrim($line, "\n"), 3);
+            if (count($parts) === 3 && str_starts_with($parts[2], 'wp-content/mu-plugins/')) {
+                $first = (string) strtok(substr($parts[2], strlen('wp-content/mu-plugins/')), '/');
+                if ($first !== '' && in_array($first, $skip, true)) {
+                    $found[$first] = true;
+                }
+            }
+        }
+        fclose($fh);
+        if ($found !== []) {
+            Log::warning('restore_host_mu_plugins_skipped', 'Not restored, because they belong to the old hosting company and would break this site: mu-plugins/' . implode(', mu-plugins/', array_keys($found)) . '. Filter sitessaver_host_mu_plugins to change this.');
+        }
+    }
+
+    /**
+     * Undo the files step: delete files the restore created, then write
+     * every original back from the rollback ZIPs. Resumable and idempotent:
+     * a part is deleted once all of its files are back, and a part that is
+     * replayed writes the same bytes again.
      *
      * @param array<string, mixed> $c
      * @return bool True when done.
@@ -873,33 +864,41 @@ final class Import {
         }
 
         [$dirs] = self::content_targets('', '');
-        $n  = 0;
-        $it = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($rb, \RecursiveDirectoryIterator::SKIP_DOTS),
-            \RecursiveIteratorIterator::LEAVES_ONLY
-        );
-        foreach ($it as $file) {
-            $rel  = ltrim(str_replace('\\', '/', substr($file->getPathname(), strlen($rb))), '/');
-            $name = (string) strtok($rel, '/');
-            if (!isset($dirs[$name])) {
+        $parts  = glob($rb . '/rollback-*.zip');
+        foreach (is_array($parts) ? $parts : [] as $part) {
+            try {
+                $zip = Archive::open($part);
+            } catch (\RuntimeException $e) {
+                Log::error('restore_rollback_unreadable', $e->getMessage());
                 continue;
             }
-            $dest = $dirs[$name]['dest'] . '/' . substr($rel, strlen($name) + 1);
-            $dir  = dirname($dest);
-            if (!is_dir($dir)) {
-                wp_mkdir_p($dir);
+            try {
+                Archive::each_entry($zip, static function (string $name, int $size) use ($zip, $dirs): void {
+                    $area = (string) strtok($name, '/');
+                    $rel  = substr($name, strlen($area) + 1);
+                    if (!isset($dirs[$area]) || $rel === '' || str_ends_with($name, '/')) {
+                        return;
+                    }
+                    $dest = $dirs[$area]['dest'] . '/' . $rel;
+                    if (!is_dir(dirname($dest))) {
+                        wp_mkdir_p(dirname($dest));
+                    }
+                    $off = 0;
+                    try {
+                        Archive::extract_entry($zip, $name, $size, $dest, $off, static fn(): bool => false);
+                    } catch (\RuntimeException $e) {
+                        error_log('[SitesSaver] rollback: could not put back ' . $name . ': ' . $e->getMessage());
+                    }
+                });
+            } catch (\RuntimeException $e) {
+                Log::error('restore_rollback_unreadable', $e->getMessage());
+            } finally {
+                $zip->close();
             }
-            if (is_file($dest)) {
-                @unlink($dest);
-            }
-            if (!@rename($file->getPathname(), $dest) && @copy($file->getPathname(), $dest)) {
-                @unlink($file->getPathname());
-            }
-            if ((++$n % 200) === 0) {
-                do_action('sitessaver_heartbeat');
-                if ($should_stop()) {
-                    return false;
-                }
+            @unlink($part);
+            do_action('sitessaver_heartbeat');
+            if ($should_stop()) {
+                return false;
             }
         }
 
@@ -935,16 +934,17 @@ final class Import {
      *
      * @return array{0: array<string, array{dest: string, skip: list<string>, rewrite: bool}>, 1: array<string, string>}
      */
-    private static function content_targets(string $old_url, string $new_url, ?string $content_src = null): array {
+    private static function content_targets(string $old_url, string $new_url, bool $backup_has_wpe = false): array {
         // The running SitesSaver must never be overwritten by an older copy
         // inside the backup (pre-1.1.7 backups contain one).
-        $running_plugin_dir = basename(dirname(SITESSAVER_FILE));
+        $running_plugin_dir = sitessaver_own_plugin_folder();
         $uploads_skip = (is_multisite() && get_current_blog_id() === 1) ? ['sites'] : [];
-        $dirs = [
-            'uploads'    => ['dest' => wp_upload_dir()['basedir'], 'skip' => $uploads_skip, 'rewrite' => false],
-            'plugins'    => ['dest' => WP_PLUGIN_DIR,              'skip' => [$running_plugin_dir], 'rewrite' => true],
-            'themes'     => ['dest' => get_theme_root(),           'skip' => [], 'rewrite' => true],
-            'mu-plugins' => ['dest' => WPMU_PLUGIN_DIR,            'skip' => self::host_mu_plugin_skip($content_src !== null ? $content_src . '/mu-plugins' : null), 'rewrite' => true],
+        $areas = sitessaver_site_areas();
+        $dirs  = [
+            'uploads'    => ['dest' => $areas['uploads'],    'skip' => $uploads_skip, 'rewrite' => false],
+            'plugins'    => ['dest' => $areas['plugins'],    'skip' => [$running_plugin_dir], 'rewrite' => true],
+            'themes'     => ['dest' => $areas['themes'],     'skip' => [], 'rewrite' => true],
+            'mu-plugins' => ['dest' => $areas['mu-plugins'], 'skip' => self::host_mu_plugin_skip($backup_has_wpe), 'rewrite' => true],
         ];
         $pairs = [];
         if ($old_url !== '' && $new_url !== '' && $old_url !== $new_url) {
@@ -970,7 +970,7 @@ final class Import {
      *
      * @return list<string> First path segments under mu-plugins to skip.
      */
-    public static function host_mu_plugin_skip(?string $backup_mu_dir = null): array {
+    public static function host_mu_plugin_skip(?bool $backup_has_wpe = null): array {
         $known = (array) apply_filters('sitessaver_host_mu_plugins', [
             // WP Engine
             'mu-plugin.php', 'wpengine-common', 'wpe-wp-sign-on-plugin', 'wpe-wp-sign-on-plugin.php',
@@ -996,7 +996,7 @@ final class Import {
         }
         // "mu-plugin.php" is a generic name. It is WP Engine's loader only
         // when the backup also carries wpengine-common (which it requires).
-        if ($backup_mu_dir !== null && !is_dir($backup_mu_dir . '/wpengine-common')) {
+        if ($backup_has_wpe === false) {
             $skip = array_values(array_diff($skip, ['mu-plugin.php']));
         }
         return $skip;
@@ -1033,182 +1033,101 @@ final class Import {
     }
 
     /**
-     * Restore wp-content directories from extracted backup.
+     * Ask the cache and page builder plugins on this site to clear their
+     * caches, through each plugin's own public function or hook. SitesSaver
+     * never deletes another plugin's folders. A plugin that is not active is
+     * skipped, and a purge that fails is logged and ignored.
      *
-     * $old_url/$new_url are used to rewrite URL references embedded in
-     * copied text files (plugins/themes/mu-plugins source). Necessary for
-     * custom plugins that hardcode `home_url()`-equivalent strings in PHP
-     * arrays/JSON/CSS. A site migration otherwise leaves those strings
-     * pointing at the source domain and renders broken `<img src="...">`
-     * tags even though the database was fully rewritten.
+     * @return list<string> Names of the caches that were asked to clear.
      */
-    private static function restore_content(string $content_src, string $old_url = '', string $new_url = ''): void {
-        // Per-destination skip lists. The critical one is `plugins`: we MUST
-        // NOT overwrite the currently-running SitesSaver plugin files. Backups
-        // made by versions before 1.1.7 contain a `sitessaver/` folder.
-        // Without this guard, a restore copies those older files over the
-        // live plugin. We block both the running plugin's own slug and any
-        // well-known alternate casing.
-        //
-        // `rewrite` flag: if true, merge_directory() runs URL replacement on
-        // each text file as it's copied. We enable it for plugins/themes/
-        // mu-plugins (source code that can legitimately reference the site
-        // URL) and keep it OFF for uploads (binary images, PDFs; replacing
-        // bytes inside those would corrupt them).
-        $running_plugin_dir = basename(dirname(SITESSAVER_FILE));
-        // On restore into a MAIN site on multisite, the backup's uploads/
-        // tree is scoped to just that site (the export excludes
-        // uploads/sites/ from a main-site export), but skip it here too
-        // in case an OLDER backup made without that exclusion is
-        // restored. It would still carry every
-        // subsite's uploads/sites/N folder and silently overwrite them.
-        $uploads_skip = (is_multisite() && get_current_blog_id() === 1)
-            ? ['sites']
-            : [];
-        $dirs = [
-            // wp_upload_dir()['basedir'], not a hardcoded WP_CONTENT_DIR .
-            // '/uploads', the same as the export side (see the 'uploads'
-            // case in Export::run_step()). On multisite this resolves to
-            // THIS site's own uploads/sites/{blog_id} subtree, so a restore
-            // writes media back into the site it belongs to instead of the
-            // network's shared uploads root (which would both leak into,
-            // and get overwritten alongside, every other subsite's media).
-            'uploads'    => ['dest' => wp_upload_dir()['basedir'],   'skip' => $uploads_skip, 'rewrite' => false],
-            'plugins'    => ['dest' => WP_PLUGIN_DIR,               'skip' => [$running_plugin_dir], 'rewrite' => true],
-            'themes'     => ['dest' => get_theme_root(),            'skip' => [], 'rewrite' => true],
-            'mu-plugins' => ['dest' => WPMU_PLUGIN_DIR,             'skip' => self::host_mu_plugin_skip($content_src . '/mu-plugins'), 'rewrite' => true],
+    public static function flush_builder_caches(): array {
+        $purges = [
+            'LiteSpeed Cache' => static function (): bool {
+                if (!has_action('litespeed_purge_all')) {
+                    return false;
+                }
+                do_action('litespeed_purge_all'); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- LiteSpeed Cache's own purge hook.
+                return true;
+            },
+            'WP Rocket' => static function (): bool {
+                if (!function_exists('rocket_clean_domain')) {
+                    return false;
+                }
+                rocket_clean_domain();
+                if (function_exists('rocket_clean_minify')) {
+                    rocket_clean_minify();
+                }
+                return true;
+            },
+            'W3 Total Cache' => static function (): bool {
+                if (!function_exists('w3tc_flush_all')) {
+                    return false;
+                }
+                w3tc_flush_all();
+                return true;
+            },
+            'WP Super Cache' => static function (): bool {
+                if (!function_exists('wp_cache_clear_cache')) {
+                    return false;
+                }
+                wp_cache_clear_cache();
+                return true;
+            },
+            'WP Fastest Cache' => static function (): bool {
+                if (has_action('wpfc_clear_all_cache')) {
+                    do_action('wpfc_clear_all_cache', true); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- WP Fastest Cache's own purge hook.
+                    return true;
+                }
+                if (isset($GLOBALS['wp_fastest_cache']) && is_object($GLOBALS['wp_fastest_cache']) && method_exists($GLOBALS['wp_fastest_cache'], 'deleteCache')) {
+                    $GLOBALS['wp_fastest_cache']->deleteCache(true);
+                    return true;
+                }
+                return false;
+            },
+            'Autoptimize' => static function (): bool {
+                if (!class_exists('autoptimizeCache') || !method_exists('autoptimizeCache', 'clearall')) {
+                    return false;
+                }
+                \autoptimizeCache::clearall();
+                return true;
+            },
+            'SiteGround Optimizer' => static function (): bool {
+                if (!function_exists('sg_cachepress_purge_cache')) {
+                    return false;
+                }
+                sg_cachepress_purge_cache();
+                return true;
+            },
+            'Elementor' => static function (): bool {
+                if (!class_exists('\\Elementor\\Plugin') || !isset(\Elementor\Plugin::$instance->files_manager)
+                    || !is_object(\Elementor\Plugin::$instance->files_manager)
+                    || !method_exists(\Elementor\Plugin::$instance->files_manager, 'clear_cache')) {
+                    return false;
+                }
+                \Elementor\Plugin::$instance->files_manager->clear_cache();
+                return true;
+            },
         ];
 
-        // Build the same cross-scheme replacement map the DB importer uses,
-        // so file-embedded URLs match behaviour across both layers.
-        $pairs = [];
-        if ($old_url !== '' && $new_url !== '' && $old_url !== $new_url) {
-            $old_no_scheme = (string) preg_replace('#^https?://#', '', $old_url);
-            $new_no_scheme = (string) preg_replace('#^https?://#', '', $new_url);
-            $pairs = Database::build_replacement_pairs($old_url, $new_url, $old_no_scheme, $new_no_scheme);
-        }
-
-        foreach ($dirs as $name => $cfg) {
-            $src = $content_src . '/' . $name;
-
-            if (!is_dir($src)) {
-                continue;
-            }
-
-            // Merge files (overwrite existing, keep extras). Skip list is
-            // matched against the FIRST path segment so the entire subtree
-            // is safely ignored.
-            self::merge_directory($src, $cfg['dest'], $cfg['skip'], $cfg['rewrite'] ? $pairs : []);
-        }
-
-        // Flush page-builder CSS caches. Why: Breakdance, Elementor, Oxygen,
-        // and Bricks all compile per-post CSS files to `wp-content/uploads/<builder>/css/`
-        // with ABSOLUTE URLs embedded for background-image, font-face, etc.
-        // After a cross-domain or cross-scheme restore, those compiled CSS
-        // files still reference the old domain, so images in the builder's
-        // own stylesheet output render broken even if the DB is correct.
-        // Deleting the cache forces each builder to regenerate on first page
-        // view using the newly-restored URLs. Full-page caches under
-        // `wp-content/cache/` are also wiped (W3TC, WP Rocket, LiteSpeed).
-        self::flush_builder_caches();
-
-        // Serve modern image MIME types correctly from uploads.
-        //
-        // On stock Apache (especially Laragon / shared hosts
-        // with old mime.types) `.webp` / `.avif` / `.svg` are not in the
-        // server's default MIME map. The file exists after restore but Apache
-        // serves it with `application/octet-stream`, and browsers refuse to
-        // render it as an image. Users see "some images broken" where WebP
-        // variants fail while JPG/PNG render (both have first-class MIME
-        // registrations since the Apache dawn of time). We drop a minimal
-        // .htaccess into the uploads root that declares the modern types.
-        self::ensure_uploads_mime_htaccess();
-
-        // Best-effort opcache invalidation. If PHP overwrote any PHP files
-        // in this request, the opcode cache still holds the pre-overwrite
-        // bytecode until a PHP-FPM restart. A mid-request opcache_reset()
-        // forces a fresh load on the very next request.
-        if (function_exists('opcache_reset')) {
-            @opcache_reset();
-        }
-    }
-
-    /**
-     * Flush compiled CSS caches from known page builders + full-page caches.
-     *
-     * Builders embed absolute URLs in their compiled stylesheets. After a
-     * cross-domain or cross-scheme migration those CSS files are stale
-     * (still reference the source domain), so images, background URLs, and
-     * icon fonts break until every affected post is re-saved in the builder
-     * or the cache is manually cleared. Clearing here runs once at restore
-     * finalisation; each builder regenerates on first front-end view.
-     *
-     * Full-page caches (W3 Total Cache, WP Rocket, LiteSpeed) cache HTML
-     * that embeds absolute URLs too, so those get wiped alongside.
-     *
-     * Best-effort: missing dirs are ignored, unlink failures are logged but
-     * don't block finalisation.
-     */
-    private static function flush_builder_caches(): void {
-        $upload_dir = wp_upload_dir();
-        $base       = $upload_dir['basedir'] ?? '';
-
-        $candidates = [];
-        if ($base !== '') {
-            $candidates = array_merge($candidates, [
-                // Breakdance compiled CSS.
-                $base . '/breakdance/css',
-                // Elementor compiled CSS + Google Fonts cache.
-                $base . '/elementor/css',
-                // Oxygen builder CSS cache.
-                $base . '/oxygen/css-cache',
-                // Bricks builder CSS.
-                $base . '/bricks/css',
-                // WP Rocket min/css/js (handled by plugin normally but can linger).
-                $base . '/cache/min',
-            ]);
-        }
-
-        // Top-level full-page cache dirs (most cache plugins drop here).
-        $candidates[] = WP_CONTENT_DIR . '/cache';
-        // LiteSpeed + WP Fastest Cache common location.
-        $candidates[] = WP_CONTENT_DIR . '/litespeed';
-
-        $total_deleted = 0;
-        foreach ($candidates as $dir) {
-            if (!is_dir($dir)) {
-                continue;
-            }
-            $total_deleted += self::delete_dir_contents($dir);
-        }
-
-        if ($total_deleted > 0) {
-            error_log('[SitesSaver] Flushed ' . $total_deleted . ' cached file(s) from builder / page caches after restore.');
-        }
-    }
-
-    /**
-     * Delete every file (and empty subdirs) under $dir, leaving $dir itself
-     * in place. Returns the count of files removed.
-     */
-    private static function delete_dir_contents(string $dir): int {
-        $count = 0;
-        try {
-            $iterator = new \RecursiveIteratorIterator(
-                new \RecursiveDirectoryIterator($dir, \RecursiveDirectoryIterator::SKIP_DOTS),
-                \RecursiveIteratorIterator::CHILD_FIRST
-            );
-            foreach ($iterator as $file) {
-                if ($file->isDir()) {
-                    @rmdir($file->getPathname());
-                } elseif (@unlink($file->getPathname())) {
-                    $count++;
+        $done = [];
+        foreach ($purges as $name => $purge) {
+            try {
+                if ($purge()) {
+                    $done[] = $name;
                 }
+            } catch (\Throwable $e) {
+                Log::warning('cache_purge_failed', $name . ': ' . $e->getMessage());
             }
-        } catch (\Throwable $e) {
-            error_log('[SitesSaver] delete_dir_contents failed on ' . $dir . ': ' . $e->getMessage());
         }
-        return $count;
+
+        // The object cache last, so nothing above refills it with old values.
+        wp_cache_flush();
+
+        if ($done !== []) {
+            Log::info('cache_purged', 'Asked to clear caches after restore: ' . implode(', ', $done) . '.');
+        }
+
+        return $done;
     }
 
     /**
@@ -1247,105 +1166,6 @@ final class Import {
     }
 
     /**
-     * Recursively merge source into destination (overwrite conflicts), with
-     * an optional first-path-segment skip list and optional per-file URL
-     * rewriting.
-     *
-     * @param string[]             $skip_roots First-segment names to skip (e.g. ['sitessaver']).
-     * @param array<string,string> $url_pairs  Replacement pairs applied to text files. Empty = byte-identical copy.
-     */
-    private static function merge_directory(string $source, string $dest, array $skip_roots = [], array $url_pairs = []): void {
-        if (!is_dir($dest)) {
-            wp_mkdir_p($dest);
-        }
-
-        $iterator = new \RecursiveDirectoryIterator(
-            $source,
-            \RecursiveDirectoryIterator::SKIP_DOTS
-        );
-
-        $files = new \RecursiveIteratorIterator(
-            $iterator,
-            \RecursiveIteratorIterator::SELF_FIRST
-        );
-
-        $failures = 0;
-        $failed_paths = [];
-        foreach ($files as $file) {
-            // Liveness for a background restore (throttled by the listener).
-            do_action('sitessaver_heartbeat');
-
-            $relative  = str_replace($source, '', $file->getPathname());
-            $relative  = ltrim(str_replace('\\', '/', $relative), '/');
-            $dest_path = $dest . '/' . $relative;
-
-            // First-segment skip: blocks the entire subtree.
-            if (!empty($skip_roots)) {
-                $first = strtok($relative, '/');
-                if (in_array($first, $skip_roots, true)) {
-                    continue;
-                }
-            }
-
-            if ($file->isDir()) {
-                if (!is_dir($dest_path)) {
-                    wp_mkdir_p($dest_path);
-                }
-            } else {
-                $parent = dirname($dest_path);
-                if (!is_dir($parent)) {
-                    wp_mkdir_p($parent);
-                }
-
-                // No error-suppression. A silent @copy() failure hides a
-                // partial restore. On Windows, long paths (>260 chars),
-                // reserved filenames (CON, PRN, NUL...), and unusual UTF-8 byte
-                // sequences make copy() return false, and the user sees
-                // "some images broken" (typically WebP variants from
-                // image-optimizer plugins that nest deep paths like
-                // cache/breakdance-image-optimizer/2024/01/long-name.jpg.webp)
-                // while the DB row is fine but points at a missing file. We
-                // track failures and log a summary so the admin can see
-                // which files couldn't be restored.
-                $ok = !empty($url_pairs) && self::is_rewritable_text_file($file->getPathname(), $relative)
-                    ? self::copy_with_url_rewrite($file->getPathname(), $dest_path, $url_pairs)
-                    : copy($file->getPathname(), $dest_path);
-
-                if (!$ok) {
-                    $failures++;
-                    if ($failures <= 10) {
-                        $failed_paths[] = $relative;
-                    }
-                    if ($failures <= 50) {
-                        error_log(sprintf(
-                            '[SitesSaver] merge_directory: copy failed for %s (path length %d), source: %s',
-                            $relative,
-                            strlen($dest_path),
-                            $file->getPathname()
-                        ));
-                    }
-                }
-            }
-        }
-
-        if ($failures > 0) {
-            error_log(sprintf(
-                '[SitesSaver] merge_directory: %d file(s) failed to copy into %s. See earlier log lines for paths.',
-                $failures,
-                $dest
-            ));
-            // Also into the plugin's own log, where the admin can actually
-            // read it. A partial restore with no visible trace is how
-            // "some images are broken" reports start.
-            Log::warning(
-                'restore_files_skipped',
-                sprintf('%d file(s) could not be copied while restoring.', $failures),
-                ['destination' => $dest, 'first_paths' => $failed_paths]
-            );
-        }
-    }
-
-    /**
      * Decide whether a file is a candidate for URL rewriting.
      *
      * We only touch source-text files inside plugins/themes. Skip:
@@ -1358,7 +1178,7 @@ final class Import {
      * user plugins/themes where the author typed the site URL into a PHP
      * array or a small JSON config. Those files are always <1 MB.
      */
-    private static function is_rewritable_text_file(string $abs_path, string $relative): bool {
+    private static function is_rewritable_text_file(string $relative, int $size): bool {
         $rel_lower = strtolower(str_replace('\\', '/', $relative));
 
         // Skip package-manager / build-artefact trees. These never contain
@@ -1388,8 +1208,7 @@ final class Import {
 
         // Hard size ceiling. Minified third-party bundles can be megabytes;
         // user-authored hardcoded URLs live in small config/data files.
-        $size = @filesize($abs_path);
-        if ($size === false || $size > 5 * 1024 * 1024) {
+        if ($size > 5 * 1024 * 1024) {
             return false;
         }
 
@@ -1397,49 +1216,21 @@ final class Import {
     }
 
     /**
-     * Read, rewrite URLs, write. Returns true on success, false otherwise.
+     * Rewrite URLs in a text file from the backup and write it. strtr()
+     * with the same pair map the DB importer uses, so both layers produce
+     * consistent output. Contents without the old URL are written as they
+     * are (the common case).
      *
-     * Uses strtr() with the same pair map the DB importer uses so both
-     * layers produce consistent output. If no substring matches, we fall
-     * back to a byte-identical copy (saves the write for files that don't
-     * mention the old domain at all, the common case).
+     * @param array<string, string> $url_pairs
      */
-    private static function copy_with_url_rewrite(string $src, string $dest, array $url_pairs): bool {
-        $contents = @file_get_contents($src);
-        if ($contents === false) {
-            return false;
-        }
-
-        // Fast-path: skip rewrite if none of the source patterns appear.
-        // Makes the common "file doesn't reference old domain" case a cheap
-        // read + write instead of a full strtr() over multi-MB payloads.
-        $hit = false;
+    private static function write_with_url_rewrite(string $contents, string $dest, array $url_pairs): bool {
         foreach ($url_pairs as $from => $_) {
-            if ($from !== '' && str_contains($contents, $from)) {
-                $hit = true;
+            if ($from !== '' && str_contains($contents, (string) $from)) {
+                $contents = strtr($contents, $url_pairs);
                 break;
             }
         }
-
-        if (!$hit) {
-            return copy($src, $dest);
-        }
-
-        $rewritten = strtr($contents, $url_pairs);
-
-        // Preserve source file permissions where possible. Some shared
-        // hosts strip exec bits on file_put_contents() creation.
-        $written = @file_put_contents($dest, $rewritten);
-        if ($written === false) {
-            return false;
-        }
-
-        $perms = @fileperms($src);
-        if ($perms !== false) {
-            @chmod($dest, $perms & 0777);
-        }
-
-        return true;
+        return @file_put_contents($dest, $contents) !== false;
     }
 
     /**

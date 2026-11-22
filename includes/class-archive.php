@@ -10,7 +10,7 @@ defined('ABSPATH') || exit;
 // phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception messages are never echoed raw; they are logged or returned through wp_send_json_* and escaped at render time in admin.js (escapeHtml).
 
 /**
- * ZIP archive handler: create and extract site backups.
+ * ZIP archive handler: create backups and read them back during a restore.
  */
 final class Archive {
 
@@ -124,131 +124,94 @@ final class Archive {
         return true;
     }
 
-    /**
-     * Extract a ZIP archive to a directory with path validation.
-     * Extracts file-by-file to prevent zip-slip attacks.
-     */
     /** Entries at or above this size are written in pieces (and can resume mid-file). */
     public const EXTRACT_STREAM_MIN = 16 * 1024 * 1024;
     private const EXTRACT_CHUNK     = 8 * 1024 * 1024;
 
     /**
-     * extract(), one entry at a time, able to stop and continue later.
+     * Open a backup archive for reading. Reading archives needs ZipArchive;
+     * callers check Requirements::can_restore() first, this is the last guard.
      *
-     * Same fail-closed checks as extract() (path traversal, symlinks,
-     * zip-slip). A large entry is written in pieces; when a request stops
-     * mid-entry, the next one re-opens the entry, reads past what is already
-     * on disk (decompressing is fast; writing is the slow part on shared
-     * hosts) and continues from there.
-     *
-     * @param array<string, int> $cur ['i' => next entry, 'off' => bytes of it already written]
-     * @return bool True when every entry is extracted, false when stopped (cursor committed).
-     * @throws \RuntimeException When the archive cannot be opened or an entry is unsafe.
+     * @throws \RuntimeException When ZipArchive is missing or the file is not a readable ZIP.
      */
-    public static function extract_resumable(string $zip_path, string $dest_dir, array &$cur, callable $should_stop, callable $commit): bool {
+    public static function open(string $zip_path): \ZipArchive {
         if (!class_exists('ZipArchive')) {
-            throw new \RuntimeException('The PHP Zip extension is missing on this server.');
+            throw new \RuntimeException('The PHP zip extension is missing on this server.');
         }
-
         $zip = new \ZipArchive();
         if ($zip->open($zip_path) !== true) {
             throw new \RuntimeException('Failed to open the backup archive ' . basename($zip_path) . '.');
         }
+        return $zip;
+    }
 
-        if (!is_dir($dest_dir)) {
-            wp_mkdir_p($dest_dir);
-        }
-        $real_dest = realpath($dest_dir);
-        if ($real_dest === false) {
-            $zip->close();
-            throw new \RuntimeException('Could not create the temporary restore folder.');
-        }
-        $real_dest = rtrim($real_dest, DIRECTORY_SEPARATOR);
-
-        $n   = $zip->numFiles;
-        $i   = (int) ($cur['i'] ?? 0);
-        $off = (int) ($cur['off'] ?? 0);
-
-        try {
-            for (; $i < $n; $i++) {
-                $entry = $zip->getNameIndex($i);
-                if ($entry === false || $entry === '') {
-                    continue;
-                }
-
-                do_action('sitessaver_heartbeat');
-
-                $entry = str_replace('\\', '/', $entry);
-                if (self::is_unsafe_relative_path($entry)) {
-                    throw new \RuntimeException('Failed to extract backup archive: unsafe path ' . $entry);
-                }
-
-                $stat = $zip->statIndex($i);
-                if (is_array($stat) && isset($stat['external_attr'])) {
-                    $unix_mode = ((int) $stat['external_attr']) >> 16;
-                    if (($unix_mode & 0xF000) === 0xA000) {
-                        throw new \RuntimeException('Failed to extract backup archive: symbolic link ' . $entry);
-                    }
-                }
-
-                $target = $real_dest . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $entry);
-                $parent = dirname($target);
-                if (!is_dir($parent)) {
-                    wp_mkdir_p($parent);
-                }
-                $parent_real = realpath($parent);
-                if ($parent_real === false
-                    || !str_starts_with($parent_real . DIRECTORY_SEPARATOR, $real_dest . DIRECTORY_SEPARATOR)
-                ) {
-                    throw new \RuntimeException('Failed to extract backup archive: path outside the restore folder ' . $entry);
-                }
-
-                if (substr($entry, -1) === '/') {
-                    wp_mkdir_p($target);
-                    continue;
-                }
-
-                $size   = is_array($stat) ? (int) ($stat['size'] ?? 0) : 0;
-                $source = $zip->getStream($entry);
-                if ($source === false) {
-                    throw new \RuntimeException('Failed to extract backup archive: cannot read ' . $entry);
-                }
-
-                if ($size < self::EXTRACT_STREAM_MIN) {
-                    $dest_file = @fopen($target, 'w');
-                    if ($dest_file === false) {
-                        fclose($source);
-                        throw new \RuntimeException(self::write_failure('cannot write', $entry));
-                    }
-                    $copied = stream_copy_to_stream($source, $dest_file);
-                    fclose($source);
-                    $closed = fclose($dest_file);
-                    if ($copied === false || ($size > 0 && $copied !== $size) || !$closed) {
-                        throw new \RuntimeException(self::write_failure('could not write', $entry, 'disk full or quota reached?'));
-                    }
-                } else {
-                    $done = self::extract_large($source, $target, $entry, $size, $off, $should_stop);
-                    if (!$done) {
-                        $cur = ['i' => $i, 'off' => $off];
-                        $commit(true);
-                        return false;
-                    }
-                }
-
-                $off = 0;
-                $cur = ['i' => $i + 1, 'off' => 0];
-                $commit(false);
-                if ($i + 1 < $n && $should_stop()) {
-                    $commit(true);
-                    return false;
-                }
+    /**
+     * Call $each for every entry, after checking it. Fail-closed: one entry
+     * that could reach outside the folder it is restored into (path
+     * traversal, absolute path, symbolic link) rejects the whole archive,
+     * so a tampered backup is refused before anything is written.
+     *
+     * @param callable $each fn(string $name, int $size): void
+     * @throws \RuntimeException On an unsafe entry.
+     */
+    public static function each_entry(\ZipArchive $zip, callable $each): void {
+        $n = $zip->numFiles;
+        for ($i = 0; $i < $n; $i++) {
+            $stat = $zip->statIndex($i);
+            if (!is_array($stat) || !isset($stat['name']) || (string) $stat['name'] === '') {
+                continue;
             }
-        } finally {
-            $zip->close();
+            $name = str_replace('\\', '/', (string) $stat['name']);
+            if (self::is_unsafe_relative_path($name)) {
+                throw new \RuntimeException('Failed to extract backup archive: unsafe path ' . $name);
+            }
+            $opsys = 0;
+            $attr  = 0;
+            if ($zip->getExternalAttributesIndex($i, $opsys, $attr) && ((($attr >> 16) & 0xF000) === 0xA000)) {
+                throw new \RuntimeException('Failed to extract backup archive: symbolic link ' . $name);
+            }
+            if (($i % 500) === 0) {
+                do_action('sitessaver_heartbeat');
+            }
+            $each($name, (int) ($stat['size'] ?? 0));
+        }
+    }
+
+    /**
+     * Write one entry to $target. A large entry is written in pieces; when
+     * a request stops mid-entry, the next one re-opens the entry, reads past
+     * what is already on disk and continues from $off.
+     *
+     * @return bool True when written, false when stopped ($off holds the place).
+     * @throws \RuntimeException When the entry cannot be read or the target cannot be written.
+     */
+    public static function extract_entry(\ZipArchive $zip, string $name, int $size, string $target, int &$off, callable $should_stop): bool {
+        $source = $zip->getStream($name);
+        if ($source === false) {
+            throw new \RuntimeException('Failed to extract backup archive: cannot read ' . $name);
         }
 
-        $cur = ['i' => $n, 'off' => 0];
-        return true;
+        if ($size < self::EXTRACT_STREAM_MIN) {
+            $out = @fopen($target, 'wb');
+            if ($out === false) {
+                fclose($source);
+                throw new \RuntimeException(self::write_failure('cannot write', $name));
+            }
+            $copied = stream_copy_to_stream($source, $out);
+            fclose($source);
+            $closed = fclose($out);
+            if ($copied === false || ($size > 0 && $copied !== $size) || !$closed) {
+                throw new \RuntimeException(self::write_failure('could not write', $name, 'disk full or quota reached?'));
+            }
+            $off = 0;
+            return true;
+        }
+
+        if (self::extract_large($source, $target, $name, $size, $off, $should_stop)) {
+            $off = 0;
+            return true;
+        }
+        return false;
     }
 
     /**
@@ -325,112 +288,6 @@ final class Archive {
             Environment::WRITE_BLOCKED,
             $layers !== [] ? ' [security: ' . implode(', ', $layers) . ']' : ''
         );
-    }
-
-    public static function extract(string $zip_path, string $dest_dir): bool {
-        if (!class_exists('ZipArchive')) {
-            return false;
-        }
-
-        $zip = new \ZipArchive();
-        $res = $zip->open($zip_path);
-
-        if ($res !== true) {
-            return false;
-        }
-
-        // Resolve and normalize destination directory.
-        $real_dest = realpath($dest_dir);
-        if ($real_dest === false) {
-            wp_mkdir_p($dest_dir);
-            $real_dest = realpath($dest_dir);
-        }
-
-        if ($real_dest === false) {
-            $zip->close();
-            return false;
-        }
-
-        $real_dest = rtrim($real_dest, DIRECTORY_SEPARATOR);
-
-        // Extract each file with path validation. Fail-closed: if any entry
-        // looks malicious we close the archive and return false rather than
-        // silently skipping it, so a tampered backup is REJECTED
-        // wholesale, not half-restored.
-        for ($i = 0; $i < $zip->numFiles; $i++) {
-            $entry = $zip->getNameIndex($i);
-
-            if ($entry === false || $entry === '') {
-                continue;
-            }
-
-            // Liveness for a background restore (throttled by the listener).
-            do_action('sitessaver_heartbeat');
-
-            // Normalize entry path (forward slashes, no backslashes).
-            $entry = str_replace('\\', '/', $entry);
-
-            // Reject path traversal attempts.
-            if (self::is_unsafe_relative_path($entry)) {
-                $zip->close();
-                return false;
-            }
-
-            // Reject symlink entries. A ZIP stores symlinks via the upper
-            // 16 bits of the external attribute (Unix mode). S_IFLNK = 0xA000.
-            $stat = $zip->statIndex($i);
-            if (is_array($stat) && isset($stat['external_attr'])) {
-                $unix_mode = ((int) $stat['external_attr']) >> 16;
-                if (($unix_mode & 0xF000) === 0xA000) {
-                    $zip->close();
-                    return false;
-                }
-            }
-
-            // Resolve full target path.
-            $target      = $real_dest . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $entry);
-            $parent      = dirname($target);
-            if (!is_dir($parent)) {
-                wp_mkdir_p($parent);
-            }
-            $parent_real = realpath($parent);
-
-            // Target must stay within destination (zip-slip prevention).
-            if ($parent_real === false
-                || !str_starts_with($parent_real . DIRECTORY_SEPARATOR, $real_dest . DIRECTORY_SEPARATOR)
-            ) {
-                $zip->close();
-                return false;
-            }
-
-            // Handle directories.
-            if (substr($entry, -1) === '/') {
-                wp_mkdir_p($target);
-                continue;
-            }
-
-            // Extract file.
-            $source = $zip->getStream($entry);
-
-            if ($source === false) {
-                $zip->close();
-                return false;
-            }
-
-            $dest_file = fopen($target, 'w');
-            if ($dest_file === false) {
-                fclose($source);
-                $zip->close();
-                return false;
-            }
-
-            stream_copy_to_stream($source, $dest_file);
-            fclose($source);
-            fclose($dest_file);
-        }
-
-        $zip->close();
-        return true;
     }
 
     /**
