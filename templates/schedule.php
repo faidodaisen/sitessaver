@@ -1,10 +1,9 @@
 <?php defined('ABSPATH') || exit;
-// phpcs:disable WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- Template included from inside a SitesSaver\Admin method, so these variables are function-local, not globals.
 
 use SitesSaver\Schedule;
 
-$schedule = get_option('sitessaver_schedule', []);
-$schedule = array_merge([
+$sitessaver_schedule = get_option('sitessaver_schedule', []);
+$sitessaver_schedule = array_merge([
     'enabled'   => false,
     'retention' => 5,
     'backup_mode'      => 'full',
@@ -17,39 +16,39 @@ $schedule = array_merge([
     'storage_local'   => true,
     'storage_gdrive'  => false,
     'notify_email'    => get_option('admin_email'),
-], is_array($schedule) ? $schedule : []);
+], is_array($sitessaver_schedule) ? $sitessaver_schedule : []);
 
-$frequencies = Schedule::frequencies();
-$selected    = Schedule::selected_frequencies($schedule);
-$last_runs   = Schedule::last_runs();
+$sitessaver_frequencies = Schedule::frequencies();
+$sitessaver_selected    = Schedule::selected_frequencies($sitessaver_schedule);
+$sitessaver_last_runs   = Schedule::last_runs();
 
 // WP-Cron health check.
-$next_run     = Schedule::next_scheduled_run($selected);
-$log          = get_option('sitessaver_schedule_log', []);
-$last_log     = is_array($log) && !empty($log) ? end($log) : null;
-$disable_cron = defined('DISABLE_WP_CRON') && DISABLE_WP_CRON;
+$sitessaver_next_run     = Schedule::next_scheduled_run($sitessaver_selected);
+$sitessaver_log          = get_option('sitessaver_schedule_log', []);
+$sitessaver_last_log     = is_array($sitessaver_log) && !empty($sitessaver_log) ? end($sitessaver_log) : null;
+$sitessaver_disable_cron = defined('DISABLE_WP_CRON') && DISABLE_WP_CRON;
 
 // Staleness is judged against the SHORTEST selected interval. That is the
 // promise the user is most likely to notice being broken. Seeded from the
 // selection itself rather than a fixed day, so a Monthly-only schedule is not
 // reported as stale two days after its last run.
-$intervals = array_map([Schedule::class, 'interval_for'], $selected);
-$shortest_interval = $intervals === [] ? DAY_IN_SECONDS : min($intervals);
+$sitessaver_intervals = array_map([Schedule::class, 'interval_for'], $sitessaver_selected);
+$sitessaver_shortest_interval = $sitessaver_intervals === [] ? DAY_IN_SECONDS : min($sitessaver_intervals);
 
-$is_stale = false;
-if (!empty($schedule['enabled']) && $last_log) {
-    $last_ts = strtotime((string) ($last_log['time'] ?? ''));
-    if ($last_ts && (time() - $last_ts) > (2 * $shortest_interval)) {
-        $is_stale = true;
+$sitessaver_is_stale = false;
+if (!empty($sitessaver_schedule['enabled']) && $sitessaver_last_log) {
+    $sitessaver_last_ts = strtotime((string) ($sitessaver_last_log['time'] ?? ''));
+    if ($sitessaver_last_ts && (time() - $sitessaver_last_ts) > (2 * $sitessaver_shortest_interval)) {
+        $sitessaver_is_stale = true;
     }
 }
 
-$trigger_url = Schedule::trigger_url();
+$sitessaver_trigger_url = Schedule::trigger_url();
 
 // The crontab expression only decides how often WordPress is *asked*; the
 // plugin still enforces each frequency itself, so pinging more often than the
 // shortest selection is safe and simply makes runs more punctual.
-$cron_expression = $shortest_interval <= HOUR_IN_SECONDS ? '*/15 * * * *' : '0 * * * *';
+$sitessaver_cron_expression = $sitessaver_shortest_interval <= HOUR_IN_SECONDS ? '*/15 * * * *' : '0 * * * *';
 
 // The trigger URL contains a query string, and hosting panels paste these
 // straight into a shell. Unquoted, the browser-safe `&` would background the
@@ -62,31 +61,31 @@ $cron_expression = $shortest_interval <= HOUR_IN_SECONDS ? '*/15 * * * *' : '0 *
 // looks like line noise in a field the user is expected to eyeball before
 // pasting. Double quotes nest cleanly and still protect the `&`.
 // Escape the four characters the shell still expands inside double quotes.
-$trigger_url_sh = '"' . addcslashes($trigger_url, '"$`\\') . '"';
+$sitessaver_trigger_url_sh = '"' . addcslashes($sitessaver_trigger_url, '"$`\\') . '"';
 
 // Command halves, without any schedule. Panels such as RunCloud, cPanel, and
 // Plesk supply the schedule through their own fields, so pasting a full crontab
 // line into their "command" box produces a doubled schedule that cannot run.
-$wget_command  = sprintf('wget -q -O - %s >/dev/null 2>&1', $trigger_url_sh);
-$curl_command  = sprintf('curl -s %s >/dev/null 2>&1', $trigger_url_sh);
-$wpcli_command = sprintf('cd %s && wp cron event run --due-now >/dev/null 2>&1', '"' . addcslashes(rtrim(ABSPATH, '/\\'), '"$`\\') . '"');
+$sitessaver_wget_command  = sprintf('wget -q -O - %s >/dev/null 2>&1', $sitessaver_trigger_url_sh);
+$sitessaver_curl_command  = sprintf('curl -s %s >/dev/null 2>&1', $sitessaver_trigger_url_sh);
+$sitessaver_wpcli_command = sprintf('cd %s && wp cron event run --due-now >/dev/null 2>&1', '"' . addcslashes(rtrim(ABSPATH, '/\\'), '"$`\\') . '"');
 
 // Full crontab lines, for `crontab -e` where the schedule IS part of the line.
-$cron_line  = $cron_expression . ' ' . $wget_command;
-$curl_line  = $cron_expression . ' ' . $curl_command;
-$wpcli_line = $cron_expression . ' ' . $wpcli_command;
+$sitessaver_cron_line  = $sitessaver_cron_expression . ' ' . $sitessaver_wget_command;
+$sitessaver_curl_line  = $sitessaver_cron_expression . ' ' . $sitessaver_curl_command;
+$sitessaver_wpcli_line = $sitessaver_cron_expression . ' ' . $sitessaver_wpcli_command;
 
 // Some panels ask for an interpreter separately (RunCloud's "Vendor Binary").
 // Whatever follows is handed to that binary, so a bare `wget ...` is read as a
 // script filename and fails; `-c '...'` is what makes it run as a command.
 // $wget_command quotes its URL with double quotes, so it nests inside these
 // single quotes without any escaping.
-$panel_binary  = '/bin/bash';
-$panel_command = sprintf("-c '%s'", $wget_command);
+$sitessaver_panel_binary  = '/bin/bash';
+$sitessaver_panel_command = sprintf("-c '%s'", $sitessaver_wget_command);
 
 // Split the schedule into the per-field boxes those panels use.
-$cron_fields = explode(' ', $cron_expression);
-$field_labels = [
+$sitessaver_cron_fields = explode(' ', $sitessaver_cron_expression);
+$sitessaver_field_labels = [
     __('Minute', 'sitessaver'),
     __('Hour', 'sitessaver'),
     __('Day of Month', 'sitessaver'),
@@ -95,12 +94,12 @@ $field_labels = [
 ];
 ?>
 <div class="sitessaver-wrap">
-    <header class="ss-header">
-        <h1 class="ss-title">
+    <header class="sitessaver-header">
+        <h1 class="sitessaver-title">
             <i class="ri-calendar-event-fill"></i>
             <?php esc_html_e('SitesSaver: Schedule', 'sitessaver'); ?>
         </h1>
-        <div class="ss-header-actions">
+        <div class="sitessaver-header-actions">
             <a href="<?php echo esc_url(admin_url('admin.php?page=sitessaver')); ?>" class="btn btn-outline">
                 <i class="ri-arrow-left-line"></i>
                 <?php esc_html_e('Back to Dashboard', 'sitessaver'); ?>
@@ -108,16 +107,16 @@ $field_labels = [
         </div>
     </header>
 
-    <?php if ($is_stale) : ?>
-        <div class="ss-notice ss-notice-warning">
+    <?php if ($sitessaver_is_stale) : ?>
+        <div class="sitessaver-notice sitessaver-notice-warning">
             <i class="ri-alert-line"></i>
             <div>
                 <strong><?php esc_html_e('Scheduled backup missed.', 'sitessaver'); ?></strong>
                 <?php esc_html_e('The last run is older than two scheduled intervals. WP-Cron only fires when someone visits the site. If traffic is low, set up the server cron below to keep the schedule reliable.', 'sitessaver'); ?>
             </div>
         </div>
-    <?php elseif (!empty($schedule['enabled']) && $disable_cron) : ?>
-        <div class="ss-notice ss-notice-info">
+    <?php elseif (!empty($sitessaver_schedule['enabled']) && $sitessaver_disable_cron) : ?>
+        <div class="sitessaver-notice sitessaver-notice-info">
             <i class="ri-information-line"></i>
             <div>
                 <strong><?php esc_html_e('WP-Cron is disabled on this site.', 'sitessaver'); ?></strong>
@@ -126,34 +125,34 @@ $field_labels = [
         </div>
     <?php endif; ?>
 
-    <div class="ss-section">
-        <div class="ss-section-header">
-            <h2 class="ss-section-title">
+    <div class="sitessaver-section">
+        <div class="sitessaver-section-header">
+            <h2 class="sitessaver-section-title">
                 <i class="ri-time-line"></i>
                 <?php esc_html_e('Automatic Backups', 'sitessaver'); ?>
             </h2>
-            <?php if ($next_run && !empty($schedule['enabled'])) : ?>
+            <?php if ($sitessaver_next_run && !empty($sitessaver_schedule['enabled'])) : ?>
                 <span class="badge badge-blue" style="font-weight: normal;">
                     <?php
                     printf(
                         /* translators: %s: human-readable time until next scheduled run */
                         esc_html__('Next run in %s', 'sitessaver'),
-                        esc_html(human_time_diff(time(), $next_run))
+                        esc_html(human_time_diff(time(), $sitessaver_next_run))
                     );
                     ?>
                 </span>
             <?php endif; ?>
         </div>
         
-        <div class="ss-section-content">
+        <div class="sitessaver-section-content">
             <form id="sitessaver-schedule-form">
-                <table class="ss-form-table">
+                <table class="sitessaver-form-table">
                     <tr>
                         <th><?php esc_html_e('Status', 'sitessaver'); ?></th>
                         <td>
-                            <div class="ss-checkbox-group">
+                            <div class="sitessaver-checkbox-group">
                                 <label>
-                                    <input type="checkbox" name="enabled" value="1" <?php checked($schedule['enabled']); ?> />
+                                    <input type="checkbox" name="enabled" value="1" <?php checked($sitessaver_schedule['enabled']); ?> />
                                     <?php esc_html_e('Enable scheduled backups', 'sitessaver'); ?>
                                 </label>
                             </div>
@@ -162,25 +161,25 @@ $field_labels = [
                     <tr>
                         <th><?php esc_html_e('Frequency', 'sitessaver'); ?></th>
                         <td>
-                            <div class="ss-frequency-group">
-                                <?php foreach ($frequencies as $key => $meta) :
-                                    $is_on    = in_array($key, $selected, true);
-                                    $last     = $last_runs[$key] ?? 0;
+                            <div class="sitessaver-frequency-group">
+                                <?php foreach ($sitessaver_frequencies as $sitessaver_key => $sitessaver_meta) :
+                                    $sitessaver_is_on    = in_array($sitessaver_key, $sitessaver_selected, true);
+                                    $sitessaver_last     = $sitessaver_last_runs[$sitessaver_key] ?? 0;
                                     ?>
-                                    <label class="ss-frequency-option<?php echo $is_on ? ' is-selected' : ''; ?>">
+                                    <label class="sitessaver-frequency-option<?php echo $sitessaver_is_on ? ' is-selected' : ''; ?>">
                                         <input type="checkbox" name="frequencies[]"
-                                               value="<?php echo esc_attr($key); ?>"
-                                               <?php checked($is_on); ?> />
-                                        <span class="ss-frequency-body">
-                                            <span class="ss-frequency-name"><?php echo esc_html($meta['label']); ?></span>
-                                            <span class="ss-frequency-desc"><?php echo esc_html($meta['description']); ?></span>
-                                            <?php if ($is_on && $last > 0) : ?>
-                                                <span class="ss-frequency-meta">
+                                               value="<?php echo esc_attr($sitessaver_key); ?>"
+                                               <?php checked($sitessaver_is_on); ?> />
+                                        <span class="sitessaver-frequency-body">
+                                            <span class="sitessaver-frequency-name"><?php echo esc_html($sitessaver_meta['label']); ?></span>
+                                            <span class="sitessaver-frequency-desc"><?php echo esc_html($sitessaver_meta['description']); ?></span>
+                                            <?php if ($sitessaver_is_on && $sitessaver_last > 0) : ?>
+                                                <span class="sitessaver-frequency-meta">
                                                     <?php
                                                     printf(
                                                         /* translators: %s: human-readable time since the last run */
                                                         esc_html__('Last run %s ago', 'sitessaver'),
-                                                        esc_html(human_time_diff($last, time()))
+                                                        esc_html(human_time_diff($sitessaver_last, time()))
                                                     );
                                                     ?>
                                                 </span>
@@ -197,24 +196,24 @@ $field_labels = [
                     <tr>
                         <th><?php esc_html_e('Inclusions', 'sitessaver'); ?></th>
                         <td>
-                            <div class="ss-checkbox-group">
-                                <label><input type="checkbox" name="include_db" value="1" <?php checked($schedule['include_db']); ?> /> <?php esc_html_e('Database', 'sitessaver'); ?></label>
-                                <label><input type="checkbox" name="include_media" value="1" <?php checked($schedule['include_media']); ?> /> <?php esc_html_e('Media Uploads', 'sitessaver'); ?></label>
-                                <label><input type="checkbox" name="include_plugins" value="1" <?php checked($schedule['include_plugins']); ?> /> <?php esc_html_e('Plugins', 'sitessaver'); ?></label>
-                                <label><input type="checkbox" name="include_themes" value="1" <?php checked($schedule['include_themes']); ?> /> <?php esc_html_e('Themes', 'sitessaver'); ?></label>
+                            <div class="sitessaver-checkbox-group">
+                                <label><input type="checkbox" name="include_db" value="1" <?php checked($sitessaver_schedule['include_db']); ?> /> <?php esc_html_e('Database', 'sitessaver'); ?></label>
+                                <label><input type="checkbox" name="include_media" value="1" <?php checked($sitessaver_schedule['include_media']); ?> /> <?php esc_html_e('Media Uploads', 'sitessaver'); ?></label>
+                                <label><input type="checkbox" name="include_plugins" value="1" <?php checked($sitessaver_schedule['include_plugins']); ?> /> <?php esc_html_e('Plugins', 'sitessaver'); ?></label>
+                                <label><input type="checkbox" name="include_themes" value="1" <?php checked($sitessaver_schedule['include_themes']); ?> /> <?php esc_html_e('Themes', 'sitessaver'); ?></label>
                             </div>
                         </td>
                     </tr>
                     <tr>
                         <th><?php esc_html_e('Backup Mode', 'sitessaver'); ?></th>
                         <td>
-                            <div class="ss-radio-group">
+                            <div class="sitessaver-radio-group">
                                 <label>
-                                    <input type="radio" name="backup_mode" value="full" <?php checked($schedule['backup_mode'], 'full'); ?> />
+                                    <input type="radio" name="backup_mode" value="full" <?php checked($sitessaver_schedule['backup_mode'], 'full'); ?> />
                                     <?php esc_html_e('Full every time', 'sitessaver'); ?>
                                 </label>
                                 <label>
-                                    <input type="radio" name="backup_mode" value="incremental" <?php checked($schedule['backup_mode'], 'incremental'); ?> />
+                                    <input type="radio" name="backup_mode" value="incremental" <?php checked($sitessaver_schedule['backup_mode'], 'incremental'); ?> />
                                     <?php esc_html_e('Incremental', 'sitessaver'); ?>
                                 </label>
                             </div>
@@ -226,11 +225,11 @@ $field_labels = [
                                 <?php esc_html_e('an incremental backup is restored together with the full backup it follows. SitesSaver does that for you and keeps the whole chain together when deleting old backups, but it means you cannot copy a single incremental ZIP to another site on its own. Backups made by hand from the Export screen are always full and stand alone.', 'sitessaver'); ?>
                             </p>
 
-                            <div class="ss-subfield" data-ss-when="backup_mode=incremental">
+                            <div class="sitessaver-subfield" data-sitessaver-when="backup_mode=incremental">
                                 <p>
                                     <label>
                                         <?php esc_html_e('Start a new full backup every', 'sitessaver'); ?>
-                                        <input type="number" name="full_every" value="<?php echo (int) $schedule['full_every']; ?>" min="2" max="60" class="ss-input-text" style="width: 70px;" />
+                                        <input type="number" name="full_every" value="<?php echo (int) $sitessaver_schedule['full_every']; ?>" min="2" max="60" class="sitessaver-input-text" style="width: 70px;" />
                                         <?php esc_html_e('runs', 'sitessaver'); ?>
                                     </label>
                                 </p>
@@ -241,9 +240,9 @@ $field_labels = [
                                 <p>
                                     <label>
                                         <?php esc_html_e('Change detection', 'sitessaver'); ?>
-                                        <select name="change_detection" class="ss-input-text">
-                                            <option value="fast" <?php selected($schedule['change_detection'], 'fast'); ?>><?php esc_html_e('Fast (size and modified date)', 'sitessaver'); ?></option>
-                                            <option value="thorough" <?php selected($schedule['change_detection'], 'thorough'); ?>><?php esc_html_e('Thorough (verify contents with a checksum)', 'sitessaver'); ?></option>
+                                        <select name="change_detection" class="sitessaver-input-text">
+                                            <option value="fast" <?php selected($sitessaver_schedule['change_detection'], 'fast'); ?>><?php esc_html_e('Fast (size and modified date)', 'sitessaver'); ?></option>
+                                            <option value="thorough" <?php selected($sitessaver_schedule['change_detection'], 'thorough'); ?>><?php esc_html_e('Thorough (verify contents with a checksum)', 'sitessaver'); ?></option>
                                         </select>
                                     </label>
                                 </p>
@@ -256,21 +255,21 @@ $field_labels = [
                     <tr>
                         <th><?php esc_html_e('Storage Destination', 'sitessaver'); ?></th>
                         <td>
-                            <div class="ss-checkbox-group">
-                                <label><input type="checkbox" name="storage_local" value="1" <?php checked($schedule['storage_local'] ?? true); ?> /> <?php esc_html_e('Local Server', 'sitessaver'); ?></label>
+                            <div class="sitessaver-checkbox-group">
+                                <label><input type="checkbox" name="storage_local" value="1" <?php checked($sitessaver_schedule['storage_local'] ?? true); ?> /> <?php esc_html_e('Local Server', 'sitessaver'); ?></label>
                                 <label>
-                                    <input type="checkbox" name="storage_gdrive" value="1" <?php checked($schedule['storage_gdrive'] ?? false); ?> <?php disabled(!\SitesSaver\GDrive::is_connected()); ?> /> 
+                                    <input type="checkbox" name="storage_gdrive" value="1" <?php checked($sitessaver_schedule['storage_gdrive'] ?? false); ?> <?php disabled(!\SitesSaver\GDrive::is_connected()); ?> /> 
                                     <?php esc_html_e('Google Drive', 'sitessaver'); ?>
                                     <?php if (!\SitesSaver\GDrive::is_connected()) : ?>
-                                        <span class="description" style="color: var(--ss-danger); font-size: 11px;">(<?php esc_html_e('Connect in Settings first', 'sitessaver'); ?>)</span>
+                                        <span class="description" style="color: var(--sitessaver-danger); font-size: 11px;">(<?php esc_html_e('Connect in Settings first', 'sitessaver'); ?>)</span>
                                     <?php endif; ?>
                                 </label>
-                                <?php foreach (\SitesSaver\Destinations::extra() as $ss_dest) : $ss_on = $ss_dest->is_connected(); ?>
+                                <?php foreach (\SitesSaver\Destinations::extra() as $sitessaver_dest) : $sitessaver_on = $sitessaver_dest->is_connected(); ?>
                                 <label>
-                                    <input type="checkbox" name="storage_remotes[]" value="<?php echo esc_attr($ss_dest->id()); ?>" <?php checked(in_array($ss_dest->id(), (array) ($schedule['storage_remotes'] ?? []), true)); ?> <?php disabled(!$ss_on); ?> />
-                                    <?php echo esc_html($ss_dest->label()); ?>
-                                    <?php if (!$ss_on) : ?>
-                                        <span class="description" style="color: var(--ss-danger); font-size: 11px;">(<?php esc_html_e('Connect in Settings first', 'sitessaver'); ?>)</span>
+                                    <input type="checkbox" name="storage_remotes[]" value="<?php echo esc_attr($sitessaver_dest->id()); ?>" <?php checked(in_array($sitessaver_dest->id(), (array) ($sitessaver_schedule['storage_remotes'] ?? []), true)); ?> <?php disabled(!$sitessaver_on); ?> />
+                                    <?php echo esc_html($sitessaver_dest->label()); ?>
+                                    <?php if (!$sitessaver_on) : ?>
+                                        <span class="description" style="color: var(--sitessaver-danger); font-size: 11px;">(<?php esc_html_e('Connect in Settings first', 'sitessaver'); ?>)</span>
                                     <?php endif; ?>
                                 </label>
                                 <?php endforeach; ?>
@@ -280,14 +279,14 @@ $field_labels = [
                     <tr>
                         <th><?php esc_html_e('Retention', 'sitessaver'); ?></th>
                         <td>
-                            <input type="number" name="retention" value="<?php echo (int) $schedule['retention']; ?>" min="1" max="100" class="ss-input-text" style="width: 80px;" />
+                            <input type="number" name="retention" value="<?php echo (int) $sitessaver_schedule['retention']; ?>" min="1" max="100" class="sitessaver-input-text" style="width: 80px;" />
                             <p class="description"><?php esc_html_e('How many restore points to keep on this server. Applied after each scheduled run, oldest deleted first. With incremental backups a restore point is a full backup plus everything that followed it, and those are removed together, so keeping 5 restore points can mean more than 5 files in the folder. Manual backups count as one restore point each.', 'sitessaver'); ?></p>
                         </td>
                     </tr>
                     <tr>
                         <th><?php esc_html_e('Email Notification', 'sitessaver'); ?></th>
                         <td>
-                            <input type="email" name="notify_email" value="<?php echo esc_attr($schedule['notify_email']); ?>" class="ss-input-text" placeholder="admin@example.com" />
+                            <input type="email" name="notify_email" value="<?php echo esc_attr($sitessaver_schedule['notify_email']); ?>" class="sitessaver-input-text" placeholder="admin@example.com" />
                             <p class="description">
                                 <?php esc_html_e('Get a report after every scheduled backup, including where the archive was stored and whether the Google Drive upload succeeded.', 'sitessaver'); ?>
                                 <a href="<?php echo esc_url(admin_url('admin.php?page=sitessaver-settings')); ?>"><?php esc_html_e('Customise its branding', 'sitessaver'); ?></a>
@@ -301,7 +300,7 @@ $field_labels = [
                         <i class="ri-save-line"></i>
                         <?php esc_html_e('Save Schedule Settings', 'sitessaver'); ?>
                     </button>
-                    <button type="button" class="btn btn-outline" id="sitessaver-run-schedule-now" <?php disabled(empty($schedule['enabled'])); ?>>
+                    <button type="button" class="btn btn-outline" id="sitessaver-run-schedule-now" <?php disabled(empty($sitessaver_schedule['enabled'])); ?>>
                         <i class="ri-play-circle-line"></i>
                         <?php esc_html_e('Run backup now', 'sitessaver'); ?>
                     </button>
@@ -310,33 +309,33 @@ $field_labels = [
         </div>
     </div>
 
-    <div class="ss-section">
-        <div class="ss-section-header">
-            <h2 class="ss-section-title">
+    <div class="sitessaver-section">
+        <div class="sitessaver-section-header">
+            <h2 class="sitessaver-section-title">
                 <i class="ri-server-line"></i>
                 <?php esc_html_e('Server Cron (recommended)', 'sitessaver'); ?>
             </h2>
-            <?php if ($disable_cron) : ?>
+            <?php if ($sitessaver_disable_cron) : ?>
                 <span class="badge badge-red" style="font-weight: normal;">
                     <?php esc_html_e('WP-Cron disabled: required', 'sitessaver'); ?>
                 </span>
             <?php endif; ?>
         </div>
 
-        <div class="ss-section-content">
+        <div class="sitessaver-section-content">
             <p class="description" style="margin-top: 0;">
                 <?php esc_html_e('WordPress fires WP-Cron only when someone loads a page, so on a quiet site a scheduled backup can be hours or days late, and if DISABLE_WP_CRON is set, it never runs at all. The URL below triggers backups directly and does not depend on WP-Cron.', 'sitessaver'); ?>
                 <?php esc_html_e('It also keeps a backup you started from the Export screen moving after you close the page, on hosts that stop background work. Run it every minute if your host allows.', 'sitessaver'); ?>
             </p>
 
-            <div class="ss-field-group">
-                <label class="ss-field-label" for="sitessaver-trigger-url">
+            <div class="sitessaver-field-group">
+                <label class="sitessaver-field-label" for="sitessaver-trigger-url">
                     <?php esc_html_e('Your private trigger URL', 'sitessaver'); ?>
                 </label>
-                <div class="ss-copy-row">
-                    <input type="text" id="sitessaver-trigger-url" class="ss-input-text ss-copy-input" readonly
-                           value="<?php echo esc_attr($trigger_url); ?>" />
-                    <button type="button" class="btn btn-outline ss-copy-btn" data-copy-target="#sitessaver-trigger-url">
+                <div class="sitessaver-copy-row">
+                    <input type="text" id="sitessaver-trigger-url" class="sitessaver-input-text sitessaver-copy-input" readonly
+                           value="<?php echo esc_attr($sitessaver_trigger_url); ?>" />
+                    <button type="button" class="btn btn-outline sitessaver-copy-btn" data-copy-target="#sitessaver-trigger-url">
                         <i class="ri-file-copy-line"></i>
                         <?php esc_html_e('Copy', 'sitessaver'); ?>
                     </button>
@@ -347,12 +346,12 @@ $field_labels = [
                 </p>
             </div>
 
-            <div class="ss-setup-tabs">
-                <button type="button" class="ss-setup-tab is-active" data-setup-target="ss-setup-panel">
+            <div class="sitessaver-setup-tabs">
+                <button type="button" class="sitessaver-setup-tab is-active" data-setup-target="sitessaver-setup-panel">
                     <i class="ri-layout-grid-line"></i>
                     <?php esc_html_e('Hosting panel', 'sitessaver'); ?>
                 </button>
-                <button type="button" class="ss-setup-tab" data-setup-target="ss-setup-crontab">
+                <button type="button" class="sitessaver-setup-tab" data-setup-target="sitessaver-setup-crontab">
                     <i class="ri-terminal-box-line"></i>
                     <?php esc_html_e('crontab -e', 'sitessaver'); ?>
                 </button>
@@ -367,19 +366,19 @@ $field_labels = [
              * runs. Splitting the parts out is what stops that.
              */
             ?>
-            <div class="ss-setup-body is-active" id="ss-setup-panel">
+            <div class="sitessaver-setup-body is-active" id="sitessaver-setup-panel">
                 <p class="description" style="margin-top: 0;">
                     <?php esc_html_e('Copy each value into the matching field. Do not paste the schedule into the command box. The panel adds it for you.', 'sitessaver'); ?>
                 </p>
 
-                <div class="ss-field-group">
-                    <label class="ss-field-label" for="sitessaver-panel-binary">
+                <div class="sitessaver-field-group">
+                    <label class="sitessaver-field-label" for="sitessaver-panel-binary">
                         <?php esc_html_e('Command / Vendor Binary (if the panel asks for one)', 'sitessaver'); ?>
                     </label>
-                    <div class="ss-copy-row">
-                        <input type="text" id="sitessaver-panel-binary" class="ss-input-text ss-copy-input" readonly
-                               value="<?php echo esc_attr($panel_binary); ?>" />
-                        <button type="button" class="btn btn-outline ss-copy-btn" data-copy-target="#sitessaver-panel-binary">
+                    <div class="sitessaver-copy-row">
+                        <input type="text" id="sitessaver-panel-binary" class="sitessaver-input-text sitessaver-copy-input" readonly
+                               value="<?php echo esc_attr($sitessaver_panel_binary); ?>" />
+                        <button type="button" class="btn btn-outline sitessaver-copy-btn" data-copy-target="#sitessaver-panel-binary">
                             <i class="ri-file-copy-line"></i>
                             <?php esc_html_e('Copy', 'sitessaver'); ?>
                         </button>
@@ -389,14 +388,14 @@ $field_labels = [
                     </p>
                 </div>
 
-                <div class="ss-field-group">
-                    <label class="ss-field-label" for="sitessaver-panel-command">
+                <div class="sitessaver-field-group">
+                    <label class="sitessaver-field-label" for="sitessaver-panel-command">
                         <?php esc_html_e('Command', 'sitessaver'); ?>
                     </label>
-                    <div class="ss-copy-row">
-                        <input type="text" id="sitessaver-panel-command" class="ss-input-text ss-copy-input" readonly
-                               value="<?php echo esc_attr($panel_command); ?>" />
-                        <button type="button" class="btn btn-outline ss-copy-btn" data-copy-target="#sitessaver-panel-command">
+                    <div class="sitessaver-copy-row">
+                        <input type="text" id="sitessaver-panel-command" class="sitessaver-input-text sitessaver-copy-input" readonly
+                               value="<?php echo esc_attr($sitessaver_panel_command); ?>" />
+                        <button type="button" class="btn btn-outline sitessaver-copy-btn" data-copy-target="#sitessaver-panel-command">
                             <i class="ri-file-copy-line"></i>
                             <?php esc_html_e('Copy', 'sitessaver'); ?>
                         </button>
@@ -405,21 +404,21 @@ $field_labels = [
                         <?php esc_html_e('The -c \'...\' wrapper is required whenever the panel runs your command through /bin/bash. Without it bash treats "wget" as a script filename and the job fails.', 'sitessaver'); ?>
                         <br />
                         <?php esc_html_e('If the panel has no binary field, paste this instead:', 'sitessaver'); ?>
-                        <code><?php echo esc_html($wget_command); ?></code>
+                        <code><?php echo esc_html($sitessaver_wget_command); ?></code>
                     </p>
                 </div>
 
-                <div class="ss-field-group">
-                    <label class="ss-field-label"><?php esc_html_e('Schedule fields', 'sitessaver'); ?></label>
-                    <div class="ss-cron-fields">
-                        <?php foreach ($field_labels as $i => $flabel) :
-                            $fid = 'sitessaver-cron-field-' . $i;
+                <div class="sitessaver-field-group">
+                    <label class="sitessaver-field-label"><?php esc_html_e('Schedule fields', 'sitessaver'); ?></label>
+                    <div class="sitessaver-cron-fields">
+                        <?php foreach ($sitessaver_field_labels as $sitessaver_i => $sitessaver_flabel) :
+                            $sitessaver_fid = 'sitessaver-cron-field-' . $sitessaver_i;
                             ?>
-                            <div class="ss-cron-field">
-                                <label for="<?php echo esc_attr($fid); ?>"><?php echo esc_html($flabel); ?></label>
-                                <input type="text" id="<?php echo esc_attr($fid); ?>"
-                                       class="ss-input-text ss-copy-input ss-cron-field-input" readonly
-                                       value="<?php echo esc_attr($cron_fields[$i] ?? '*'); ?>" />
+                            <div class="sitessaver-cron-field">
+                                <label for="<?php echo esc_attr($sitessaver_fid); ?>"><?php echo esc_html($sitessaver_flabel); ?></label>
+                                <input type="text" id="<?php echo esc_attr($sitessaver_fid); ?>"
+                                       class="sitessaver-input-text sitessaver-copy-input sitessaver-cron-field-input" readonly
+                                       value="<?php echo esc_attr($sitessaver_cron_fields[$sitessaver_i] ?? '*'); ?>" />
                             </div>
                         <?php endforeach; ?>
                     </div>
@@ -428,22 +427,22 @@ $field_labels = [
                         printf(
                             /* translators: %s: cron schedule expression, e.g. 0 * * * * */
                             esc_html__('Together these read %s. If your panel offers a preset such as "Once an hour", pick that instead.', 'sitessaver'),
-                            '<code>' . esc_html($cron_expression) . '</code>'
+                            '<code>' . esc_html($sitessaver_cron_expression) . '</code>'
                         );
                         ?>
                     </p>
                 </div>
             </div>
 
-            <div class="ss-setup-body" id="ss-setup-crontab">
-                <div class="ss-field-group">
-                    <label class="ss-field-label" for="sitessaver-cron-line">
+            <div class="sitessaver-setup-body" id="sitessaver-setup-crontab">
+                <div class="sitessaver-field-group">
+                    <label class="sitessaver-field-label" for="sitessaver-cron-line">
                         <?php esc_html_e('Run "crontab -e" and paste this whole line', 'sitessaver'); ?>
                     </label>
-                    <div class="ss-copy-row">
-                        <input type="text" id="sitessaver-cron-line" class="ss-input-text ss-copy-input" readonly
-                               value="<?php echo esc_attr($cron_line); ?>" />
-                        <button type="button" class="btn btn-outline ss-copy-btn" data-copy-target="#sitessaver-cron-line">
+                    <div class="sitessaver-copy-row">
+                        <input type="text" id="sitessaver-cron-line" class="sitessaver-input-text sitessaver-copy-input" readonly
+                               value="<?php echo esc_attr($sitessaver_cron_line); ?>" />
+                        <button type="button" class="btn btn-outline sitessaver-copy-btn" data-copy-target="#sitessaver-cron-line">
                             <i class="ri-file-copy-line"></i>
                             <?php esc_html_e('Copy', 'sitessaver'); ?>
                         </button>
@@ -454,35 +453,35 @@ $field_labels = [
                 </div>
             </div>
 
-            <details class="ss-details">
+            <details class="sitessaver-details">
                 <summary><?php esc_html_e('Other ways to trigger it', 'sitessaver'); ?></summary>
 
-                <p class="ss-details-label"><?php esc_html_e('If wget is not installed, use curl:', 'sitessaver'); ?></p>
-                <div class="ss-copy-row">
-                    <input type="text" id="sitessaver-curl-line" class="ss-input-text ss-copy-input" readonly
-                           value="<?php echo esc_attr($curl_line); ?>" />
-                    <button type="button" class="btn btn-outline ss-copy-btn" data-copy-target="#sitessaver-curl-line">
+                <p class="sitessaver-details-label"><?php esc_html_e('If wget is not installed, use curl:', 'sitessaver'); ?></p>
+                <div class="sitessaver-copy-row">
+                    <input type="text" id="sitessaver-curl-line" class="sitessaver-input-text sitessaver-copy-input" readonly
+                           value="<?php echo esc_attr($sitessaver_curl_line); ?>" />
+                    <button type="button" class="btn btn-outline sitessaver-copy-btn" data-copy-target="#sitessaver-curl-line">
                         <i class="ri-file-copy-line"></i>
                         <?php esc_html_e('Copy', 'sitessaver'); ?>
                     </button>
                 </div>
 
-                <p class="ss-details-label"><?php esc_html_e('If you have WP-CLI and prefer to run every due WordPress event:', 'sitessaver'); ?></p>
-                <div class="ss-copy-row">
-                    <input type="text" id="sitessaver-wpcli-line" class="ss-input-text ss-copy-input" readonly
-                           value="<?php echo esc_attr($wpcli_line); ?>" />
-                    <button type="button" class="btn btn-outline ss-copy-btn" data-copy-target="#sitessaver-wpcli-line">
+                <p class="sitessaver-details-label"><?php esc_html_e('If you have WP-CLI and prefer to run every due WordPress event:', 'sitessaver'); ?></p>
+                <div class="sitessaver-copy-row">
+                    <input type="text" id="sitessaver-wpcli-line" class="sitessaver-input-text sitessaver-copy-input" readonly
+                           value="<?php echo esc_attr($sitessaver_wpcli_line); ?>" />
+                    <button type="button" class="btn btn-outline sitessaver-copy-btn" data-copy-target="#sitessaver-wpcli-line">
                         <i class="ri-file-copy-line"></i>
                         <?php esc_html_e('Copy', 'sitessaver'); ?>
                     </button>
                 </div>
 
-                <p class="ss-details-label"><?php esc_html_e('No shell access?', 'sitessaver'); ?></p>
+                <p class="sitessaver-details-label"><?php esc_html_e('No shell access?', 'sitessaver'); ?></p>
                 <p class="description">
                     <?php esc_html_e('Point a free uptime monitor (UptimeRobot, cron-job.org, Better Uptime) at the trigger URL. Any service that can request a URL on a schedule works.', 'sitessaver'); ?>
                 </p>
 
-                <p class="ss-details-label"><?php esc_html_e('How the timing works', 'sitessaver'); ?></p>
+                <p class="sitessaver-details-label"><?php esc_html_e('How the timing works', 'sitessaver'); ?></p>
                 <p class="description">
                     <?php esc_html_e('The URL is safe to call more often than your chosen frequencies. SitesSaver tracks each frequency separately and replies "not due yet" until one of them is owed a backup, so an hourly cron with Daily + Monthly selected still produces exactly one backup a day and one a month. Append &force=1 to the URL to bypass that check and back up immediately.', 'sitessaver'); ?>
                 </p>

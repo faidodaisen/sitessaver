@@ -155,7 +155,7 @@ final class Environment {
         }
 
         $payload = [
-            'probe-database.sql' => "-- SitesSaver write check\nCREATE TABLE IF NOT EXISTS `ss_probe` (`id` int NOT NULL);\nINSERT INTO `ss_probe` VALUES (1);\n",
+            'probe-database.sql' => "-- SitesSaver write check\nCREATE TABLE IF NOT EXISTS `sitessaver_probe` (`id` int NOT NULL);\nINSERT INTO `sitessaver_probe` VALUES (1);\n",
             'probe-file.txt'     => str_repeat('SitesSaver write check. ', 512),
         ];
 

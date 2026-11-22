@@ -17,7 +17,7 @@
     // every former `if (!confirm(...)) return;` guard had to become a
     // continuation. See the call sites below.
 
-    var ssNotify = (function () {
+    var sitessaverNotify = (function () {
 
         function esc(str) {
             return $('<div/>').text(str == null ? '' : String(str)).html();
@@ -28,8 +28,8 @@
         // actually on screen avoids refcount drift, where one layer closes
         // and unlocks scrolling for a layer that is still open.
         function syncScrollLock() {
-            var open = $('.sitessaver-modal-backdrop:visible, .ss-dialog-backdrop').length > 0;
-            $('body').toggleClass('ss-modal-open', open);
+            var open = $('.sitessaver-modal-backdrop:visible, .sitessaver-dialog-backdrop').length > 0;
+            $('body').toggleClass('sitessaver-modal-open', open);
         }
 
         // ---- Toasts ----
@@ -49,9 +49,9 @@
         };
 
         function stack() {
-            var $s = $('#ss-toast-stack');
+            var $s = $('#sitessaver-toast-stack');
             if (!$s.length) {
-                $s = $('<div id="ss-toast-stack" class="ss-toast-stack" role="region" aria-label="Notifications" aria-live="polite"></div>');
+                $s = $('<div id="sitessaver-toast-stack" class="sitessaver-toast-stack" role="region" aria-label="Notifications" aria-live="polite"></div>');
                 $('body').append($s);
             }
             return $s;
@@ -83,13 +83,13 @@
             var body = opts.html ? (opts.message || '') : esc(opts.message || '');
 
             var $toast = $(
-                '<div class="ss-toast ss-toast-' + type + '" role="' + (type === 'error' ? 'alert' : 'status') + '">' +
-                    '<span class="ss-toast-icon"><i class="' + ICONS[type] + '"></i></span>' +
-                    '<div class="ss-toast-body">' +
-                        (title ? '<strong class="ss-toast-title">' + esc(title) + '</strong>' : '') +
-                        '<span class="ss-toast-message">' + body + '</span>' +
+                '<div class="sitessaver-toast sitessaver-toast-' + type + '" role="' + (type === 'error' ? 'alert' : 'status') + '">' +
+                    '<span class="sitessaver-toast-icon"><i class="' + ICONS[type] + '"></i></span>' +
+                    '<div class="sitessaver-toast-body">' +
+                        (title ? '<strong class="sitessaver-toast-title">' + esc(title) + '</strong>' : '') +
+                        '<span class="sitessaver-toast-message">' + body + '</span>' +
                     '</div>' +
-                    '<button type="button" class="ss-toast-close" aria-label="Dismiss notification">' +
+                    '<button type="button" class="sitessaver-toast-close" aria-label="Dismiss notification">' +
                         '<i class="ri-close-line"></i>' +
                     '</button>' +
                 '</div>'
@@ -97,12 +97,12 @@
 
             if (duration > 0) {
                 $toast.append(
-                    $('<span class="ss-toast-timer" aria-hidden="true"></span>')
+                    $('<span class="sitessaver-toast-timer" aria-hidden="true"></span>')
                         .css('animation-duration', duration + 'ms')
                 );
             }
 
-            $toast.on('click', '.ss-toast-close', function () { dismiss($toast); });
+            $toast.on('click', '.sitessaver-toast-close', function () { dismiss($toast); });
 
             stack().append($toast);
 
@@ -161,27 +161,27 @@
             var msg = o.html ? (o.message || '') : esc(o.message || '');
 
             var html =
-                '<div class="ss-dialog-backdrop">' +
-                    '<div class="ss-dialog ss-dialog-' + tone + '" role="dialog" aria-modal="true" aria-labelledby="ss-dialog-title">' +
-                        '<div class="ss-dialog-head">' +
-                            '<div class="ss-dialog-icon"><i class="' + DIALOG_ICONS[tone] + '"></i></div>' +
-                            '<h2 class="ss-dialog-title" id="ss-dialog-title">' + esc(o.title || 'Please confirm') + '</h2>' +
+                '<div class="sitessaver-dialog-backdrop">' +
+                    '<div class="sitessaver-dialog sitessaver-dialog-' + tone + '" role="dialog" aria-modal="true" aria-labelledby="sitessaver-dialog-title">' +
+                        '<div class="sitessaver-dialog-head">' +
+                            '<div class="sitessaver-dialog-icon"><i class="' + DIALOG_ICONS[tone] + '"></i></div>' +
+                            '<h2 class="sitessaver-dialog-title" id="sitessaver-dialog-title">' + esc(o.title || 'Please confirm') + '</h2>' +
                         '</div>' +
-                        (msg ? '<p class="ss-dialog-message">' + msg + '</p>' : '') +
+                        (msg ? '<p class="sitessaver-dialog-message">' + msg + '</p>' : '') +
                         (hasInput
-                            ? '<div class="ss-dialog-field">' +
-                                  (o.input.label ? '<label for="ss-dialog-input">' + esc(o.input.label) + '</label>' : '') +
-                                  '<input type="text" id="ss-dialog-input" value="' + esc(o.input.value || '') + '"' +
+                            ? '<div class="sitessaver-dialog-field">' +
+                                  (o.input.label ? '<label for="sitessaver-dialog-input">' + esc(o.input.label) + '</label>' : '') +
+                                  '<input type="text" id="sitessaver-dialog-input" value="' + esc(o.input.value || '') + '"' +
                                       ' placeholder="' + esc(o.input.placeholder || '') + '" />' +
                               '</div>'
                             : '') +
-                        '<div class="ss-dialog-actions">' +
+                        '<div class="sitessaver-dialog-actions">' +
                             (showCancel
-                                ? '<button type="button" class="btn btn-outline ss-dialog-cancel">' + esc(o.cancelText || 'Cancel') + '</button>'
+                                ? '<button type="button" class="btn btn-outline sitessaver-dialog-cancel">' + esc(o.cancelText || 'Cancel') + '</button>'
                                 : '') +
                             '<button type="button" class="btn ' +
                                 (tone === 'danger' ? 'btn-danger' : 'btn-primary') +
-                                ' ss-dialog-confirm">' + esc(o.confirmText || 'Confirm') + '</button>' +
+                                ' sitessaver-dialog-confirm">' + esc(o.confirmText || 'Confirm') + '</button>' +
                         '</div>' +
                     '</div>' +
                 '</div>';
@@ -192,7 +192,7 @@
 
             function close() {
                 $el.remove();
-                $(document).off('keydown.ssDialog');
+                $(document).off('keydown.sitessaverDialog');
                 syncScrollLock();
                 // Return focus to whatever opened the dialog, so keyboard
                 // users are not dumped back at the top of the document.
@@ -213,9 +213,9 @@
             // thing this module exists to stop anyone calling by accident.
             function accept() {
                 if (settled) return;
-                var value = hasInput ? $el.find('#ss-dialog-input').val() : true;
+                var value = hasInput ? $el.find('#sitessaver-dialog-input').val() : true;
                 if (hasInput && o.input.required && !$.trim(String(value))) {
-                    $el.find('#ss-dialog-input').trigger('focus');
+                    $el.find('#sitessaver-dialog-input').trigger('focus');
                     return;
                 }
                 settled = true;
@@ -223,18 +223,18 @@
                 if (o.onConfirm) o.onConfirm(value);
             }
 
-            $el.on('click', '.ss-dialog-confirm', accept);
-            $el.on('click', '.ss-dialog-cancel', cancel);
+            $el.on('click', '.sitessaver-dialog-confirm', accept);
+            $el.on('click', '.sitessaver-dialog-cancel', cancel);
 
             // Click on the backdrop (never the panel) dismisses.
             $el.on('click', function (e) {
                 if (e.target === $el[0]) cancel();
             });
 
-            $(document).on('keydown.ssDialog', function (e) {
+            $(document).on('keydown.sitessaverDialog', function (e) {
                 if (e.key === 'Escape') {
                     cancel();
-                } else if (e.key === 'Enter' && hasInput && $(e.target).is('#ss-dialog-input')) {
+                } else if (e.key === 'Enter' && hasInput && $(e.target).is('#sitessaver-dialog-input')) {
                     e.preventDefault();
                     accept();
                 } else if (e.key === 'Tab') {
@@ -257,11 +257,11 @@
             // for destructive dialogs so Enter never destroys anything.
             setTimeout(function () {
                 if (hasInput) {
-                    $el.find('#ss-dialog-input').trigger('focus').trigger('select');
+                    $el.find('#sitessaver-dialog-input').trigger('focus').trigger('select');
                 } else if (tone === 'danger' && showCancel) {
-                    $el.find('.ss-dialog-cancel').trigger('focus');
+                    $el.find('.sitessaver-dialog-cancel').trigger('focus');
                 } else {
-                    $el.find('.ss-dialog-confirm').trigger('focus');
+                    $el.find('.sitessaver-dialog-confirm').trigger('focus');
                 }
             }, 50);
 
@@ -286,7 +286,7 @@
     })();
 
     // Exposed so other SitesSaver scripts (and debugging) can reuse it.
-    window.ssNotify = ssNotify;
+    window.sitessaverNotify = sitessaverNotify;
 
     // Several actions (save schedule, delete backup, rename label) must reload
     // the page so the server-rendered table and cron status stay truthful. A
@@ -294,7 +294,7 @@
     // document, so park it in sessionStorage and replay it on the way back.
     var SS_FLASH_KEY = 'sitessaver_flash';
 
-    function ssFlash(type, message, title) {
+    function sitessaverFlash(type, message, title) {
         try {
             sessionStorage.setItem(SS_FLASH_KEY, JSON.stringify({
                 type: type, message: message, title: title
@@ -305,7 +305,7 @@
         }
     }
 
-    function ssReplayFlash() {
+    function sitessaverReplayFlash() {
         var raw;
         try {
             raw = sessionStorage.getItem(SS_FLASH_KEY);
@@ -317,11 +317,11 @@
 
         try {
             var f = JSON.parse(raw);
-            ssNotify.toast({ type: f.type, message: f.message, title: f.title });
+            sitessaverNotify.toast({ type: f.type, message: f.message, title: f.title });
         } catch (e) { /* malformed entry, ignore */ }
     }
 
-    $(ssReplayFlash);
+    $(sitessaverReplayFlash);
 
     // ---------- HELPERS ----------
 
@@ -441,26 +441,26 @@
 
         var $r = $wrap.find('.sitessaver-result').first();
         ensureResultCard($r);
-        var $card = $r.find('.ss-result-card');
+        var $card = $r.find('.sitessaver-result-card');
         $r.show();
         if ($r.length && $r[0].scrollIntoView) $r[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
         $card.removeClass('success').addClass('error');
         $card.find('> i').attr('class', 'ri-error-warning-fill');
         $card.find('.sitessaver-result-title').text(err.title);
 
-        var html = '<span class="ss-error-message">' + escapeHtml(err.message) + '</span>';
+        var html = '<span class="sitessaver-error-message">' + escapeHtml(err.message) + '</span>';
         if (err.hint) {
-            html += '<span class="ss-error-hint">' + escapeHtml(err.hint) + '</span>';
+            html += '<span class="sitessaver-error-hint">' + escapeHtml(err.hint) + '</span>';
         }
-        html += '<span class="ss-error-meta"></span>';
+        html += '<span class="sitessaver-error-meta"></span>';
         if (err.detail) {
-            html += '<details class="ss-error-detail"><summary>Technical details</summary><code>' + escapeHtml(err.detail) + '</code></details>';
+            html += '<details class="sitessaver-error-detail"><summary>Technical details</summary><code>' + escapeHtml(err.detail) + '</code></details>';
         }
         $r.find('.sitessaver-result-text').html(html);
 
         function renderRef(ref) {
             if (!ref) return;
-            $r.find('.ss-error-meta').html(
+            $r.find('.sitessaver-error-meta').html(
                 'Reference <strong>SS-' + escapeHtml(ref) + '</strong>' +
                 (SS.logUrl ? ' · <a href="' + escapeHtml(SS.logUrl) + '">View log</a>' : '')
             );
@@ -497,14 +497,14 @@
     //   all of it. The user re-authenticates with the backup's credentials,
     //   and the deferred finalization runs under the fresh session when the
     //   browser lands on options-permalink.php?sitessaver_finalize=TOKEN.
-    var ssFinalizeUrl = '';
+    var sitessaverFinalizeUrl = '';
 
     function showRestoreCompleteModal(payload) {
         // Accept either the old string-token form or the new payload object
         // { finalize_token, finalize_url } for forward/backward compat.
         if (typeof payload === 'object' && payload) {
             if (typeof payload.finalize_url === 'string' && payload.finalize_url) {
-                ssFinalizeUrl = payload.finalize_url;
+                sitessaverFinalizeUrl = payload.finalize_url;
             }
         }
         // Don't stack modals.
@@ -531,7 +531,7 @@
             + '</div>';
 
         $('body').append(html);
-        ssNotify.syncScrollLock();
+        sitessaverNotify.syncScrollLock();
 
         $('#sitessaver-finalize-btn').on('click', function () {
             var $btn = $(this).prop('disabled', true);
@@ -550,7 +550,7 @@
             // Direct navigation, no AJAX. If for any reason the server-built
             // URL isn't available (e.g. a modal rendered by an older build),
             // fall back to wp-login.php.
-            var target = ssFinalizeUrl;
+            var target = sitessaverFinalizeUrl;
             if (!target) {
                 // Root-relative on purpose: an absolute URL built from the
                 // restored siteurl can point at a different host than the one
@@ -579,9 +579,9 @@
     // Some screens (Backups) ship an empty result container; build the card
     // on first use so a message is never written into nothing.
     function ensureResultCard($r) {
-        if (!$r.find('.ss-result-card').length) {
+        if (!$r.find('.sitessaver-result-card').length) {
             $r.html(
-                '<div class="ss-result-card"><i></i><div>' +
+                '<div class="sitessaver-result-card"><i></i><div>' +
                 '<strong style="display:block;" class="sitessaver-result-title"></strong>' +
                 '<span class="sitessaver-result-text"></span></div></div>'
             );
@@ -592,7 +592,7 @@
         var $r = $wrap.find('.sitessaver-result').first();
         ensureResultCard($r);
         $r.show();
-        var $card = $r.find('.ss-result-card');
+        var $card = $r.find('.sitessaver-result-card');
         $card.removeClass('success error').addClass(isError ? 'error' : 'success');
         $card.find('i').attr('class', isError ? 'ri-error-warning-fill' : 'ri-checkbox-circle-fill');
         // The heading is markup, not part of the message: leaving it on
@@ -604,21 +604,21 @@
 
     // ---------- PROGRESS MODAL ----------
 
-    var ssModal = {
+    var sitessaverModal = {
         $el: null,
         cancelable: true,
         onCancel: null,
 
         build: function () {
-            if ($('#ss-progress-modal').length) return;
+            if ($('#sitessaver-progress-modal').length) return;
             var html =
-                '<div id="ss-progress-modal" class="sitessaver-modal-backdrop" style="display:none;">' +
+                '<div id="sitessaver-progress-modal" class="sitessaver-modal-backdrop" style="display:none;">' +
                   '<div class="sitessaver-modal" role="dialog" aria-modal="true">' +
-                    '<div class="ss-progress-modal-icon" id="ss-pm-icon"><i class="ri-loader-4-line ri-spin"></i></div>' +
-                    '<h2 id="ss-pm-title"></h2>' +
-                    '<p class="ss-progress-modal-subtitle" id="ss-pm-subtitle"></p>' +
-                    '<ol class="ss-step-list" id="ss-pm-step-list"></ol>' +
-                    '<div class="ss-progress-modal-bar-wrap">' +
+                    '<div class="sitessaver-progress-modal-icon" id="sitessaver-pm-icon"><i class="ri-loader-4-line ri-spin"></i></div>' +
+                    '<h2 id="sitessaver-pm-title"></h2>' +
+                    '<p class="sitessaver-progress-modal-subtitle" id="sitessaver-pm-subtitle"></p>' +
+                    '<ol class="sitessaver-step-list" id="sitessaver-pm-step-list"></ol>' +
+                    '<div class="sitessaver-progress-modal-bar-wrap">' +
                       '<div class="sitessaver-progress" style="display:block;">' +
                         '<div class="sitessaver-progress-text">' +
                           '<span class="step-label"></span>' +
@@ -627,36 +627,36 @@
                         '<div class="sitessaver-progress-bar"><div class="sitessaver-progress-fill"></div></div>' +
                       '</div>' +
                     '</div>' +
-                    '<div class="ss-progress-modal-caution">' +
+                    '<div class="sitessaver-progress-modal-caution">' +
                       '<i class="ri-alert-line"></i>' +
-                      '<span id="ss-pm-caution"></span>' +
+                      '<span id="sitessaver-pm-caution"></span>' +
                     '</div>' +
-                    '<div class="ss-cancel-confirm" id="ss-cancel-confirm">' +
+                    '<div class="sitessaver-cancel-confirm" id="sitessaver-cancel-confirm">' +
                       '<p><i class="ri-error-warning-line"></i> Are you sure you want to cancel?</p>' +
-                      '<div class="ss-cancel-confirm-actions">' +
-                        '<button type="button" class="btn btn-outline" id="ss-cancel-no">No, continue</button>' +
-                        '<button type="button" class="btn" style="background:var(--ss-danger);color:#fff;border-color:var(--ss-danger);" id="ss-cancel-yes">Yes, cancel</button>' +
+                      '<div class="sitessaver-cancel-confirm-actions">' +
+                        '<button type="button" class="btn btn-outline" id="sitessaver-cancel-no">No, continue</button>' +
+                        '<button type="button" class="btn" style="background:var(--sitessaver-danger);color:#fff;border-color:var(--sitessaver-danger);" id="sitessaver-cancel-yes">Yes, cancel</button>' +
                       '</div>' +
                     '</div>' +
-                    '<div class="ss-progress-modal-actions">' +
-                      '<button type="button" class="btn btn-outline" id="ss-pm-cancel-btn"><i class="ri-close-line"></i> Cancel</button>' +
+                    '<div class="sitessaver-progress-modal-actions">' +
+                      '<button type="button" class="btn btn-outline" id="sitessaver-pm-cancel-btn"><i class="ri-close-line"></i> Cancel</button>' +
                     '</div>' +
                   '</div>' +
                 '</div>';
             $('body').append(html);
-            this.$el = $('#ss-progress-modal');
+            this.$el = $('#sitessaver-progress-modal');
 
             var self = this;
-            $(document).on('click', '#ss-pm-cancel-btn', function () {
+            $(document).on('click', '#sitessaver-pm-cancel-btn', function () {
                 if (!self.cancelable) return;
-                $('#ss-cancel-confirm').slideDown(150);
+                $('#sitessaver-cancel-confirm').slideDown(150);
                 $(this).prop('disabled', true);
             });
-            $(document).on('click', '#ss-cancel-no', function () {
-                $('#ss-cancel-confirm').slideUp(150);
-                $('#ss-pm-cancel-btn').prop('disabled', false);
+            $(document).on('click', '#sitessaver-cancel-no', function () {
+                $('#sitessaver-cancel-confirm').slideUp(150);
+                $('#sitessaver-pm-cancel-btn').prop('disabled', false);
             });
-            $(document).on('click', '#ss-cancel-yes', function () {
+            $(document).on('click', '#sitessaver-cancel-yes', function () {
                 if (self.onCancel) self.onCancel();
             });
         },
@@ -666,22 +666,22 @@
             this.cancelable = opts.cancelable !== false;
             this.onCancel   = opts.onCancel || null;
 
-            $('#ss-pm-icon').attr('class', 'ss-progress-modal-icon' + (opts.warning ? ' is-warning' : ''));
-            $('#ss-pm-icon i').attr('class', 'ri-loader-4-line ri-spin');
-            $('#ss-pm-title').text(opts.title || '');
-            $('#ss-pm-subtitle').text(opts.subtitle || '');
-            $('#ss-pm-caution').text(opts.caution || 'Do not close this tab or navigate away while the operation is running.');
+            $('#sitessaver-pm-icon').attr('class', 'sitessaver-progress-modal-icon' + (opts.warning ? ' is-warning' : ''));
+            $('#sitessaver-pm-icon i').attr('class', 'ri-loader-4-line ri-spin');
+            $('#sitessaver-pm-title').text(opts.title || '');
+            $('#sitessaver-pm-subtitle').text(opts.subtitle || '');
+            $('#sitessaver-pm-caution').text(opts.caution || 'Do not close this tab or navigate away while the operation is running.');
             // 'info' = the work carries on without this tab; 'warning' (the
             // default) = closing the tab would stop or lose it.
             var info = opts.cautionTone === 'info';
-            $('.ss-progress-modal-caution').toggleClass('is-info', info)
+            $('.sitessaver-progress-modal-caution').toggleClass('is-info', info)
                 .children('i').attr('class', info ? 'ri-information-line' : 'ri-alert-line');
-            $('#ss-cancel-confirm').hide();
-            $('#ss-pm-cancel-btn').prop('disabled', false).toggle(!!this.cancelable);
+            $('#sitessaver-cancel-confirm').hide();
+            $('#sitessaver-pm-cancel-btn').prop('disabled', false).toggle(!!this.cancelable);
             this.setProgress(0, '');
             this.clearSteps();
             this.$el.fadeIn(200);
-            $('body').addClass('ss-modal-open');
+            $('body').addClass('sitessaver-modal-open');
         },
 
         // Build the step checklist for flows with named, ordered phases
@@ -691,7 +691,7 @@
         //
         // @param steps list<{id: string, label: string}>
         setSteps: function (steps) {
-            var $list = $('#ss-pm-step-list');
+            var $list = $('#sitessaver-pm-step-list');
             if (!steps || !steps.length) {
                 $list.hide().empty();
                 return;
@@ -699,16 +699,16 @@
             var html = '';
             for (var i = 0; i < steps.length; i++) {
                 html +=
-                    '<li class="ss-step is-pending" data-step-id="' + escapeHtml(steps[i].id) + '">' +
-                      '<span class="ss-step-icon"><i class="ri-checkbox-circle-line"></i></span>' +
-                      '<span class="ss-step-label">' + escapeHtml(steps[i].label) + '</span>' +
+                    '<li class="sitessaver-step is-pending" data-step-id="' + escapeHtml(steps[i].id) + '">' +
+                      '<span class="sitessaver-step-icon"><i class="ri-checkbox-circle-line"></i></span>' +
+                      '<span class="sitessaver-step-label">' + escapeHtml(steps[i].label) + '</span>' +
                     '</li>';
             }
             $list.html(html).show();
         },
 
         clearSteps: function () {
-            $('#ss-pm-step-list').hide().empty();
+            $('#sitessaver-pm-step-list').hide().empty();
         },
 
         // Mark every step before `key` done, `key` itself active, the rest
@@ -717,7 +717,7 @@
         // matching by id rather than a fixed index still lands on the right
         // row) or a numeric index (export's flat step list).
         setActiveStep: function (key) {
-            var $items = $('#ss-pm-step-list').children();
+            var $items = $('#sitessaver-pm-step-list').children();
             if (!$items.length) return;
 
             var activeIndex = typeof key === 'number'
@@ -731,13 +731,13 @@
                 $li.removeClass('is-pending is-active is-done');
                 if (i < activeIndex) {
                     $li.addClass('is-done');
-                    $li.find('.ss-step-icon i').attr('class', 'ri-checkbox-circle-fill');
+                    $li.find('.sitessaver-step-icon i').attr('class', 'ri-checkbox-circle-fill');
                 } else if (i === activeIndex) {
                     $li.addClass('is-active');
-                    $li.find('.ss-step-icon i').attr('class', 'ri-loader-4-line ri-spin');
+                    $li.find('.sitessaver-step-icon i').attr('class', 'ri-loader-4-line ri-spin');
                 } else {
                     $li.addClass('is-pending');
-                    $li.find('.ss-step-icon i').attr('class', 'ri-checkbox-circle-line');
+                    $li.find('.sitessaver-step-icon i').attr('class', 'ri-checkbox-circle-line');
                 }
             });
         },
@@ -746,10 +746,10 @@
         // swaps the header icon). Called once a flow's last status report
         // confirms completion, never assumed from the client's own count.
         completeSteps: function () {
-            $('#ss-pm-step-list').children().each(function () {
+            $('#sitessaver-pm-step-list').children().each(function () {
                 var $li = $(this);
                 $li.removeClass('is-pending is-active').addClass('is-done');
-                $li.find('.ss-step-icon i').attr('class', 'ri-checkbox-circle-fill');
+                $li.find('.sitessaver-step-icon i').attr('class', 'ri-checkbox-circle-fill');
             });
         },
 
@@ -770,17 +770,17 @@
 
         disableCancel: function (reason) {
             this.cancelable = false;
-            var $btn = $('#ss-pm-cancel-btn');
+            var $btn = $('#sitessaver-pm-cancel-btn');
             $btn.prop('disabled', true);
             if (reason) $btn.text(reason);
-            $('#ss-cancel-confirm').hide();
+            $('#sitessaver-cancel-confirm').hide();
         },
 
         done: function (iconClass) {
-            $('#ss-pm-icon i').attr('class', iconClass || 'ri-checkbox-circle-fill').css('color', 'var(--ss-success)');
-            $('#ss-pm-icon').removeClass('is-warning');
-            $('#ss-pm-cancel-btn').hide();
-            $('#ss-cancel-confirm').hide();
+            $('#sitessaver-pm-icon i').attr('class', iconClass || 'ri-checkbox-circle-fill').css('color', 'var(--sitessaver-success)');
+            $('#sitessaver-pm-icon').removeClass('is-warning');
+            $('#sitessaver-pm-cancel-btn').hide();
+            $('#sitessaver-cancel-confirm').hide();
         },
 
         close: function () {
@@ -790,7 +790,7 @@
                 // restore-complete modal while this one is closing, and an
                 // unconditional removeClass left that modal scrollable.
                 this.$el.fadeOut(200, function () {
-                    ssNotify.syncScrollLock();
+                    sitessaverNotify.syncScrollLock();
                 });
             }
         }
@@ -810,7 +810,7 @@
         var destination = $form.find('[name=export_destination]:checked').val() || 'local';
         var cancelled   = false;
 
-        ssModal.open({
+        sitessaverModal.open({
             title:    'Exporting Site',
             subtitle: 'Your site backup is being created. This may take a few minutes.',
             caution:  backgroundNote(destination),
@@ -818,7 +818,7 @@
             cancelable: true,
             onCancel: function () {
                 cancelled = true;
-                ssModal.disableCancel('Cancelling...');
+                sitessaverModal.disableCancel('Cancelling...');
             }
         });
 
@@ -836,7 +836,7 @@
             var gdriveJob   = res.gdrive_job_id;
             var currentStep = 0;
 
-            ssModal.setSteps(steps.map(function (s) { return { id: s.id, label: s.label }; }));
+            sitessaverModal.setSteps(steps.map(function (s) { return { id: s.id, label: s.label }; }));
 
             // The server spawned a background worker: the browser must NOT
             // run the steps itself, it just watches. This is what stops a
@@ -854,10 +854,10 @@
             }
 
             function finishExport(result) {
-                ssModal.completeSteps();
-                ssModal.done();
+                sitessaverModal.completeSteps();
+                sitessaverModal.done();
                 setTimeout(function () {
-                    ssModal.close();
+                    sitessaverModal.close();
                     showResult($form, buildExportMessage(result), false);
                     $btn.prop('disabled', false);
                 }, 800);
@@ -866,7 +866,7 @@
             function runNextStep() {
                 if (cancelled) {
                     ajax('sitessaver_cancel_export', { uid: uid }, function () {
-                        ssModal.close();
+                        sitessaverModal.close();
                         showError($form, errorFor('export_cancelled'));
                         $btn.prop('disabled', false);
                     });
@@ -881,18 +881,18 @@
                 }
 
                 var step = steps[currentStep];
-                ssModal.setActiveStep(currentStep);
+                sitessaverModal.setActiveStep(currentStep);
 
                 // A step flagged `poll` runs a long server-side transfer whose
                 // real progress is reported separately. Show the START of its
                 // range and let the poller fill the rest, instead of jumping
                 // straight to the end percentage and freezing there.
                 if (step.poll) {
-                    ssModal.disableCancel(uploadingNote(step.poll));
-                    ssModal.setProgress(step.from || 0, step.label);
+                    sitessaverModal.disableCancel(uploadingNote(step.poll));
+                    sitessaverModal.setProgress(step.from || 0, step.label);
                     startGdrivePolling(step);
                 } else {
-                    ssModal.setProgress(step.pct, step.label);
+                    sitessaverModal.setProgress(step.pct, step.label);
                 }
 
                 ajax('sitessaver_export_step', { uid: uid, step_index: currentStep },
@@ -922,7 +922,7 @@
             var gdrivePoll = null;
 
             function startGdrivePolling(step) {
-                gdrivePoll = pollGdriveInto(ssModal, gdriveJob, step, gdrivePoll);
+                gdrivePoll = pollGdriveInto(sitessaverModal, gdriveJob, step, gdrivePoll);
             }
 
             function stopGdrivePolling() {
@@ -931,7 +931,7 @@
 
             function handleExportError(err) {
                 stopGdrivePolling();
-                ssModal.close();
+                sitessaverModal.close();
                 showError($form, (err && err.error) ? err.error : normalizeError(err, 'export_failed'), 'export_step');
                 $btn.prop('disabled', false);
             }
@@ -939,7 +939,7 @@
             runNextStep();
 
         }, function (err) {
-            ssModal.close();
+            sitessaverModal.close();
             showError($form, normalizeError(err, 'export_failed'), 'export_start');
             $btn.prop('disabled', false);
         });
@@ -1062,7 +1062,7 @@
             if (isCancelled()) {
                 clearInterval(poll); ended = true;
                 ajax('sitessaver_cancel_export', { uid: uid }, function () {
-                    ssModal.close();
+                    sitessaverModal.close();
                     showError($form, errorFor('export_cancelled'));
                     $btn.prop('disabled', false);
                     onDone();
@@ -1081,7 +1081,7 @@
 
                 if (state === 'error') {
                     clearInterval(poll); ended = true;
-                    ssModal.close();
+                    sitessaverModal.close();
                     showError($form, s.error ? normalizeError(s.error) : errorFor('export_failed', (s.status && s.status.message) || ''), 'export');
                     $btn.prop('disabled', false);
                     onDone();
@@ -1090,10 +1090,10 @@
 
                 if (state === 'completed') {
                     clearInterval(poll); ended = true;
-                    ssModal.completeSteps();
-                    ssModal.done();
+                    sitessaverModal.completeSteps();
+                    sitessaverModal.done();
                     setTimeout(function () {
-                        ssModal.close();
+                        sitessaverModal.close();
                         showResult($form, buildExportMessage(s.status.result), false);
                         $btn.prop('disabled', false);
                         onDone();
@@ -1106,7 +1106,7 @@
                 // it instead of spinning a progress bar forever.
                 if (s.stalled) {
                     clearInterval(poll); ended = true;
-                    ssModal.close();
+                    sitessaverModal.close();
                     showError($form, s.error ? normalizeError(s.error)
                         : errorFor('export_stalled', 'No progress for ' + s.seconds_since_update + 's'), 'export');
                     $btn.prop('disabled', false);
@@ -1117,16 +1117,16 @@
                 // During the Drive upload the byte-level job transient is a
                 // far better progress signal than the coarse step table.
                 if (s.poll) {
-                    ssModal.setActiveStep(s.step_index);
-                    ssModal.disableCancel(uploadingNote(s.poll));
+                    sitessaverModal.setActiveStep(s.step_index);
+                    sitessaverModal.disableCancel(uploadingNote(s.poll));
                     remoteUploadStatus(s.poll, gdriveJob, function (jobRes) {
                         var uploaded = Number(jobRes.progress);
                         var from     = s.step_from || 0;
                         var span     = Math.max(0, s.step_pct - from);
                         var overall  = isFinite(uploaded) ? Math.round(from + span * (uploaded / 100)) : from;
-                        ssModal.setProgress(Math.min(overall, s.step_pct), gdriveLabel(s.step_label, jobRes));
+                        sitessaverModal.setProgress(Math.min(overall, s.step_pct), gdriveLabel(s.step_label, jobRes));
                     }, function () {
-                        ssModal.setProgress(s.step_from || 0, s.step_label);
+                        sitessaverModal.setProgress(s.step_from || 0, s.step_label);
                     });
                     return;
                 }
@@ -1145,8 +1145,8 @@
                 } else if (d.done && d.note !== 'zip-finalizing' && d.note !== 'cleanup') {
                     label += ' (' + d.done + ' files)';
                 }
-                ssModal.setActiveStep(s.step_index);
-                ssModal.setProgress(s.step_pct, label);
+                sitessaverModal.setActiveStep(s.step_index);
+                sitessaverModal.setProgress(s.step_pct, label);
             }, function () {
                 // One failed poll is not fatal; the worker keeps running
                 // regardless. Try again on the next tick.
@@ -1168,7 +1168,7 @@
         if (keepsLocal && result.file) {
             var dlUrl = SS.ajaxUrl + '?action=sitessaver_download_backup&file=' + encodeURIComponent(result.file) + '&nonce=' + SS.downloadNonce;
             msg += escapeHtml(SS.strings.done) + ' ' + escapeHtml(result.file) + ' (' + escapeHtml(result.size) + ')<br><br>';
-            msg += '<a href="' + dlUrl + '" class="ss-download-link" target="_blank"><i class="ri-download-2-line"></i> Download backup</a>';
+            msg += '<a href="' + dlUrl + '" class="sitessaver-download-link" target="_blank"><i class="ri-download-2-line"></i> Download backup</a>';
         }
 
         // 1.5.x response shape (no `remotes` list): Google Drive only.
@@ -1180,7 +1180,7 @@
                     msg += ' <a href="' + escapeHtml(result.gdrive_folder_url) + '" target="_blank" rel="noopener"><i class="ri-external-link-line"></i> Open Drive folder</a>';
                 }
             } else {
-                msg += '<span style="color:var(--ss-danger)"><i class="ri-error-warning-line"></i> Google Drive upload failed: ' + escapeHtml(result.gdrive.message || 'Unknown error') + '</span>';
+                msg += '<span style="color:var(--sitessaver-danger)"><i class="ri-error-warning-line"></i> Google Drive upload failed: ' + escapeHtml(result.gdrive.message || 'Unknown error') + '</span>';
             }
         }
 
@@ -1196,7 +1196,7 @@
                     msg += ' <a href="' + escapeHtml(r.folder_url) + '" target="_blank" rel="noopener"><i class="ri-external-link-line"></i> Open ' + label + ' folder</a>';
                 }
             } else {
-                msg += '<span style="color:var(--ss-danger)"><i class="ri-error-warning-line"></i> ' + label + ' upload failed: ' + escapeHtml(r.message || 'Unknown error') + '</span>';
+                msg += '<span style="color:var(--sitessaver-danger)"><i class="ri-error-warning-line"></i> ' + label + ' upload failed: ' + escapeHtml(r.message || 'Unknown error') + '</span>';
             }
         });
 
@@ -1210,12 +1210,12 @@
     if ($dropZone.length) {
         $dropZone.on('dragover', function(e) {
             e.preventDefault();
-            $(this).css({ 'border-color': 'var(--ss-primary)', 'background': 'rgba(var(--ss-primary-rgb), 0.05)' });
+            $(this).css({ 'border-color': 'var(--sitessaver-primary)', 'background': 'rgba(var(--sitessaver-primary-rgb), 0.05)' });
         });
 
         $dropZone.on('dragleave drop', function(e) {
             e.preventDefault();
-            $(this).css({ 'border-color': 'var(--ss-border)', 'background': 'transparent' });
+            $(this).css({ 'border-color': 'var(--sitessaver-border)', 'background': 'transparent' });
         });
 
         $dropZone.on('drop', function(e) {
@@ -1256,7 +1256,7 @@
 
     function handleImportFile(file) {
         if (!file.name.toLowerCase().endsWith('.zip')) {
-            ssNotify.error('Only ZIP files are accepted. Pick the .zip archive produced by an export.', {
+            sitessaverNotify.error('Only ZIP files are accepted. Pick the .zip archive produced by an export.', {
                 title: 'Unsupported file'
             });
             // Clear the picker so re-choosing the same bad file still fires
@@ -1265,7 +1265,7 @@
             return;
         }
 
-        ssNotify.confirm({
+        sitessaverNotify.confirm({
             tone: 'danger',
             title: 'Restore this backup?',
             message: SS.strings.confirmRestore,
@@ -1293,7 +1293,7 @@
 
         $form.find('.sitessaver-result').hide();
 
-        ssModal.open({
+        sitessaverModal.open({
             title:    'Importing Backup',
             subtitle: 'Uploading your backup file. Please wait.',
             caution:  'Do not close this tab or navigate away. Cancelling during upload will discard the file.',
@@ -1302,12 +1302,12 @@
                 cancelled = true;
                 if (activeXhr) activeXhr.abort();
                 ajax('sitessaver_cleanup_chunks', { upload_id: uploadId });
-                ssModal.close();
+                sitessaverModal.close();
                 showError($form, errorFor('import_cancelled'));
             }
         });
 
-        ssModal.setProgress(0, 'Uploading');
+        sitessaverModal.setProgress(0, 'Uploading');
 
         function sendNextChunk() {
             if (cancelled) return;
@@ -1372,12 +1372,12 @@
 
         function afterChunk(data) {
             if (data.assembled && data.assembled_file) {
-                ssModal.setProgress(100, 'Uploading');
+                sitessaverModal.setProgress(100, 'Uploading');
                 startRestoration(data.assembled_file);
                 return;
             }
             currentChunk = typeof data.next_index === 'number' ? data.next_index : currentChunk + 1;
-            ssModal.setProgress(Math.min(99, Math.round((currentChunk / totalChunks) * 100)), 'Uploading');
+            sitessaverModal.setProgress(Math.min(99, Math.round((currentChunk / totalChunks) * 100)), 'Uploading');
             sendNextChunk();
         }
 
@@ -1393,7 +1393,7 @@
                 return;
             }
             var wait = Math.min(30, Math.pow(2, attempt)) * 1000;
-            ssModal.setProgress(Math.round((currentChunk / totalChunks) * 100), 'Connection problem, retrying (' + attempt + '/' + MAX_ATTEMPTS + ')...');
+            sitessaverModal.setProgress(Math.round((currentChunk / totalChunks) * 100), 'Connection problem, retrying (' + attempt + '/' + MAX_ATTEMPTS + ')...');
 
             setTimeout(function () {
                 if (cancelled) return;
@@ -1415,15 +1415,15 @@
 
         function failUpload(err) {
             ajax('sitessaver_cleanup_chunks', { upload_id: uploadId });
-            ssModal.close();
+            sitessaverModal.close();
             showError($form, err, 'upload');
         }
 
         function startRestoration(filename) {
-            ssModal.disableCancel('Restoring, cannot cancel');
-            $('#ss-pm-title').text('Restoring Site');
-            $('#ss-pm-subtitle').text('Database and files are being restored. This cannot be interrupted.');
-            $('#ss-pm-caution').text('Keep this tab open until the restore finishes. If it does close, the restore carries on on the server.');
+            sitessaverModal.disableCancel('Restoring, cannot cancel');
+            $('#sitessaver-pm-title').text('Restoring Site');
+            $('#sitessaver-pm-subtitle').text('Database and files are being restored. This cannot be interrupted.');
+            $('#sitessaver-pm-caution').text('Keep this tab open until the restore finishes. If it does close, the restore carries on on the server.');
             runRestore({ file: filename }, $form, function (res) {
                 showResult($form, res.message || SS.strings.done, false);
             });
@@ -1444,14 +1444,14 @@
     // returns.
 
     function runRestore(source, $form, onSuccessExtra) {
-        ssModal.setSteps(SS.importPhases || []);
-        ssModal.setIndeterminate(source.gdrive_file_id ? 'Downloading from Google Drive...'
+        sitessaverModal.setSteps(SS.importPhases || []);
+        sitessaverModal.setIndeterminate(source.gdrive_file_id ? 'Downloading from Google Drive...'
             : (source.remote_file_id ? 'Downloading from ' + (source.remote_label || 'cloud storage') + '...' : 'Preparing restore...'));
 
         ajax('sitessaver_restore_start', source, function (job) {
             followRestore(job, $form, onSuccessExtra);
         }, function (err) {
-            ssModal.close();
+            sitessaverModal.close();
             showError($form, normalizeError(err, 'restore_failed_early'), 'restore_start');
         });
     }
@@ -1518,22 +1518,22 @@
                     if ((s.status === 'queued' && s.not_started) || s.drive) runInline();
 
                     if (s.phase && s.phase !== 'queued' && s.phase !== 'download' && s.phase !== 'done') {
-                        ssModal.setActiveStep(s.phase);
+                        sitessaverModal.setActiveStep(s.phase);
                     }
-                    if (s.label && s.status !== 'completed') ssModal.setIndeterminate(s.label);
+                    if (s.label && s.status !== 'completed') sitessaverModal.setIndeterminate(s.label);
 
                     if (s.status === 'completed') {
                         finish();
-                        ssModal.completeSteps();
-                        ssModal.done();
+                        sitessaverModal.completeSteps();
+                        sitessaverModal.done();
                         setTimeout(function () {
-                            ssModal.close();
+                            sitessaverModal.close();
                             if (onSuccessExtra) onSuccessExtra(s.result || {});
                             showRestoreCompleteModal(s.result || {});
                         }, 800);
                     } else if (s.status === 'failed') {
                         finish();
-                        ssModal.close();
+                        sitessaverModal.close();
                         showError($form, normalizeError(s.error, 'restore_failed'), 'restore');
                     }
                 },
@@ -1547,7 +1547,7 @@
             misses++;
             if (misses >= 90) {
                 finish();
-                ssModal.close();
+                sitessaverModal.close();
                 showError($form, errorFor('server_timeout', 'Restore status unreachable for ' + misses + ' polls (job ' + job.job + ')'), 'restore_poll');
             }
         }
@@ -1560,7 +1560,7 @@
         var file  = $(this).data('file');
         var $form = $('.sitessaver-wrap');
 
-        ssNotify.confirm({
+        sitessaverNotify.confirm({
             tone: 'danger',
             title: 'Restore this backup?',
             message: SS.strings.confirmRestore,
@@ -1572,7 +1572,7 @@
 
     function doRestore(file, $form) {
         $form.find('.sitessaver-result').hide();
-        ssModal.open({
+        sitessaverModal.open({
             title:      'Restoring Site',
             subtitle:   'Database and files are being restored. Please wait.',
             caution:    'Keep this tab open until the restore finishes. If it does close, the restore carries on on the server.',
@@ -1591,7 +1591,7 @@
         // seed that into the input as if it were a real label.
         if (current === '\u2014') current = '';
 
-        ssNotify.prompt({
+        sitessaverNotify.prompt({
             title: 'Label this backup',
             message: 'Give this backup a short name so it is easy to recognise later.',
             confirmText: 'Save label',
@@ -1603,11 +1603,11 @@
             onConfirm: function (label) {
                 ajax('sitessaver_add_label', { file: file, label: label }, function () {
                     // Reload so the table reflects the stored label. The toast
-                    // is shown by the post-reload flash, see ssFlash below.
-                    ssFlash('success', 'Label saved.');
+                    // is shown by the post-reload flash, see sitessaverFlash below.
+                    sitessaverFlash('success', 'Label saved.');
                     location.reload();
                 }, function (err) {
-                    ssNotify.error(err.message || SS.strings.error);
+                    sitessaverNotify.error(err.message || SS.strings.error);
                 });
             }
         });
@@ -1631,7 +1631,7 @@
                 ' impossible to restore. This cannot be undone.';
         }
 
-        ssNotify.confirm({
+        sitessaverNotify.confirm({
             tone: 'danger',
             title: dependents > 0 ? 'Delete this backup and break its chain?' : 'Delete this backup?',
             message: message,
@@ -1639,10 +1639,10 @@
             cancelText: 'Keep it',
             onConfirm: function () {
                 ajax('sitessaver_delete_backup', { file: file }, function () {
-                    ssFlash('success', 'Backup deleted.');
+                    sitessaverFlash('success', 'Backup deleted.');
                     location.reload();
                 }, function (err) {
-                    ssNotify.error(err.message || SS.strings.error);
+                    sitessaverNotify.error(err.message || SS.strings.error);
                 });
             }
         });
@@ -1652,16 +1652,16 @@
     // ---------- SCHEDULE ----------
 
     // Keep the card's selected styling in step with its checkbox.
-    $(document).on('change', '.ss-frequency-option input[type=checkbox]', function () {
-        $(this).closest('.ss-frequency-option').toggleClass('is-selected', this.checked);
+    $(document).on('change', '.sitessaver-frequency-option input[type=checkbox]', function () {
+        $(this).closest('.sitessaver-frequency-option').toggleClass('is-selected', this.checked);
     });
 
     // Reveal a dependent block only while its controlling radio is chosen.
-    // Declared on the element as data-ss-when="field=value" so the markup
+    // Declared on the element as data-sitessaver-when="field=value" so the markup
     // is the one place that says what depends on what.
-    function ssSyncConditionals($scope) {
-        $scope.find('[data-ss-when]').each(function () {
-            var parts = String($(this).data('ss-when')).split('=');
+    function sitessaverSyncConditionals($scope) {
+        $scope.find('[data-sitessaver-when]').each(function () {
+            var parts = String($(this).data('sitessaver-when')).split('=');
             var field = parts[0];
             var want  = parts.slice(1).join('=');
             var have  = $scope.find('[name="' + field + '"]:checked').val();
@@ -1672,9 +1672,9 @@
 
     var $scheduleForm = $('#sitessaver-schedule-form');
     if ($scheduleForm.length) {
-        ssSyncConditionals($scheduleForm);
+        sitessaverSyncConditionals($scheduleForm);
         $scheduleForm.on('change', 'input[type=radio]', function () {
-            ssSyncConditionals($scheduleForm);
+            sitessaverSyncConditionals($scheduleForm);
         });
     }
 
@@ -1690,7 +1690,7 @@
         }).get();
 
         if (enabled && frequencies.length === 0) {
-            ssNotify.warning('Choose at least one backup frequency before enabling the schedule.', {
+            sitessaverNotify.warning('Choose at least one backup frequency before enabling the schedule.', {
                 title: 'No frequency selected'
             });
             return;
@@ -1720,11 +1720,11 @@
         ajax('sitessaver_save_schedule', data, function (res) {
             // Reload so "Next run in ...", the per-frequency last-run lines,
             // and the cron health banners reflect what was just written.
-            ssFlash('success', res.message || SS.strings.done);
+            sitessaverFlash('success', res.message || SS.strings.done);
             location.reload();
         }, function (err) {
             $btn.prop('disabled', false);
-            ssNotify.error(err.message || SS.strings.error);
+            sitessaverNotify.error(err.message || SS.strings.error);
         });
     });
 
@@ -1732,19 +1732,19 @@
     // ---------- SERVER CRON PANEL ----------
 
     // Hosting-panel vs crontab setup tabs.
-    $(document).on('click', '.ss-setup-tab', function () {
+    $(document).on('click', '.sitessaver-setup-tab', function () {
         var $tab = $(this);
         var id   = $tab.data('setup-target');
 
-        $tab.addClass('is-active').siblings('.ss-setup-tab').removeClass('is-active');
-        $('.ss-setup-body').removeClass('is-active');
+        $tab.addClass('is-active').siblings('.sitessaver-setup-tab').removeClass('is-active');
+        $('.sitessaver-setup-body').removeClass('is-active');
         $('#' + id).addClass('is-active');
     });
 
     // The per-field schedule boxes have no button of their own; clicking one
     // copies it, which is the only thing anyone wants to do with a read-only
     // field showing a single character.
-    $(document).on('click', '.ss-cron-field-input', function () {
+    $(document).on('click', '.sitessaver-cron-field-input', function () {
         var $input = $(this);
         $input.trigger('select');
 
@@ -1760,7 +1760,7 @@
         }
     });
 
-    $(document).on('click', '.ss-copy-btn', function () {
+    $(document).on('click', '.sitessaver-copy-btn', function () {
         var $btn    = $(this);
         var $target = $($btn.data('copy-target'));
         if (!$target.length) return;
@@ -1771,7 +1771,7 @@
             var original = $btn.html();
             $btn.html('<i class="ri-checkbox-circle-line"></i> Copied');
             setTimeout(function () { $btn.html(original); }, 1600);
-            ssNotify.success('Copied to clipboard.', { duration: 2500, title: null });
+            sitessaverNotify.success('Copied to clipboard.', { duration: 2500, title: null });
         }
 
         function fallback() {
@@ -1784,7 +1784,7 @@
             if (ok) {
                 done();
             } else {
-                ssNotify.warning('Could not copy automatically. Select the text and copy it manually.');
+                sitessaverNotify.warning('Could not copy automatically. Select the text and copy it manually.');
             }
         }
 
@@ -1798,7 +1798,7 @@
     $(document).on('click', '#sitessaver-regenerate-cron-key', function () {
         var $btn = $(this);
 
-        ssNotify.confirm({
+        sitessaverNotify.confirm({
             tone: 'warning',
             title: 'Generate a new trigger URL?',
             message: 'The current URL stops working immediately. Any server cron or uptime monitor using it must be updated with the new URL, or your scheduled backups will stop running.',
@@ -1807,11 +1807,11 @@
             onConfirm: function () {
                 $btn.prop('disabled', true);
                 ajax('sitessaver_regenerate_cron_key', {}, function (res) {
-                    ssFlash('success', res.message || 'New trigger URL generated.');
+                    sitessaverFlash('success', res.message || 'New trigger URL generated.');
                     location.reload();
                 }, function (err) {
                     $btn.prop('disabled', false);
-                    ssNotify.error(err.message || SS.strings.error);
+                    sitessaverNotify.error(err.message || SS.strings.error);
                 });
             }
         });
@@ -1820,7 +1820,7 @@
     $(document).on('click', '#sitessaver-run-schedule-now', function () {
         var $btn = $(this);
 
-        ssNotify.confirm({
+        sitessaverNotify.confirm({
             title: 'Run a backup now?',
             message: 'This runs the scheduled backup immediately using the settings saved above, so you can confirm the schedule works without waiting for the next run.',
             confirmText: 'Run backup',
@@ -1828,26 +1828,26 @@
             onConfirm: function () {
                 $btn.prop('disabled', true);
 
-                ssModal.open({
+                sitessaverModal.open({
                     title:      'Running scheduled backup',
                     subtitle:   'Creating a backup with your saved schedule settings.',
                     caution:    'Do not close this tab while the backup is being created.',
                     cancelable: false
                 });
-                ssModal.setIndeterminate('Backing up your site...');
+                sitessaverModal.setIndeterminate('Backing up your site...');
 
                 ajax('sitessaver_run_schedule_now', {}, function (res) {
-                    ssModal.done();
+                    sitessaverModal.done();
                     setTimeout(function () {
-                        ssModal.close();
+                        sitessaverModal.close();
                         $btn.prop('disabled', false);
-                        ssFlash('success', res.message || SS.strings.done);
+                        sitessaverFlash('success', res.message || SS.strings.done);
                         location.reload();
                     }, 800);
                 }, function (err) {
-                    ssModal.close();
+                    sitessaverModal.close();
                     $btn.prop('disabled', false);
-                    ssNotify.error(err.message || SS.strings.error, { title: 'Backup failed' });
+                    sitessaverNotify.error(err.message || SS.strings.error, { title: 'Backup failed' });
                 });
             }
         });
@@ -1864,10 +1864,10 @@
             $btn.prop('disabled', false);
             // No reload needed: nothing else on this page derives from the
             // folder ID, so a toast is less disruptive than a full refresh.
-            ssNotify.success(res.message || SS.strings.done);
+            sitessaverNotify.success(res.message || SS.strings.done);
         }, function (err) {
             $btn.prop('disabled', false);
-            ssNotify.error(err.message || SS.strings.error);
+            sitessaverNotify.error(err.message || SS.strings.error);
         });
     });
 
@@ -1876,41 +1876,41 @@
 
     // Media picker for the notification email logo. wp.media is only enqueued
     // on the settings screen, so guard rather than assume it exists.
-    var ssLogoFrame;
+    var sitessaverLogoFrame;
     $(document).on('click', '#sitessaver-pick-logo', function () {
         var $input = $('#sitessaver-email-brand-form [name=logo_url]');
 
         if (typeof wp === 'undefined' || !wp.media) {
-            ssNotify.warning('The WordPress media library is not available on this screen. Paste the image URL instead.');
+            sitessaverNotify.warning('The WordPress media library is not available on this screen. Paste the image URL instead.');
             return;
         }
 
         // Reuse one frame: reopening a fresh frame each click leaks listeners
         // and loses the previous selection.
-        if (ssLogoFrame) {
-            ssLogoFrame.open();
+        if (sitessaverLogoFrame) {
+            sitessaverLogoFrame.open();
             return;
         }
 
-        ssLogoFrame = wp.media({
+        sitessaverLogoFrame = wp.media({
             title: 'Select email logo',
             button: { text: 'Use this image' },
             library: { type: 'image' },
             multiple: false
         });
 
-        ssLogoFrame.on('select', function () {
-            var att = ssLogoFrame.state().get('selection').first().toJSON();
+        sitessaverLogoFrame.on('select', function () {
+            var att = sitessaverLogoFrame.state().get('selection').first().toJSON();
             // Prefer a mid-size file: a 4000px original would be downscaled by
             // the client anyway and only bloats the message.
             var url = (att.sizes && att.sizes.medium && att.sizes.medium.url) || att.url;
             $input.val(url).trigger('change');
         });
 
-        ssLogoFrame.open();
+        sitessaverLogoFrame.open();
     });
 
-    function ssBrandFormData($form) {
+    function sitessaverBrandFormData($form) {
         return {
             enabled: $form.find('[name=enabled]').is(':checked') ? 1 : 0,
             logo_url: $form.find('[name=logo_url]').val(),
@@ -1923,7 +1923,7 @@
     }
 
     $(document).on('change', '#sitessaver-export-notify-form [name=notify_enabled]', function () {
-        $('#sitessaver-export-notify-form .ss-notify-email-row').prop('hidden', !this.checked);
+        $('#sitessaver-export-notify-form .sitessaver-notify-email-row').prop('hidden', !this.checked);
     });
 
     $(document).on('submit', '#sitessaver-export-notify-form', function (e) {
@@ -1936,10 +1936,10 @@
         }, function (res) {
             $btn.prop('disabled', false);
             SS.adminEmail = res.email || '';
-            ssNotify.success(res.message || SS.strings.done);
+            sitessaverNotify.success(res.message || SS.strings.done);
         }, function (err) {
             $btn.prop('disabled', false);
-            ssNotify.error((err && err.message) || SS.strings.error);
+            sitessaverNotify.error((err && err.message) || SS.strings.error);
         });
     });
 
@@ -1948,17 +1948,17 @@
         var $form = $(this);
         var $btn = $form.find('button[type=submit]').prop('disabled', true);
 
-        ajax('sitessaver_save_email_brand', ssBrandFormData($form), function (res) {
+        ajax('sitessaver_save_email_brand', sitessaverBrandFormData($form), function (res) {
             $btn.prop('disabled', false);
-            ssNotify.success(res.message || SS.strings.done);
+            sitessaverNotify.success(res.message || SS.strings.done);
             // The header badge reflects the HTML on/off state, so keep it in sync.
             var on = $form.find('[name=enabled]').is(':checked');
-            $form.closest('.ss-section').find('.ss-section-header .badge')
+            $form.closest('.sitessaver-section').find('.sitessaver-section-header .badge')
                 .toggleClass('badge-blue', on)
                 .text(on ? 'HTML email on' : 'Plain text');
         }, function (err) {
             $btn.prop('disabled', false);
-            ssNotify.error(err.message || SS.strings.error);
+            sitessaverNotify.error(err.message || SS.strings.error);
         });
     });
 
@@ -1969,17 +1969,17 @@
         var $form = $('#sitessaver-email-brand-form');
         var email = $btn.data('email');
 
-        ajax('sitessaver_save_email_brand', ssBrandFormData($form), function () {
+        ajax('sitessaver_save_email_brand', sitessaverBrandFormData($form), function () {
             ajax('sitessaver_send_test_email', { email: email }, function (res) {
                 $btn.prop('disabled', false).removeClass('loading');
-                ssNotify.success(res.message || 'Test email sent.', { title: 'Check your inbox' });
+                sitessaverNotify.success(res.message || 'Test email sent.', { title: 'Check your inbox' });
             }, function (err) {
                 $btn.prop('disabled', false).removeClass('loading');
-                ssNotify.error(err.message || SS.strings.error, { title: 'Could not send' });
+                sitessaverNotify.error(err.message || SS.strings.error, { title: 'Could not send' });
             });
         }, function (err) {
             $btn.prop('disabled', false).removeClass('loading');
-            ssNotify.error(err.message || SS.strings.error);
+            sitessaverNotify.error(err.message || SS.strings.error);
         });
     });
 
@@ -1988,7 +1988,7 @@
     // ---------- GOOGLE DRIVE ----------
 
     $(document).on('click', '#sitessaver-gdrive-disconnect', function () {
-        ssNotify.confirm({
+        sitessaverNotify.confirm({
             tone: 'warning',
             title: 'Disconnect Google Drive?',
             message: 'SitesSaver will stop uploading backups to Drive. Backups already stored there are not deleted, and you can reconnect at any time.',
@@ -1996,10 +1996,10 @@
             cancelText: 'Stay connected',
             onConfirm: function () {
                 ajax('sitessaver_gdrive_disconnect', {}, function () {
-                    ssFlash('success', 'Google Drive disconnected.');
+                    sitessaverFlash('success', 'Google Drive disconnected.');
                     location.reload();
                 }, function (err) {
-                    ssNotify.error(err.message || SS.strings.error);
+                    sitessaverNotify.error(err.message || SS.strings.error);
                 });
             }
         });
@@ -2027,12 +2027,12 @@
             // This will only return when the WHOLE upload is finished
             clearInterval(pollInterval);
             hideProgress($wrap);
-            ssNotify.success(res.message || 'Backup uploaded to Google Drive.', { title: 'Upload complete' });
+            sitessaverNotify.success(res.message || 'Backup uploaded to Google Drive.', { title: 'Upload complete' });
             $btn.prop('disabled', false).removeClass('loading');
         }, function (err) {
             clearInterval(pollInterval);
             hideProgress($wrap);
-            ssNotify.error(err.message || SS.strings.error, { title: 'Upload failed' });
+            sitessaverNotify.error(err.message || SS.strings.error, { title: 'Upload failed' });
             $btn.prop('disabled', false).removeClass('loading');
         });
 
@@ -2063,9 +2063,9 @@
     }
 
     function updateBackupStats(driveFiles, failed) {
-        var $countSub = $('#ss-stat-count-sub');
+        var $countSub = $('#sitessaver-stat-count-sub');
         if (!$countSub.length) return;
-        var $sizeSub = $('#ss-stat-size-sub');
+        var $sizeSub = $('#sitessaver-stat-size-sub');
         if (failed) {
             $countSub.addClass('is-error').text('Google Drive unavailable');
             $sizeSub.html('&nbsp;');
@@ -2084,12 +2084,12 @@
             seen[f.name] = true; count++; total += Number(f.size_bytes) || 0;
         });
 
-        $('#ss-stat-count').text(count);
-        $('#ss-stat-size').text(fmtBytes(total));
+        $('#sitessaver-stat-count').text(count);
+        $('#sitessaver-stat-size').text(fmtBytes(total));
         $countSub.removeClass('is-error').text(local.length + ' on server · ' + driveCount + ' on Google Drive');
         $sizeSub.text(fmtBytes(localBytes) + ' on server · ' + fmtBytes(driveBytes) + ' on Drive');
 
-        var $empty = $('#ss-local-empty p[data-drive-text]');
+        var $empty = $('#sitessaver-local-empty p[data-drive-text]');
         if ($empty.length && driveCount > 0) $empty.text($empty.attr('data-drive-text'));
     }
 
@@ -2104,7 +2104,7 @@
                 return;
             }
 
-            var html = '<table class="ss-table">';
+            var html = '<table class="sitessaver-table">';
             html += '<thead><tr><th>File</th><th>Size</th><th>Created</th><th style="text-align:right;">Actions</th></tr></thead><tbody>';
             res.files.forEach(function (f) {
                 html += '<tr>';
@@ -2123,7 +2123,7 @@
             $container.html(html);
         }, function (err) {
             updateBackupStats([], true);
-            $container.html('<p style="padding: 24px; color: var(--ss-danger); text-align: center;">' + escapeHtml(err.message || SS.strings.error) + '</p>');
+            $container.html('<p style="padding: 24px; color: var(--sitessaver-danger); text-align: center;">' + escapeHtml(err.message || SS.strings.error) + '</p>');
         });
     });
 
@@ -2134,8 +2134,8 @@
         }
     });
 
-    $(document).on('click', '#ss-storage-notice-dismiss', function () {
-        $('#ss-storage-notice').remove();
+    $(document).on('click', '#sitessaver-storage-notice-dismiss', function () {
+        $('#sitessaver-storage-notice').remove();
         ajax('sitessaver_dismiss_storage_notice', {}, function () {}, function () {});
     });
 
@@ -2145,10 +2145,10 @@
         $btn.prop('disabled', true);
 
         ajax('sitessaver_gdrive_download', { file_id: id }, function (res) {
-            ssFlash('success', res.message || 'Backup downloaded from Google Drive.');
+            sitessaverFlash('success', res.message || 'Backup downloaded from Google Drive.');
             location.reload();
         }, function (err) {
-            ssNotify.error(err.message || SS.strings.error, { title: 'Download failed' });
+            sitessaverNotify.error(err.message || SS.strings.error, { title: 'Download failed' });
             $btn.prop('disabled', false);
         });
     });
@@ -2158,7 +2158,7 @@
         var id   = $btn.data('id');
         var name = $btn.data('name') || 'this backup';
 
-        ssNotify.confirm({
+        sitessaverNotify.confirm({
             tone: 'danger',
             title: 'Restore from Google Drive?',
             message: 'SitesSaver will download "' + name + '" and overwrite your current site with it. This cannot be undone.',
@@ -2171,7 +2171,7 @@
                 // restore) runs in one request and cannot be interrupted, so
                 // use the blocking progress modal rather than an inline bar
                 // that can sit behind other page content.
-                ssModal.open({
+                sitessaverModal.open({
                     title:      'Restoring from Google Drive',
                     subtitle:   'Downloading the backup and restoring your site. Please wait.',
                     caution:    'Keep this tab open until the restore finishes. If it does close, the restore carries on on the server.',
@@ -2186,7 +2186,7 @@
     $(document).on('click', '.sitessaver-gdrive-delete-btn', function () {
         var id = $(this).data('id');
 
-        ssNotify.confirm({
+        sitessaverNotify.confirm({
             tone: 'danger',
             title: 'Delete from Google Drive?',
             message: 'This backup will be permanently removed from your Google Drive. This cannot be undone.',
@@ -2194,10 +2194,10 @@
             cancelText: 'Keep it',
             onConfirm: function () {
                 ajax('sitessaver_gdrive_delete', { file_id: id }, function () {
-                    ssNotify.success('Backup deleted from Google Drive.');
+                    sitessaverNotify.success('Backup deleted from Google Drive.');
                     $('#sitessaver-gdrive-refresh').trigger('click');
                 }, function (err) {
-                    ssNotify.error(err.message || SS.strings.error);
+                    sitessaverNotify.error(err.message || SS.strings.error);
                 });
             }
         });
@@ -2213,7 +2213,7 @@
     $(document).on('click', '.sitessaver-remote-disconnect', function () {
         var dest  = $(this).data('dest');
         var label = $(this).data('label') || 'this storage';
-        ssNotify.confirm({
+        sitessaverNotify.confirm({
             tone: 'warning',
             title: 'Disconnect ' + label + '?',
             message: 'SitesSaver will stop uploading backups to ' + label + '. Backups already stored there are not deleted, and you can reconnect at any time.',
@@ -2221,10 +2221,10 @@
             cancelText: 'Stay connected',
             onConfirm: function () {
                 ajax('sitessaver_remote_disconnect', { dest: dest }, function () {
-                    ssFlash('success', label + ' disconnected.');
+                    sitessaverFlash('success', label + ' disconnected.');
                     location.reload();
                 }, function (err) {
-                    ssNotify.error(err.message || SS.strings.error);
+                    sitessaverNotify.error(err.message || SS.strings.error);
                 });
             }
         });
@@ -2246,13 +2246,13 @@
         ajax('sitessaver_remote_upload', { dest: dest, file: file, job_id: jobId }, function (res) {
             clearInterval(pollInterval);
             hideProgress($wrap);
-            ssNotify.success(res.message || ('Backup uploaded to ' + label + '.'), { title: 'Upload complete' });
+            sitessaverNotify.success(res.message || ('Backup uploaded to ' + label + '.'), { title: 'Upload complete' });
             $btn.prop('disabled', false).removeClass('loading');
             $('.sitessaver-remote-refresh[data-dest="' + dest + '"]').trigger('click');
         }, function (err) {
             clearInterval(pollInterval);
             hideProgress($wrap);
-            ssNotify.error(err.message || SS.strings.error, { title: 'Upload failed' });
+            sitessaverNotify.error(err.message || SS.strings.error, { title: 'Upload failed' });
             $btn.prop('disabled', false).removeClass('loading');
         });
 
@@ -2276,7 +2276,7 @@
                 $container.html('<p style="padding: 24px; text-align: center;">' + (res.error ? escapeHtml(res.error) : 'No backups found on ' + escapeHtml(label) + '.') + '</p>');
                 return;
             }
-            var html = '<table class="ss-table">';
+            var html = '<table class="sitessaver-table">';
             html += '<thead><tr><th>File</th><th>Size</th><th>Created</th><th style="text-align:right;">Actions</th></tr></thead><tbody>';
             res.files.forEach(function (f) {
                 var attrs = ' data-dest="' + escapeHtml(dest) + '" data-label="' + escapeHtml(label) + '" data-id="' + escapeHtml(f.id) + '" data-name="' + escapeHtml(f.name) + '"';
@@ -2293,7 +2293,7 @@
             html += '</tbody></table>';
             $container.html(html);
         }, function (err) {
-            $container.html('<p style="padding: 24px; color: var(--ss-danger); text-align: center;">' + escapeHtml(err.message || SS.strings.error) + '</p>');
+            $container.html('<p style="padding: 24px; color: var(--sitessaver-danger); text-align: center;">' + escapeHtml(err.message || SS.strings.error) + '</p>');
         });
     });
 
@@ -2307,10 +2307,10 @@
         var $btn = $(this);
         $btn.prop('disabled', true);
         ajax('sitessaver_remote_download', { dest: $btn.data('dest'), file_id: $btn.data('id') }, function (res) {
-            ssFlash('success', res.message || ('Backup downloaded from ' + $btn.data('label') + '.'));
+            sitessaverFlash('success', res.message || ('Backup downloaded from ' + $btn.data('label') + '.'));
             location.reload();
         }, function (err) {
-            ssNotify.error(err.message || SS.strings.error, { title: 'Download failed' });
+            sitessaverNotify.error(err.message || SS.strings.error, { title: 'Download failed' });
             $btn.prop('disabled', false);
         });
     });
@@ -2319,14 +2319,14 @@
         var $btn  = $(this);
         var label = $btn.data('label');
         var name  = $btn.data('name') || 'this backup';
-        ssNotify.confirm({
+        sitessaverNotify.confirm({
             tone: 'danger',
             title: 'Restore from ' + label + '?',
             message: 'SitesSaver will download "' + name + '" and overwrite your current site with it. This cannot be undone.',
             confirmText: 'Yes, restore',
             cancelText: 'Cancel',
             onConfirm: function () {
-                ssModal.open({
+                sitessaverModal.open({
                     title:      'Restoring from ' + label,
                     subtitle:   'Downloading the backup and restoring your site. Please wait.',
                     caution:    'Keep this tab open until the restore finishes. If it does close, the restore carries on on the server.',
@@ -2341,7 +2341,7 @@
         var $btn  = $(this);
         var dest  = $btn.data('dest');
         var label = $btn.data('label');
-        ssNotify.confirm({
+        sitessaverNotify.confirm({
             tone: 'danger',
             title: 'Delete from ' + label + '?',
             message: 'This backup will be permanently removed from your ' + label + '. This cannot be undone.',
@@ -2349,10 +2349,10 @@
             cancelText: 'Keep it',
             onConfirm: function () {
                 ajax('sitessaver_remote_delete', { dest: dest, file_id: $btn.data('id') }, function () {
-                    ssNotify.success('Backup deleted from ' + label + '.');
+                    sitessaverNotify.success('Backup deleted from ' + label + '.');
                     $('.sitessaver-remote-refresh[data-dest="' + dest + '"]').trigger('click');
                 }, function (err) {
-                    ssNotify.error(err.message || SS.strings.error);
+                    sitessaverNotify.error(err.message || SS.strings.error);
                 });
             }
         });
@@ -2367,7 +2367,7 @@
         var gdrivePoll  = null;
         $btn.prop('disabled', true);
 
-        ssModal.open({
+        sitessaverModal.open({
             title:      'Resuming Export',
             subtitle:   'Continuing your site backup from where it left off.',
             caution:    backgroundNote(),
@@ -2375,11 +2375,11 @@
             cancelable: true,
             onCancel: function () {
                 cancelled = true;
-                ssModal.disableCancel('Cancelling...');
+                sitessaverModal.disableCancel('Cancelling...');
             }
         });
-        ssModal.setSteps(steps.map(function (s) { return { id: s.id, label: s.label }; }));
-        ssModal.setActiveStep(startStep);
+        sitessaverModal.setSteps(steps.map(function (s) { return { id: s.id, label: s.label }; }));
+        sitessaverModal.setActiveStep(startStep);
 
         // Restart the server-side worker and go back to watching. Driving the
         // remaining steps from the browser is exactly what fails on a large
@@ -2393,7 +2393,7 @@
                     uid:         uid,
                     gdriveJob:   gdriveJob,
                     isCancelled: function () { return cancelled; },
-                    onDone:      function () { $('.ss-resume-banner').remove(); }
+                    onDone:      function () { $('.sitessaver-resume-banner').remove(); }
                 });
                 return;
             }
@@ -2407,8 +2407,8 @@
         function runNextStep() {
             if (cancelled) {
                 ajax('sitessaver_cancel_export', { uid: uid }, function () {
-                    ssModal.close();
-                    $('.ss-resume-banner').remove();
+                    sitessaverModal.close();
+                    $('.sitessaver-resume-banner').remove();
                     showError($form, errorFor('export_cancelled'));
                     $btn.prop('disabled', false);
                 });
@@ -2417,12 +2417,12 @@
 
             if (currentStep >= steps.length) {
                 ajax('sitessaver_get_export_status', { uid: uid }, function (finalRes) {
-                    ssModal.completeSteps();
-                    ssModal.done();
+                    sitessaverModal.completeSteps();
+                    sitessaverModal.done();
                     setTimeout(function () {
-                        ssModal.close();
+                        sitessaverModal.close();
                         showResult($form, buildExportMessage((finalRes.status && finalRes.status.result) || {}), false);
-                        $('.ss-resume-banner').remove();
+                        $('.sitessaver-resume-banner').remove();
                         $btn.prop('disabled', false);
                     }, 800);
                 });
@@ -2430,14 +2430,14 @@
             }
 
             var step = steps[currentStep];
-            ssModal.setActiveStep(currentStep);
+            sitessaverModal.setActiveStep(currentStep);
 
             if (step.poll) {
-                ssModal.disableCancel(uploadingNote(step.poll));
-                ssModal.setProgress(step.from || 0, step.label);
-                gdrivePoll = pollGdriveInto(ssModal, gdriveJob, step, gdrivePoll);
+                sitessaverModal.disableCancel(uploadingNote(step.poll));
+                sitessaverModal.setProgress(step.from || 0, step.label);
+                gdrivePoll = pollGdriveInto(sitessaverModal, gdriveJob, step, gdrivePoll);
             } else {
-                ssModal.setProgress(step.pct, step.label);
+                sitessaverModal.setProgress(step.pct, step.label);
             }
 
             ajax('sitessaver_export_step', { uid: uid, step_index: currentStep }, function (stepRes) {
@@ -2452,13 +2452,13 @@
                     currentStep++;
                     runNextStep();
                 } else {
-                    ssModal.close();
+                    sitessaverModal.close();
                     showError($form, stepRes.error ? normalizeError(stepRes.error) : normalizeError(stepRes, 'export_failed'), 'export_resume');
                     $btn.prop('disabled', false);
                 }
             }, function (err) {
                 gdrivePoll = stopPoll(gdrivePoll);
-                ssModal.close();
+                sitessaverModal.close();
                 showError($form, (err && err.error) ? normalizeError(err.error) : normalizeError(err, 'export_failed'), 'export_resume');
                 $btn.prop('disabled', false);
             });
@@ -2496,15 +2496,15 @@
         var mins        = started ? Math.max(1, Math.round((Date.now() / 1000 - started) / 60)) : 0;
 
         var banner =
-            '<div class="ss-resume-banner ss-result-card is-running" role="status">' +
+            '<div class="sitessaver-resume-banner sitessaver-result-card is-running" role="status">' +
                 '<i class="ri-loader-4-line ri-spin" aria-hidden="true"></i>' +
-                '<div class="ss-banner-body">' +
-                    '<strong class="ss-banner-title">A backup is running in the background</strong>' +
+                '<div class="sitessaver-banner-body">' +
+                    '<strong class="sitessaver-banner-title">A backup is running in the background</strong>' +
                     '<span>' + (mins ? 'Started ' + mins + ' min ago. ' : '') + 'Now: ' + escapeHtml(stepLabel.replace(/(\.|\u2026)+$/, '')) +
                     '. It keeps going if you leave this page.</span>' +
-                    '<div class="ss-banner-actions">' +
-                        '<button type="button" class="btn btn-primary ss-watch-btn">Show progress</button>' +
-                        '<button type="button" class="btn btn-outline ss-discard-btn" style="color:var(--ss-danger);border-color:var(--ss-danger);">Cancel backup</button>' +
+                    '<div class="sitessaver-banner-actions">' +
+                        '<button type="button" class="btn btn-primary sitessaver-watch-btn">Show progress</button>' +
+                        '<button type="button" class="btn btn-outline sitessaver-discard-btn" style="color:var(--sitessaver-danger);border-color:var(--sitessaver-danger);">Cancel backup</button>' +
                     '</div>' +
                 '</div>' +
             '</div>';
@@ -2512,10 +2512,10 @@
         $form.prepend(banner);
         var $btn = $('#sitessaver-export-btn').prop('disabled', true);
 
-        $form.on('click', '.ss-watch-btn', function () {
-            $('.ss-resume-banner').remove();
+        $form.on('click', '.sitessaver-watch-btn', function () {
+            $('.sitessaver-resume-banner').remove();
             var cancelled = false;
-            ssModal.open({
+            sitessaverModal.open({
                 title:       'Exporting Site',
                 subtitle:    'Your site backup is being created.',
                 caution:     backgroundNote(res.status.options && res.status.options.export_destination),
@@ -2523,11 +2523,11 @@
                 cancelable:  true,
                 onCancel: function () {
                     cancelled = true;
-                    ssModal.disableCancel('Cancelling...');
+                    sitessaverModal.disableCancel('Cancelling...');
                 }
             });
-            ssModal.setSteps(steps.map(function (s) { return { id: s.id, label: s.label }; }));
-            ssModal.setActiveStep(currentStep);
+            sitessaverModal.setSteps(steps.map(function (s) { return { id: s.id, label: s.label }; }));
+            sitessaverModal.setActiveStep(currentStep);
             watchExportProgress({
                 $form:       $form,
                 $btn:        $btn,
@@ -2542,8 +2542,8 @@
     }
 
     function bindDiscard($form, uid, title, message, confirmText, doneText) {
-        $form.on('click', '.ss-discard-btn', function () {
-            ssNotify.confirm({
+        $form.on('click', '.sitessaver-discard-btn', function () {
+            sitessaverNotify.confirm({
                 tone: 'danger',
                 title: title,
                 message: message,
@@ -2551,11 +2551,11 @@
                 cancelText: 'Keep it',
                 onConfirm: function () {
                     ajax('sitessaver_cancel_export', { uid: uid }, function () {
-                        $('.ss-resume-banner').remove();
+                        $('.sitessaver-resume-banner').remove();
                         $('#sitessaver-export-btn').prop('disabled', false);
-                        ssNotify.info(doneText);
+                        sitessaverNotify.info(doneText);
                     }, function (err) {
-                        ssNotify.error(err.message || SS.strings.error);
+                        sitessaverNotify.error(err.message || SS.strings.error);
                     });
                 }
             });
@@ -2585,14 +2585,14 @@
             // Show a banner above the form and let the user pick Resume or
             // Discard. An orphaned export is never resumed on page load.
             var banner =
-                '<div class="ss-resume-banner ss-result-card" style="background:#fef7e0;border:1px solid #fde293;color:#9a6400;align-items:flex-start;">' +
+                '<div class="sitessaver-resume-banner sitessaver-result-card" style="background:#fef7e0;border:1px solid #fde293;color:#9a6400;align-items:flex-start;">' +
                     '<i class="ri-time-line" style="font-size:24px;"></i>' +
                     '<div style="flex:1;">' +
                         '<strong style="display:block;margin-bottom:4px;">An export is already in progress</strong>' +
                         '<span>Step: ' + stepLabel + ' (' + pct + '%). Resume or discard it before starting a new export.</span>' +
                         '<div style="margin-top:12px;display:flex;gap:8px;">' +
-                            '<button type="button" class="btn btn-primary ss-resume-btn">Resume</button>' +
-                            '<button type="button" class="btn btn-outline ss-discard-btn" style="color:var(--ss-danger);border-color:var(--ss-danger);">Discard</button>' +
+                            '<button type="button" class="btn btn-primary sitessaver-resume-btn">Resume</button>' +
+                            '<button type="button" class="btn btn-outline sitessaver-discard-btn" style="color:var(--sitessaver-danger);border-color:var(--sitessaver-danger);">Discard</button>' +
                         '</div>' +
                     '</div>' +
                 '</div>';
@@ -2600,8 +2600,8 @@
             $form.prepend(banner);
             $('#sitessaver-export-btn').prop('disabled', true);
 
-            $form.on('click', '.ss-resume-btn', function () {
-                $('.ss-resume-banner').remove();
+            $form.on('click', '.sitessaver-resume-btn', function () {
+                $('.sitessaver-resume-banner').remove();
                 runExportLoop($form, uid, steps, currentStep, res.gdrive_job_id);
             });
 
@@ -2611,9 +2611,9 @@
 
     // ---------- TROUBLESHOOTING LOG (Help page) ----------
 
-    $(document).on('click', '#ss-log-clear', function () {
+    $(document).on('click', '#sitessaver-log-clear', function () {
         var $btn = $(this);
-        ssNotify.confirm({
+        sitessaverNotify.confirm({
             title: 'Clear the troubleshooting log?',
             message: 'Older reference codes will no longer be found. Only do this once any open problem is sorted out.',
             confirmText: 'Clear log',
@@ -2624,7 +2624,7 @@
                     window.location.reload();
                 }, function (err) {
                     $btn.prop('disabled', false);
-                    ssNotify.error(normalizeError(err).message);
+                    sitessaverNotify.error(normalizeError(err).message);
                 });
             }
         });

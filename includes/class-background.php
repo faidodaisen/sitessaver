@@ -303,9 +303,9 @@ final class Background {
         }
 
         wp_safe_redirect(add_query_arg(
-            ['page' => 'sitessaver-help', 'ss_rule' => $result],
+            ['page' => 'sitessaver-help', 'sitessaver_rule' => $result],
             admin_url('admin.php')
-        ) . '#ss-litespeed');
+        ) . '#sitessaver-litespeed');
         exit;
     }
 
@@ -322,7 +322,7 @@ final class Background {
         printf(
             '<div class="notice notice-info"><p>%s <a href="%s">%s</a></p></div>',
             esc_html__('This site runs on LiteSpeed. Background backups finish more reliably with a small .htaccess rule, which you can add from the Help page.', 'sitessaver'),
-            esc_url(admin_url('admin.php?page=sitessaver-help#ss-litespeed')),
+            esc_url(admin_url('admin.php?page=sitessaver-help#sitessaver-litespeed')),
             esc_html__('Open Help', 'sitessaver')
         );
     }

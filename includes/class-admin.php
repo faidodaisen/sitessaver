@@ -162,7 +162,7 @@ final class Admin {
         ], 5 * MINUTE_IN_SECONDS);
 
         nocache_headers();
-        wp_safe_redirect(add_query_arg('ss_auth', '1', $clean));
+        wp_safe_redirect(add_query_arg('sitessaver_auth', '1', $clean));
         exit;
     }
 
@@ -314,7 +314,7 @@ final class Admin {
                 \SitesSaver\Import::phases()
             )),
             'errors'        => \SitesSaver\Errors::for_js(),
-            'logUrl'        => admin_url('admin.php?page=sitessaver-help#ss-log'),
+            'logUrl'        => admin_url('admin.php?page=sitessaver-help#sitessaver-log'),
             'adminEmail'    => sitessaver_export_notify_email(), // '' = notifications off
             'strings'       => [
                 'confirmDelete'  => __('Delete this backup? This cannot be undone.', 'sitessaver'),

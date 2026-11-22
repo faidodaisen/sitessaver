@@ -1,13 +1,12 @@
 <?php defined('ABSPATH') || exit;
-// phpcs:disable WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- Template included from inside a SitesSaver\Admin method, so these variables are function-local, not globals.
 ?>
 <div class="sitessaver-wrap">
-    <header class="ss-header">
-        <h1 class="ss-title">
+    <header class="sitessaver-header">
+        <h1 class="sitessaver-title">
             <i class="ri-upload-2-fill"></i>
             <?php esc_html_e('SitesSaver: Export', 'sitessaver'); ?>
         </h1>
-        <div class="ss-header-actions">
+        <div class="sitessaver-header-actions">
             <a href="<?php echo esc_url(admin_url('admin.php?page=sitessaver')); ?>" class="btn btn-outline">
                 <i class="ri-arrow-left-line"></i>
                 <?php esc_html_e('Back to Dashboard', 'sitessaver'); ?>
@@ -15,21 +14,21 @@
         </div>
     </header>
 
-    <div class="ss-section">
-        <div class="ss-section-header">
-            <h2 class="ss-section-title">
+    <div class="sitessaver-section">
+        <div class="sitessaver-section-header">
+            <h2 class="sitessaver-section-title">
                 <i class="ri-settings-4-line"></i>
                 <?php esc_html_e('Configure Export', 'sitessaver'); ?>
             </h2>
         </div>
         
-        <div class="ss-section-content">
+        <div class="sitessaver-section-content">
             <form id="sitessaver-export-form">
-                <table class="ss-form-table">
+                <table class="sitessaver-form-table">
                     <tr>
                         <th><?php esc_html_e('Inclusions', 'sitessaver'); ?></th>
                         <td>
-                            <div class="ss-checkbox-group">
+                            <div class="sitessaver-checkbox-group">
                                 <label><input type="checkbox" name="include_db" value="1" checked /> <?php esc_html_e('Database (SQL Dump)', 'sitessaver'); ?></label>
                                 <label><input type="checkbox" name="include_media" value="1" checked /> <?php esc_html_e('Media Uploads', 'sitessaver'); ?></label>
                                 <label><input type="checkbox" name="include_plugins" value="1" checked /> <?php esc_html_e('Plugins Content', 'sitessaver'); ?></label>
@@ -41,53 +40,53 @@
                         <th><?php esc_html_e('Save To', 'sitessaver'); ?></th>
                         <td>
                             <?php
-                            $gdrive_connected = \SitesSaver\GDrive::is_connected();
+                            $sitessaver_gdrive_connected = \SitesSaver\GDrive::is_connected();
                             ?>
-                            <div class="ss-destination-group">
-                                <label class="ss-destination-option">
+                            <div class="sitessaver-destination-group">
+                                <label class="sitessaver-destination-option">
                                     <input type="radio" name="export_destination" value="local" checked />
-                                    <span class="ss-destination-label">
+                                    <span class="sitessaver-destination-label">
                                         <i class="ri-hard-drive-2-line"></i>
                                         <?php esc_html_e('Local Only', 'sitessaver'); ?>
                                     </span>
                                 </label>
-                                <label class="ss-destination-option<?php echo $gdrive_connected ? '' : ' ss-destination-disabled'; ?>">
-                                    <input type="radio" name="export_destination" value="gdrive" <?php echo $gdrive_connected ? '' : 'disabled'; ?> />
-                                    <span class="ss-destination-label">
+                                <label class="sitessaver-destination-option<?php echo $sitessaver_gdrive_connected ? '' : ' sitessaver-destination-disabled'; ?>">
+                                    <input type="radio" name="export_destination" value="gdrive" <?php echo $sitessaver_gdrive_connected ? '' : 'disabled'; ?> />
+                                    <span class="sitessaver-destination-label">
                                         <i class="ri-google-line"></i>
                                         <?php esc_html_e('Google Drive', 'sitessaver'); ?>
                                     </span>
                                 </label>
-                                <label class="ss-destination-option<?php echo $gdrive_connected ? '' : ' ss-destination-disabled'; ?>">
-                                    <input type="radio" name="export_destination" value="both" <?php echo $gdrive_connected ? '' : 'disabled'; ?> />
-                                    <span class="ss-destination-label">
+                                <label class="sitessaver-destination-option<?php echo $sitessaver_gdrive_connected ? '' : ' sitessaver-destination-disabled'; ?>">
+                                    <input type="radio" name="export_destination" value="both" <?php echo $sitessaver_gdrive_connected ? '' : 'disabled'; ?> />
+                                    <span class="sitessaver-destination-label">
                                         <i class="ri-layout-grid-line"></i>
                                         <?php esc_html_e('Local + Google Drive', 'sitessaver'); ?>
                                     </span>
                                 </label>
-                                <?php foreach (\SitesSaver\Destinations::extra() as $ss_dest) :
-                                    $ss_on = $ss_dest->is_connected();
-                                    if (!$ss_on) { continue; } ?>
-                                <label class="ss-destination-option">
-                                    <input type="radio" name="export_destination" value="<?php echo esc_attr($ss_dest->id()); ?>" />
-                                    <span class="ss-destination-label">
-                                        <i class="<?php echo esc_attr($ss_dest->icon()); ?>"></i>
-                                        <?php echo esc_html($ss_dest->label()); ?>
+                                <?php foreach (\SitesSaver\Destinations::extra() as $sitessaver_dest) :
+                                    $sitessaver_on = $sitessaver_dest->is_connected();
+                                    if (!$sitessaver_on) { continue; } ?>
+                                <label class="sitessaver-destination-option">
+                                    <input type="radio" name="export_destination" value="<?php echo esc_attr($sitessaver_dest->id()); ?>" />
+                                    <span class="sitessaver-destination-label">
+                                        <i class="<?php echo esc_attr($sitessaver_dest->icon()); ?>"></i>
+                                        <?php echo esc_html($sitessaver_dest->label()); ?>
                                     </span>
                                 </label>
-                                <label class="ss-destination-option">
-                                    <input type="radio" name="export_destination" value="<?php echo esc_attr($ss_dest->id() . '+local'); ?>" />
-                                    <span class="ss-destination-label">
+                                <label class="sitessaver-destination-option">
+                                    <input type="radio" name="export_destination" value="<?php echo esc_attr($sitessaver_dest->id() . '+local'); ?>" />
+                                    <span class="sitessaver-destination-label">
                                         <i class="ri-layout-grid-line"></i>
                                         <?php
                                         /* translators: %s: provider name */
-                                        echo esc_html(sprintf(__('Local + %s', 'sitessaver'), $ss_dest->label()));
+                                        echo esc_html(sprintf(__('Local + %s', 'sitessaver'), $sitessaver_dest->label()));
                                         ?>
                                     </span>
                                 </label>
                                 <?php endforeach; ?>
                             </div>
-                            <?php if ( ! $gdrive_connected ) : ?>
+                            <?php if ( ! $sitessaver_gdrive_connected ) : ?>
                             <p class="description" style="margin-top:8px;">
                                 <?php
                                 printf(
@@ -113,7 +112,7 @@
                 </div>
 
                 <div class="sitessaver-result" style="display:none;">
-                    <div class="ss-result-card success">
+                    <div class="sitessaver-result-card success">
                         <i class="ri-checkbox-circle-fill"></i>
                         <div>
                             <strong style="display:block;" class="sitessaver-result-title"><?php esc_html_e('Success!', 'sitessaver'); ?></strong>
@@ -134,7 +133,7 @@
                 $sitessaver_cron_seen = (int) get_option('sitessaver_server_cron_seen', 0);
                 $sitessaver_has_cron  = $sitessaver_cron_seen > time() - 2 * DAY_IN_SECONDS;
                 ?>
-                <div class="ss-export-note">
+                <div class="sitessaver-export-note">
                     <i class="ri-information-line" aria-hidden="true"></i>
                     <p>
                         <?php
@@ -149,7 +148,7 @@
                             esc_html_e('You can leave this page once the backup starts. It keeps running on your server. Email notifications are off.', 'sitessaver');
                         }
                         ?>
-                        <a href="<?php echo esc_url(admin_url('admin.php?page=sitessaver-settings#ss-export-notify')); ?>"><?php esc_html_e('Change', 'sitessaver'); ?></a>
+                        <a href="<?php echo esc_url(admin_url('admin.php?page=sitessaver-settings#sitessaver-export-notify')); ?>"><?php esc_html_e('Change', 'sitessaver'); ?></a>
                         <?php if (!$sitessaver_has_cron) : ?>
                             <br>
                             <?php

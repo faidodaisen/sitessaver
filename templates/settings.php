@@ -1,34 +1,33 @@
 <?php defined('ABSPATH') || exit; 
-// phpcs:disable WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- Template included from inside a SitesSaver\Admin method, so these variables are function-local, not globals.
 
 // Result of a storage connection, handled in Admin::handle_remote_callback().
-$auth_msg  = '';
-$auth_ok   = false;
-$ss_notice = get_transient('sitessaver_auth_notice_' . get_current_user_id());
-if (is_array($ss_notice)) {
+$sitessaver_auth_msg  = '';
+$sitessaver_auth_ok   = false;
+$sitessaver_notice = get_transient('sitessaver_auth_notice_' . get_current_user_id());
+if (is_array($sitessaver_notice)) {
     delete_transient('sitessaver_auth_notice_' . get_current_user_id());
-    $auth_msg = (string) ($ss_notice['message'] ?? '');
-    $auth_ok  = !empty($ss_notice['ok']);
+    $sitessaver_auth_msg = (string) ($sitessaver_notice['message'] ?? '');
+    $sitessaver_auth_ok  = !empty($sitessaver_notice['ok']);
 }
 
-$settings = get_option('sitessaver_settings', []);
-$token    = get_option('sitessaver_gdrive_token', []);
-$is_connected = !empty($token['refresh_token']);
+$sitessaver_settings = get_option('sitessaver_settings', []);
+$sitessaver_token    = get_option('sitessaver_gdrive_token', []);
+$sitessaver_is_connected = !empty($sitessaver_token['refresh_token']);
 
-$brand        = \SitesSaver\Mailer::branding();
-$notify_email = get_option('sitessaver_schedule', []);
-$notify_email = is_array($notify_email) ? ($notify_email['notify_email'] ?? '') : '';
-if ($notify_email === '') {
-    $notify_email = (string) get_option('admin_email');
+$sitessaver_brand        = \SitesSaver\Mailer::branding();
+$sitessaver_notify_email = get_option('sitessaver_schedule', []);
+$sitessaver_notify_email = is_array($sitessaver_notify_email) ? ($sitessaver_notify_email['notify_email'] ?? '') : '';
+if ($sitessaver_notify_email === '') {
+    $sitessaver_notify_email = (string) get_option('admin_email');
 }
 ?>
 <div class="sitessaver-wrap">
-    <header class="ss-header">
-        <h1 class="ss-title">
+    <header class="sitessaver-header">
+        <h1 class="sitessaver-title">
             <i class="ri-settings-5-fill"></i>
             <?php esc_html_e('SitesSaver: Settings', 'sitessaver'); ?>
         </h1>
-        <div class="ss-header-actions">
+        <div class="sitessaver-header-actions">
             <a href="<?php echo esc_url(admin_url('admin.php?page=sitessaver')); ?>" class="btn btn-outline">
                 <i class="ri-arrow-left-line"></i>
                 <?php esc_html_e('Back to Dashboard', 'sitessaver'); ?>
@@ -36,30 +35,30 @@ if ($notify_email === '') {
         </div>
     </header>
 
-    <?php if (!empty($auth_msg)) : ?>
-        <div style="margin: 20px 24px; padding: 12px 16px; border-radius: 6px; background: <?php echo $auth_ok ? '#e6f4ea' : '#fce8e6'; ?>; color: <?php echo $auth_ok ? '#137333' : '#c5221f'; ?>; border: 1px solid <?php echo $auth_ok ? '#ceead6' : '#fad2cf'; ?>;" role="<?php echo $auth_ok ? 'status' : 'alert'; ?>">
-            <?php echo esc_html($auth_msg); ?>
+    <?php if (!empty($sitessaver_auth_msg)) : ?>
+        <div style="margin: 20px 24px; padding: 12px 16px; border-radius: 6px; background: <?php echo $sitessaver_auth_ok ? '#e6f4ea' : '#fce8e6'; ?>; color: <?php echo $sitessaver_auth_ok ? '#137333' : '#c5221f'; ?>; border: 1px solid <?php echo $sitessaver_auth_ok ? '#ceead6' : '#fad2cf'; ?>;" role="<?php echo $sitessaver_auth_ok ? 'status' : 'alert'; ?>">
+            <?php echo esc_html($sitessaver_auth_msg); ?>
         </div>
     <?php endif; ?>
 
-    <div class="ss-section">
-        <div class="ss-section-header">
-            <h2 class="ss-section-title">
+    <div class="sitessaver-section">
+        <div class="sitessaver-section-header">
+            <h2 class="sitessaver-section-title">
 
                 <i class="ri-drive-line"></i>
                 <?php esc_html_e('Google Drive Integration', 'sitessaver'); ?>
             </h2>
-            <?php if ($is_connected) : ?>
+            <?php if ($sitessaver_is_connected) : ?>
                 <span class="badge badge-blue"><?php esc_html_e('Connected', 'sitessaver'); ?></span>
             <?php endif; ?>
         </div>
         
-        <div class="ss-section-content">
-            <?php if (!$is_connected) : ?>
-                <div style="text-align: center; padding: 40px 0; color: var(--ss-text-light);">
-                    <i class="ri-drive-fill" style="font-size: 48px; color: var(--ss-border); display: block; margin-bottom: 20px;"></i>
-                    <h3 style="margin-top: 0; color: var(--ss-text-main);"><?php esc_html_e('Cloud Storage Not Configured', 'sitessaver'); ?></h3>
-                    <p style="margin-bottom: 24px; font-size: 16px; color: var(--ss-text-muted);">
+        <div class="sitessaver-section-content">
+            <?php if (!$sitessaver_is_connected) : ?>
+                <div style="text-align: center; padding: 40px 0; color: var(--sitessaver-text-light);">
+                    <i class="ri-drive-fill" style="font-size: 48px; color: var(--sitessaver-border); display: block; margin-bottom: 20px;"></i>
+                    <h3 style="margin-top: 0; color: var(--sitessaver-text-main);"><?php esc_html_e('Cloud Storage Not Configured', 'sitessaver'); ?></h3>
+                    <p style="margin-bottom: 24px; font-size: 16px; color: var(--sitessaver-text-muted);">
                         <?php esc_html_e('Connect your Google Drive to automatically store backups in the cloud and sync across multiple sites.', 'sitessaver'); ?>
                     </p>
                     <a href="<?php echo esc_url(\SitesSaver\GDrive::get_auth_url()); ?>" class="btn btn-success" style="padding: 12px 24px;">
@@ -69,16 +68,16 @@ if ($notify_email === '') {
                 </div>
 
             <?php else : ?>
-                <div style="background: rgba(15, 157, 88, 0.05); border: 1px solid rgba(15, 157, 88, 0.2); padding: 24px; border-radius: var(--ss-radius-card); text-align: center;">
+                <div style="background: rgba(15, 157, 88, 0.05); border: 1px solid rgba(15, 157, 88, 0.2); padding: 24px; border-radius: var(--sitessaver-radius-card); text-align: center;">
                     <i class="ri-checkbox-circle-fill" style="font-size: 32px; color: #0F9D58; display: block; margin-bottom: 12px;"></i>
-                    <h3 style="margin: 0 0 8px 0; color: var(--ss-text-main);"><?php esc_html_e('Google Drive Connected Successfully', 'sitessaver'); ?></h3>
-                    <p style="margin: 0; color: var(--ss-text-muted);">
+                    <h3 style="margin: 0 0 8px 0; color: var(--sitessaver-text-main);"><?php esc_html_e('Google Drive Connected Successfully', 'sitessaver'); ?></h3>
+                    <p style="margin: 0; color: var(--sitessaver-text-muted);">
                         <?php esc_html_e('Your site is linked. A backup folder has been automatically created in your Google Drive root.', 'sitessaver'); ?>
                     </p>
                 </div>
 
-                <div style="margin-top: 32px; display: flex; justify-content: center; padding-top: 24px; border-top: 1px solid var(--ss-border-light);">
-                    <button type="button" id="sitessaver-gdrive-disconnect" class="btn btn-outline" style="color: var(--ss-danger); border-color: var(--ss-danger);">
+                <div style="margin-top: 32px; display: flex; justify-content: center; padding-top: 24px; border-top: 1px solid var(--sitessaver-border-light);">
+                    <button type="button" id="sitessaver-gdrive-disconnect" class="btn btn-outline" style="color: var(--sitessaver-danger); border-color: var(--sitessaver-danger);">
                         <i class="ri-logout-circle-line"></i>
                         <?php esc_html_e('Disconnect Google Drive Account', 'sitessaver'); ?>
                     </button>
@@ -87,52 +86,52 @@ if ($notify_email === '') {
         </div>
     </div>
 
-    <?php foreach (\SitesSaver\Destinations::extra() as $ss_dest) : $ss_on = $ss_dest->is_connected(); ?>
-    <div class="ss-section" id="ss-dest-<?php echo esc_attr($ss_dest->id()); ?>">
-        <div class="ss-section-header">
-            <h2 class="ss-section-title">
-                <i class="<?php echo esc_attr($ss_dest->icon()); ?>"></i>
+    <?php foreach (\SitesSaver\Destinations::extra() as $sitessaver_dest) : $sitessaver_on = $sitessaver_dest->is_connected(); ?>
+    <div class="sitessaver-section" id="sitessaver-dest-<?php echo esc_attr($sitessaver_dest->id()); ?>">
+        <div class="sitessaver-section-header">
+            <h2 class="sitessaver-section-title">
+                <i class="<?php echo esc_attr($sitessaver_dest->icon()); ?>"></i>
                 <?php
                 /* translators: %s: provider name */
-                echo esc_html(sprintf(__('%s Integration', 'sitessaver'), $ss_dest->label()));
+                echo esc_html(sprintf(__('%s Integration', 'sitessaver'), $sitessaver_dest->label()));
                 ?>
             </h2>
-            <?php if ($ss_on) : ?>
+            <?php if ($sitessaver_on) : ?>
                 <span class="badge badge-blue"><?php esc_html_e('Connected', 'sitessaver'); ?></span>
             <?php endif; ?>
         </div>
-        <div class="ss-section-content">
-            <?php if (!$ss_on) : ?>
-                <div style="text-align: center; padding: 40px 0; color: var(--ss-text-light);">
-                    <i class="<?php echo esc_attr($ss_dest->icon()); ?>" style="font-size: 48px; color: var(--ss-border); display: block; margin-bottom: 20px;"></i>
-                    <p style="margin-bottom: 24px; font-size: 16px; color: var(--ss-text-muted);"><?php echo esc_html($ss_dest->description()); ?></p>
-                    <a href="<?php echo esc_url($ss_dest->auth_url()); ?>" class="btn btn-success" style="padding: 12px 24px;">
-                        <i class="<?php echo esc_attr($ss_dest->icon()); ?>"></i>
+        <div class="sitessaver-section-content">
+            <?php if (!$sitessaver_on) : ?>
+                <div style="text-align: center; padding: 40px 0; color: var(--sitessaver-text-light);">
+                    <i class="<?php echo esc_attr($sitessaver_dest->icon()); ?>" style="font-size: 48px; color: var(--sitessaver-border); display: block; margin-bottom: 20px;"></i>
+                    <p style="margin-bottom: 24px; font-size: 16px; color: var(--sitessaver-text-muted);"><?php echo esc_html($sitessaver_dest->description()); ?></p>
+                    <a href="<?php echo esc_url($sitessaver_dest->auth_url()); ?>" class="btn btn-success" style="padding: 12px 24px;">
+                        <i class="<?php echo esc_attr($sitessaver_dest->icon()); ?>"></i>
                         <?php
                         /* translators: %s: provider name */
-                        echo esc_html(sprintf(__('Connect %s', 'sitessaver'), $ss_dest->label()));
+                        echo esc_html(sprintf(__('Connect %s', 'sitessaver'), $sitessaver_dest->label()));
                         ?>
                     </a>
                 </div>
             <?php else : ?>
-                <div style="background: rgba(15, 157, 88, 0.05); border: 1px solid rgba(15, 157, 88, 0.2); padding: 24px; border-radius: var(--ss-radius-card); text-align: center;">
+                <div style="background: rgba(15, 157, 88, 0.05); border: 1px solid rgba(15, 157, 88, 0.2); padding: 24px; border-radius: var(--sitessaver-radius-card); text-align: center;">
                     <i class="ri-checkbox-circle-fill" style="font-size: 32px; color: #0F9D58; display: block; margin-bottom: 12px;"></i>
-                    <h3 style="margin: 0 0 8px 0; color: var(--ss-text-main);">
+                    <h3 style="margin: 0 0 8px 0; color: var(--sitessaver-text-main);">
                         <?php
                         /* translators: %s: provider name */
-                        echo esc_html(sprintf(__('%s Connected Successfully', 'sitessaver'), $ss_dest->label()));
+                        echo esc_html(sprintf(__('%s Connected Successfully', 'sitessaver'), $sitessaver_dest->label()));
                         ?>
                     </h3>
-                    <p style="margin: 0; color: var(--ss-text-muted);">
-                        <a href="<?php echo esc_url($ss_dest->folder_url()); ?>" target="_blank" rel="noopener"><?php esc_html_e('Open the backup folder', 'sitessaver'); ?></a>
+                    <p style="margin: 0; color: var(--sitessaver-text-muted);">
+                        <a href="<?php echo esc_url($sitessaver_dest->folder_url()); ?>" target="_blank" rel="noopener"><?php esc_html_e('Open the backup folder', 'sitessaver'); ?></a>
                     </p>
                 </div>
-                <div style="margin-top: 32px; display: flex; justify-content: center; padding-top: 24px; border-top: 1px solid var(--ss-border-light);">
-                    <button type="button" class="btn btn-outline sitessaver-remote-disconnect" data-dest="<?php echo esc_attr($ss_dest->id()); ?>" data-label="<?php echo esc_attr($ss_dest->label()); ?>" style="color: var(--ss-danger); border-color: var(--ss-danger);">
+                <div style="margin-top: 32px; display: flex; justify-content: center; padding-top: 24px; border-top: 1px solid var(--sitessaver-border-light);">
+                    <button type="button" class="btn btn-outline sitessaver-remote-disconnect" data-dest="<?php echo esc_attr($sitessaver_dest->id()); ?>" data-label="<?php echo esc_attr($sitessaver_dest->label()); ?>" style="color: var(--sitessaver-danger); border-color: var(--sitessaver-danger);">
                         <i class="ri-logout-circle-line"></i>
                         <?php
                         /* translators: %s: provider name */
-                        echo esc_html(sprintf(__('Disconnect %s Account', 'sitessaver'), $ss_dest->label()));
+                        echo esc_html(sprintf(__('Disconnect %s Account', 'sitessaver'), $sitessaver_dest->label()));
                         ?>
                     </button>
                 </div>
@@ -146,15 +145,15 @@ if ($notify_email === '') {
     $sitessaver_en = is_array($sitessaver_en) ? $sitessaver_en : [];
     $sitessaver_en_on = ($sitessaver_en['enabled'] ?? '1') !== '0';
     ?>
-    <div class="ss-section" id="ss-export-notify">
-        <div class="ss-section-header">
-            <h2 class="ss-section-title">
+    <div class="sitessaver-section" id="sitessaver-export-notify">
+        <div class="sitessaver-section-header">
+            <h2 class="sitessaver-section-title">
                 <i class="ri-notification-3-line"></i>
                 <?php esc_html_e('Backup Notifications', 'sitessaver'); ?>
             </h2>
         </div>
 
-        <div class="ss-section-content">
+        <div class="sitessaver-section-content">
             <p class="description" style="margin-top: 0;">
                 <?php esc_html_e('When you start a backup and leave the Export page, SitesSaver can email you once it has finished or stopped. Scheduled backups have their own email setting on the Schedule page.', 'sitessaver'); ?>
             </p>
@@ -170,10 +169,10 @@ if ($notify_email === '') {
                             </label>
                         </td>
                     </tr>
-                    <tr class="ss-notify-email-row"<?php echo $sitessaver_en_on ? '' : ' hidden'; ?>>
-                        <th><label for="ss-notify-email"><?php esc_html_e('Send to', 'sitessaver'); ?></label></th>
+                    <tr class="sitessaver-notify-email-row"<?php echo $sitessaver_en_on ? '' : ' hidden'; ?>>
+                        <th><label for="sitessaver-notify-email"><?php esc_html_e('Send to', 'sitessaver'); ?></label></th>
                         <td>
-                            <input type="email" id="ss-notify-email" name="notify_email" value="<?php echo esc_attr((string) ($sitessaver_en['email'] ?? '')); ?>" class="ss-input-text" placeholder="<?php echo esc_attr((string) get_option('admin_email')); ?>" />
+                            <input type="email" id="sitessaver-notify-email" name="notify_email" value="<?php echo esc_attr((string) ($sitessaver_en['email'] ?? '')); ?>" class="sitessaver-input-text" placeholder="<?php echo esc_attr((string) get_option('admin_email')); ?>" />
                             <p class="description"><?php esc_html_e('Leave empty to use the site admin email shown in the box.', 'sitessaver'); ?></p>
                         </td>
                     </tr>
@@ -189,20 +188,20 @@ if ($notify_email === '') {
         </div>
     </div>
 
-    <div class="ss-section">
-        <div class="ss-section-header">
-            <h2 class="ss-section-title">
+    <div class="sitessaver-section">
+        <div class="sitessaver-section-header">
+            <h2 class="sitessaver-section-title">
                 <i class="ri-mail-star-line"></i>
                 <?php esc_html_e('Email Branding', 'sitessaver'); ?>
             </h2>
-            <span class="badge <?php echo $brand['enabled'] !== '0' ? 'badge-blue' : ''; ?>">
-                <?php echo $brand['enabled'] !== '0'
+            <span class="badge <?php echo $sitessaver_brand['enabled'] !== '0' ? 'badge-blue' : ''; ?>">
+                <?php echo $sitessaver_brand['enabled'] !== '0'
                     ? esc_html__('HTML email on', 'sitessaver')
                     : esc_html__('Plain text', 'sitessaver'); ?>
             </span>
         </div>
 
-        <div class="ss-section-content">
+        <div class="sitessaver-section-content">
             <p class="description" style="margin-top: 0;">
                 <?php esc_html_e('Controls how backup notification emails look. Your logo, colour, and sender name are applied to every scheduled backup report.', 'sitessaver'); ?>
             </p>
@@ -213,7 +212,7 @@ if ($notify_email === '') {
                         <th><?php esc_html_e('Email Format', 'sitessaver'); ?></th>
                         <td>
                             <label>
-                                <input type="checkbox" name="enabled" value="1" <?php checked($brand['enabled'] !== '0'); ?> />
+                                <input type="checkbox" name="enabled" value="1" <?php checked($sitessaver_brand['enabled'] !== '0'); ?> />
                                 <?php esc_html_e('Send branded HTML emails', 'sitessaver'); ?>
                             </label>
                             <p class="description"><?php esc_html_e('Uncheck to send plain text only. A text version is always included as a fallback.', 'sitessaver'); ?></p>
@@ -223,7 +222,7 @@ if ($notify_email === '') {
                         <th><?php esc_html_e('Logo URL', 'sitessaver'); ?></th>
                         <td>
                             <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
-                                <input type="url" name="logo_url" value="<?php echo esc_attr($brand['logo_url']); ?>" class="ss-input-text" style="min-width: 320px;" placeholder="https://example.com/logo.png" />
+                                <input type="url" name="logo_url" value="<?php echo esc_attr($sitessaver_brand['logo_url']); ?>" class="sitessaver-input-text" style="min-width: 320px;" placeholder="https://example.com/logo.png" />
                                 <button type="button" class="btn btn-outline" id="sitessaver-pick-logo">
                                     <i class="ri-image-line"></i>
                                     <?php esc_html_e('Choose from Media', 'sitessaver'); ?>
@@ -235,35 +234,35 @@ if ($notify_email === '') {
                     <tr>
                         <th><?php esc_html_e('Accent Colour', 'sitessaver'); ?></th>
                         <td>
-                            <input type="color" name="accent" value="<?php echo esc_attr($brand['accent']); ?>" style="width: 56px; height: 36px; padding: 2px; vertical-align: middle; border: 1px solid var(--ss-border); border-radius: var(--ss-radius); background: #fff; cursor: pointer;" />
+                            <input type="color" name="accent" value="<?php echo esc_attr($sitessaver_brand['accent']); ?>" style="width: 56px; height: 36px; padding: 2px; vertical-align: middle; border: 1px solid var(--sitessaver-border); border-radius: var(--sitessaver-radius); background: #fff; cursor: pointer;" />
                             <p class="description"><?php esc_html_e('Used for the header band, buttons, and links.', 'sitessaver'); ?></p>
                         </td>
                     </tr>
                     <tr>
                         <th><?php esc_html_e('Sender Name', 'sitessaver'); ?></th>
                         <td>
-                            <input type="text" name="from_name" value="<?php echo esc_attr($brand['from_name']); ?>" class="ss-input-text" placeholder="<?php echo esc_attr(get_bloginfo('name')); ?>" />
+                            <input type="text" name="from_name" value="<?php echo esc_attr($sitessaver_brand['from_name']); ?>" class="sitessaver-input-text" placeholder="<?php echo esc_attr(get_bloginfo('name')); ?>" />
                             <p class="description"><?php esc_html_e('The name recipients see in their inbox.', 'sitessaver'); ?></p>
                         </td>
                     </tr>
                     <tr>
                         <th><?php esc_html_e('Sender Address', 'sitessaver'); ?></th>
                         <td>
-                            <input type="email" name="from_email" value="<?php echo esc_attr($brand['from_email']); ?>" class="ss-input-text" placeholder="noreply@<?php echo esc_attr(wp_parse_url(home_url(), PHP_URL_HOST) ?: 'example.com'); ?>" />
+                            <input type="email" name="from_email" value="<?php echo esc_attr($sitessaver_brand['from_email']); ?>" class="sitessaver-input-text" placeholder="noreply@<?php echo esc_attr(wp_parse_url(home_url(), PHP_URL_HOST) ?: 'example.com'); ?>" />
                             <p class="description"><?php esc_html_e('Leave empty to use the WordPress default. Use an address on this domain so the email is not flagged as spam.', 'sitessaver'); ?></p>
                         </td>
                     </tr>
                     <tr>
                         <th><?php esc_html_e('Support Link', 'sitessaver'); ?></th>
                         <td>
-                            <input type="url" name="support_url" value="<?php echo esc_attr($brand['support_url']); ?>" class="ss-input-text" style="min-width: 320px;" placeholder="https://example.com/support" />
+                            <input type="url" name="support_url" value="<?php echo esc_attr($sitessaver_brand['support_url']); ?>" class="sitessaver-input-text" style="min-width: 320px;" placeholder="https://example.com/support" />
                             <p class="description"><?php esc_html_e('Optional. Adds a "Need help with this backup?" link in the footer.', 'sitessaver'); ?></p>
                         </td>
                     </tr>
                     <tr>
                         <th><?php esc_html_e('Footer Note', 'sitessaver'); ?></th>
                         <td>
-                            <textarea name="footer_note" rows="2" class="ss-input-text" style="min-width: 320px; width: 100%; max-width: 520px;" placeholder="<?php esc_attr_e('e.g. Managed hosting and backups by Your Agency', 'sitessaver'); ?>"><?php echo esc_textarea($brand['footer_note']); ?></textarea>
+                            <textarea name="footer_note" rows="2" class="sitessaver-input-text" style="min-width: 320px; width: 100%; max-width: 520px;" placeholder="<?php esc_attr_e('e.g. Managed hosting and backups by Your Agency', 'sitessaver'); ?>"><?php echo esc_textarea($sitessaver_brand['footer_note']); ?></textarea>
                             <p class="description"><?php esc_html_e('Optional line at the bottom of every report.', 'sitessaver'); ?></p>
                         </td>
                     </tr>
@@ -274,7 +273,7 @@ if ($notify_email === '') {
                         <i class="ri-save-line"></i>
                         <?php esc_html_e('Save Email Branding', 'sitessaver'); ?>
                     </button>
-                    <button type="button" class="btn btn-outline" id="sitessaver-send-test-email" data-email="<?php echo esc_attr($notify_email); ?>">
+                    <button type="button" class="btn btn-outline" id="sitessaver-send-test-email" data-email="<?php echo esc_attr($sitessaver_notify_email); ?>">
                         <i class="ri-send-plane-line"></i>
                         <?php esc_html_e('Send test email', 'sitessaver'); ?>
                     </button>
@@ -283,7 +282,7 @@ if ($notify_email === '') {
                         printf(
                             /* translators: %s: email address */
                             esc_html__('Test goes to %s', 'sitessaver'),
-                            '<code>' . esc_html($notify_email) . '</code>'
+                            '<code>' . esc_html($sitessaver_notify_email) . '</code>'
                         );
                         ?>
                     </span>

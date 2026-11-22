@@ -101,9 +101,9 @@ Google requires a registered app with a client secret for Drive access. A secret
 
 To run long backups and restores in the background, and to check once a day whether the backup folder can be reached from the web, the plugin sends requests to your own site address. These do not go to any third party.
 
-**PayPal donation button**
+**PayPal donation link**
 
-The Help page has an optional "Buy Me A Coffee" donation button. Nothing is sent to PayPal unless you click it, which opens PayPal in a new tab. PayPal terms: https://www.paypal.com/legalhub/home and privacy: https://www.paypal.com/myaccount/privacy/privacyhub
+The Help page has an optional Donate link to PayPal. Nothing is sent to PayPal and nothing is loaded from it unless you click the link, which opens PayPal in a new tab. PayPal terms: https://www.paypal.com/legalhub/home and privacy: https://www.paypal.com/myaccount/privacy/privacyhub
 
 == Changelog ==
 
