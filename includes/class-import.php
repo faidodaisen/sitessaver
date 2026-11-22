@@ -756,7 +756,7 @@ final class Import {
             if (count((array) $c['fl']['failed']) < 10) {
                 $c['fl']['failed'][] = $t['key'];
             }
-            error_log('[SitesSaver] restore: copy failed for ' . $t['key']);
+            Log::warning('restore_copy_failed', 'A file could not be restored.', ['file' => (string) $t['key']]);
             self::put_back_original($c, $t);
         }
         return true;
@@ -781,7 +781,7 @@ final class Import {
                         $off = 0;
                         Archive::extract_entry($zip, (string) $t['key'], (int) $stat['size'], (string) $t['dest'], $off, static fn(): bool => false);
                     } catch (\RuntimeException $e) {
-                        error_log('[SitesSaver] restore: could not put back ' . $t['key']);
+                        Log::warning('restore_put_back_failed', 'A replaced file could not be put back.', ['file' => (string) $t['key']]);
                     }
                     $zip->close();
                     return;
@@ -887,7 +887,7 @@ final class Import {
                     try {
                         Archive::extract_entry($zip, $name, $size, $dest, $off, static fn(): bool => false);
                     } catch (\RuntimeException $e) {
-                        error_log('[SitesSaver] rollback: could not put back ' . $name . ': ' . $e->getMessage());
+                        Log::warning('rollback_put_back_failed', 'A file could not be put back: ' . $e->getMessage(), ['file' => $name]);
                     }
                 });
             } catch (\RuntimeException $e) {
@@ -1446,7 +1446,7 @@ final class Import {
                     switch_theme($pending['active_theme']);
                 }
             } catch (\Throwable $e) {
-                error_log('[SitesSaver] switch_theme failed during finalisation: ' . $e->getMessage());
+                Log::warning('finalise_theme_failed', 'The theme could not be switched: ' . $e->getMessage());
             }
         }
 

@@ -1483,7 +1483,7 @@ final class Database {
         if ($result === false && $error !== '') {
             $state['errors'] = (int) ($state['errors'] ?? 0) + 1;
             $preview = substr($trimmed, 0, 160);
-            error_log('[SitesSaver] Import SQL failed: ' . $error . ' | stmt: ' . $preview);
+            Log::warning('import_sql_failed', 'A statement in the backup failed: ' . $error, ['statement' => $preview]);
 
             // A staged table that could not be created would silently keep
             // the live table at the switch. Stop instead: nothing on the live
@@ -1897,7 +1897,7 @@ final class Database {
         ];
         foreach ($patterns as $pattern) {
             if (preg_match($pattern, $sql) === 1) {
-                error_log('[SitesSaver] Notice: imported dump contains serialized PHP objects (O:/C: markers). This is normal for widgets/cron/transients.');
+                Log::info('import_serialized_objects', 'The database contains serialized objects (normal for widgets, cron and transients).');
                 $already_logged = true;
                 return;
             }

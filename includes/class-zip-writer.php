@@ -168,7 +168,7 @@ final class Zip_Writer {
                             // Vanished or unreadable: same as Archive::create(),
                             // skip it but say so.
                             $state['skipped'] = (int) ($state['skipped'] ?? 0) + 1;
-                            error_log('[SitesSaver] Zip: unreadable, skipped: ' . $relative);
+                            Log::warning('zip_skipped', 'Unreadable file skipped.', ['file' => $relative]);
                         } elseif ($size >= self::STREAM_MIN) {
                             self::start_large($out, $relative, $abs, $size, $state, $abs !== $source_dir . $relative);
                             $save(false);
@@ -350,7 +350,7 @@ final class Zip_Writer {
         $data = $size > 0 ? @file_get_contents($abs) : '';
         if (!is_string($data)) {
             $state['skipped'] = (int) ($state['skipped'] ?? 0) + 1;
-            error_log('[SitesSaver] Zip: unreadable, skipped: ' . $relative);
+            Log::warning('zip_skipped', 'Unreadable file skipped.', ['file' => $relative]);
             return;
         }
         $size = strlen($data);
@@ -406,12 +406,72 @@ final class Zip_Writer {
             'date'   => $date,
             'offset' => $offset,
             'z64'    => $z64,
-            'crc'    => base64_encode(serialize(hash_init('crc32b'))),
+            'crc'    => 0,
         ];
         if ($external) {
             // Read from where it lives; the next request needs the path.
             $state['cur']['abs'] = $abs;
         }
+    }
+
+    /**
+     * CRC-32 of A followed by B, from crc(A), crc(B) and the length of B
+     * (zlib's crc32_combine).
+     */
+    public static function crc32_combine(int $crc1, int $crc2, int $len2): int {
+        if ($len2 <= 0) {
+            return $crc1;
+        }
+        $odd = [0xEDB88320];
+        $row = 1;
+        for ($n = 1; $n < 32; $n++) {
+            $odd[$n] = $row;
+            $row   <<= 1;
+        }
+        $even = self::gf2_square($odd);
+        $odd  = self::gf2_square($even);
+        do {
+            $even = self::gf2_square($odd);
+            if ($len2 & 1) {
+                $crc1 = self::gf2_times($even, $crc1);
+            }
+            $len2 >>= 1;
+            if ($len2 === 0) {
+                break;
+            }
+            $odd = self::gf2_square($even);
+            if ($len2 & 1) {
+                $crc1 = self::gf2_times($odd, $crc1);
+            }
+            $len2 >>= 1;
+        } while ($len2 !== 0);
+        return ($crc1 ^ $crc2) & 0xFFFFFFFF;
+    }
+
+    /** @param int[] $mat */
+    private static function gf2_times(array $mat, int $vec): int {
+        $sum = 0;
+        $i   = 0;
+        while ($vec !== 0) {
+            if ($vec & 1) {
+                $sum ^= $mat[$i];
+            }
+            $vec >>= 1;
+            $i++;
+        }
+        return $sum;
+    }
+
+    /**
+     * @param int[] $mat
+     * @return int[]
+     */
+    private static function gf2_square(array $mat): array {
+        $sq = [];
+        for ($n = 0; $n < 32; $n++) {
+            $sq[$n] = self::gf2_times($mat, $mat[$n]);
+        }
+        return $sq;
     }
 
     /**
@@ -428,11 +488,9 @@ final class Zip_Writer {
         }
         fseek($in, (int) $cur['src']);
 
-        $ctx = unserialize(base64_decode((string) $cur['crc']), ['allowed_classes' => [\HashContext::class]]);
-        if (!$ctx instanceof \HashContext) {
-            fclose($in);
-            throw new \RuntimeException('Lost the checksum state for ' . $cur['name'] . '.');
-        }
+        // The running CRC-32 is a plain integer in the state; each piece's
+        // CRC is folded into it, so the state stays JSON-friendly.
+        $crc = (int) $cur['crc'];
 
         try {
             while ($cur['src'] < $cur['size']) {
@@ -455,7 +513,7 @@ final class Zip_Writer {
                     }
                 }
 
-                hash_update($ctx, $chunk);
+                $crc = self::crc32_combine($crc, crc32($chunk), $want);
                 $last = ($cur['src'] + $want) >= $cur['size'];
 
                 if ((int) $cur['method'] === 8) {
@@ -475,7 +533,7 @@ final class Zip_Writer {
 
                 $cur['src']   += $want;
                 $cur['csize'] += strlen($body);
-                $cur['crc']    = base64_encode(serialize($ctx));
+                $cur['crc']    = $crc;
 
                 if (class_exists(Export::class)) {
                     Export::tick('zip-large', (int) $cur['src']);
@@ -493,7 +551,6 @@ final class Zip_Writer {
             fclose($in);
         }
 
-        $crc = (int) hexdec(hash_final($ctx));
         $z64 = (bool) $cur['z64'];
 
         // Data descriptor (signature form, as every modern reader expects).
@@ -525,7 +582,7 @@ final class Zip_Writer {
         fseek($out, 0, SEEK_END);
         $state['cur']     = null;
         $state['skipped'] = (int) ($state['skipped'] ?? 0) + 1;
-        error_log('[SitesSaver] Zip: ' . $why . ', skipped: ' . $name);
+        Log::warning('zip_skipped', 'File skipped: ' . $why . '.', ['file' => $name]);
     }
 
     // ---------------------------------------------------------------

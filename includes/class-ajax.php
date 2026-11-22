@@ -435,7 +435,7 @@ final class Ajax {
         }
         $contents = ob_get_clean();
         if ($contents !== false && $contents !== '') {
-            error_log('[SitesSaver] Stray output during AJAX import suppressed: ' . substr($contents, 0, 500));
+            Log::warning('stray_output', 'Stray output during an AJAX import was suppressed.', ['output' => substr($contents, 0, 500)]);
         }
     }
 

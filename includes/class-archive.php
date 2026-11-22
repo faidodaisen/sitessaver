@@ -71,7 +71,7 @@ final class Archive {
                 // to add one that DOES exist is data loss and must be loud.
                 if (!is_readable($filepath)) {
                     $failed++;
-                    error_log('[SitesSaver] Archive: unreadable, skipped: ' . $relative);
+                    Log::warning('archive_skipped', 'Unreadable file skipped.', ['file' => $relative]);
                     continue;
                 }
 
@@ -80,7 +80,7 @@ final class Archive {
                 if (!$zip->addFile($filepath, $relative)) {
                     $failed++;
                     if ($failed <= 50) {
-                        error_log('[SitesSaver] Archive: addFile failed: ' . $relative);
+                        Log::warning('archive_add_failed', 'A file could not be added to the archive.', ['file' => $relative]);
                     }
                 }
 
@@ -107,17 +107,17 @@ final class Archive {
         }
 
         if (!$zip->close()) {
-            error_log('[SitesSaver] Archive: ZipArchive::close() failed for ' . $output_zip);
+            Log::warning('archive_close_failed', 'The archive could not be written.', ['file' => basename($output_zip)]);
             return false;
         }
 
         if ($failed > 0) {
-            error_log(sprintf('[SitesSaver] Archive: %d file(s) could not be added to %s.', $failed, basename($output_zip)));
+            Log::warning('archive_files_failed', sprintf('%d file(s) could not be added.', $failed), ['file' => basename($output_zip)]);
         }
 
         // Final check: the archive must exist and be openable.
         if (!file_exists($output_zip) || filesize($output_zip) === 0) {
-            error_log('[SitesSaver] Archive: output file missing or empty after close: ' . $output_zip);
+            Log::warning('archive_empty', 'The archive is missing or empty after writing.', ['file' => basename($output_zip)]);
             return false;
         }
 

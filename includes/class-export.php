@@ -1493,6 +1493,61 @@ final class Export {
     }
 
     /**
+     * JSON for resumable state. Strings that are not valid UTF-8 (file names
+     * can be any bytes) are stored as "\0x:" plus hex, keys included.
+     */
+    public static function state_encode(array $data): string {
+        $json = wp_json_encode(self::state_pack($data), JSON_UNESCAPED_SLASHES);
+        return is_string($json) ? $json : '';
+    }
+
+    /** @return array<mixed>|null */
+    public static function state_decode(string $json): ?array {
+        $data = json_decode($json, true);
+        return is_array($data) ? self::state_unpack($data) : null;
+    }
+
+    /**
+     * @param mixed $v
+     * @return mixed
+     */
+    private static function state_pack($v) {
+        if (is_string($v)) {
+            return (preg_match('//u', $v) === 1 && !str_starts_with($v, "\0x:")) ? $v : "\0x:" . bin2hex($v);
+        }
+        if (!is_array($v)) {
+            return $v;
+        }
+        $out = [];
+        foreach ($v as $k => $item) {
+            $out[is_string($k) ? self::state_pack($k) : $k] = self::state_pack($item);
+        }
+        return $out;
+    }
+
+    /**
+     * @param mixed $v
+     * @return mixed
+     */
+    private static function state_unpack($v) {
+        if (is_string($v)) {
+            if (str_starts_with($v, "\0x:")) {
+                $raw = hex2bin(substr($v, 3));
+                return $raw === false ? '' : $raw;
+            }
+            return $v;
+        }
+        if (!is_array($v)) {
+            return $v;
+        }
+        $out = [];
+        foreach ($v as $k => $item) {
+            $out[is_string($k) ? self::state_unpack($k) : $k] = self::state_unpack($item);
+        }
+        return $out;
+    }
+
+    /**
      * Walk a directory and write the ZIP list for it, respecting exclude
      * patterns. Same selection rules the export always used when it copied
      * files into a staging folder; only the output changed.
@@ -1526,7 +1581,7 @@ final class Export {
         $cursor = null;
         if (is_file($cur_file) && is_file($tmp)) {
             $raw    = @file_get_contents($cur_file);
-            $cursor = is_string($raw) ? @unserialize($raw, ['allowed_classes' => false]) : null;
+            $cursor = is_string($raw) ? self::state_decode($raw) : null;
             if (!is_array($cursor) || !is_array($cursor['stack'] ?? null) || !isset($cursor['bytes'])) {
                 $cursor = null;
             }
@@ -1638,7 +1693,8 @@ final class Export {
                         'skipped' => $skipped,
                         'carry'   => $carry,
                     ];
-                    if (@file_put_contents($cur_file . '.new', serialize($saved), LOCK_EX) !== false
+                    $json = self::state_encode($saved);
+                    if ($json !== '' && @file_put_contents($cur_file . '.new', $json, LOCK_EX) !== false
                         && @rename($cur_file . '.new', $cur_file)) {
                         $paused = true;
                     }
