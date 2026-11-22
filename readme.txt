@@ -4,7 +4,7 @@ Tags: backup, restore, migration, google drive, schedule
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 1.6.3
+Stable tag: 1.6.4
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -116,6 +116,13 @@ The Help page has an optional Donate link to PayPal. Nothing is sent to PayPal a
 
 == Changelog ==
 
+= 1.6.4 =
+* Changed: a restore only runs the database statements a SitesSaver backup contains, checks each file against its stored checksum and only writes inside the expected folders.
+* Changed: restore is switched off on SQLite databases, with a notice that says why.
+* Changed: resumable job state and logs are plain JSON and log files, and storage folders get an index.html guard.
+* Changed: every option, hook and function now uses the full sitessaver prefix.
+* Changed: only the icons in use are shipped.
+
 = 1.6.3 =
 * Fixed: the plugin always activates. A server without the PHP zip extension gets a notice, and only restore is switched off.
 * Changed: higher PHP time and memory limits apply only while a backup, upload or restore step runs, and the previous limits are put back afterwards.
@@ -169,6 +176,9 @@ The Help page has an optional Donate link to PayPal. Nothing is sent to PayPal a
 * Warning when the backup folder is reachable from the web.
 
 == Upgrade Notice ==
+
+= 1.6.4 =
+Stricter checks on what a restore may write. Recommended for all users.
 
 = 1.6.3 =
 Activates on every server, keeps rollback files inside a ZIP and no longer touches other plugins' folders. Recommended for all users.

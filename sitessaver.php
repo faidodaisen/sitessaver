@@ -3,7 +3,7 @@
  * Plugin Name: SitesSaver
  * Plugin URI:  https://sitessaver.com
  * Description: Full site backup and migration: export, import, schedule, and Google Drive storage. No restrictions.
- * Version:     1.6.3
+ * Version:     1.6.4
  * Author:      Fido Design
  * Author URI:  https://fidodesign.net
  * License:     GPL-2.0-or-later
@@ -42,7 +42,7 @@ if (version_compare(PHP_VERSION, '8.1', '<')) {
 // This copy's version, read BEFORE any constants so the duplicate-copy
 // handler below can name it. Folder name is irrelevant: SitesSaver is
 // identified by its VERSION constant.
-$sitessaver_this_version = '1.6.3';
+$sitessaver_this_version = '1.6.4';
 
 // Duplicate-copy handler. WordPress lets the same plugin live in more than
 // one folder (e.g. `plugins/sitessaver/` and `plugins/sitessaver-copy/`) and
