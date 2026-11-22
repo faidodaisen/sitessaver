@@ -287,9 +287,14 @@ final class GDrive {
      * @return array{status: 'complete'|'incomplete'|'failed', state: array, message: string, progress: int}
      */
     public static function upload_step(string $file_path, string $filename, string $job_id, array $state, ?int $deadline): array {
-        @set_time_limit(0);
-        wp_raise_memory_limit('admin');
+        return sitessaver_run_long_job(static fn(): array => self::upload_step_job($file_path, $filename, $job_id, $state, $deadline), 900);
+    }
 
+    /**
+     * @param array{session_url?: string, offset?: int, file_size?: int, stalls?: int} $state
+     * @return array{status: 'complete'|'incomplete'|'failed', state: array, message: string, progress: int}
+     */
+    private static function upload_step_job(string $file_path, string $filename, string $job_id, array $state, ?int $deadline): array {
         $fail = static function (string $message): array {
             return ['status' => 'failed', 'state' => [], 'message' => $message, 'progress' => 0];
         };
@@ -901,11 +906,11 @@ final class GDrive {
 
         // Stage into temp so a failed download can never clobber an existing
         // backup in the storage directory.
-        if (!is_dir(SITESSAVER_TEMP_DIR)) {
-            wp_mkdir_p(SITESSAVER_TEMP_DIR);
+        if (!is_dir(sitessaver_temp_dir())) {
+            wp_mkdir_p(sitessaver_temp_dir());
         }
-        sitessaver_protect_directory(SITESSAVER_TEMP_DIR);
-        $staged = SITESSAVER_TEMP_DIR . '/gdrive-dl-' . wp_generate_password(20, false, false) . '.zip';
+        sitessaver_protect_directory(sitessaver_temp_dir());
+        $staged = sitessaver_temp_dir() . '/gdrive-dl-' . wp_generate_password(20, false, false) . '.zip';
 
         /*
          * acknowledgeAbuse=true is REQUIRED here.

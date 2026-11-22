@@ -12,7 +12,7 @@ defined('ABSPATH') || exit;
  * A restore that runs in a background request instead of the browser's.
  *
  * Why: shared hosts cap a request at 60-120 seconds at the web server
- * (LiteSpeed, nginx, Cloudflare), regardless of PHP's own set_time_limit(0).
+ * (LiteSpeed, nginx, Cloudflare), regardless of PHP's own time limit.
  * Extracting and importing a large site takes minutes, so a restore inside
  * the browser's own AJAX request gets a 500/504 back mid-restore and shows
  * "An error occurred." while PHP is still busy rewriting the site.
@@ -78,7 +78,7 @@ final class Restore_Job {
     // ------------------------------------------------------------------
 
     public static function dir(): string {
-        return SITESSAVER_STORAGE_DIR . '/jobs';
+        return sitessaver_storage_root() . '/jobs';
     }
 
     /**
@@ -162,7 +162,7 @@ final class Restore_Job {
         sitessaver_protect_directory($dir);
 
         $path = self::path((string) $job['id']);
-        $tmp  = $path . '.' . getmypid() . '.tmp';
+        $tmp  = $path . '.' . wp_generate_password(8, false, false) . '.tmp';
         $json = wp_json_encode($job, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         if (!is_string($json)) {
             return;
@@ -387,13 +387,18 @@ final class Restore_Job {
      * @param string $mode 'background' or 'inline', recorded for diagnosis.
      */
     public static function run(string $id, string $mode): void {
+        sitessaver_run_long_job(static function () use ($id, $mode): void {
+            self::run_job($id, $mode);
+        }, 900, true);
+    }
+
+    private static function run_job(string $id, string $mode): void {
         $job = self::get($id);
         if ($job === null || !in_array($job['status'] ?? '', ['queued', 'running', 'rolling_back'], true)) {
             return;
         }
 
         if (($job['status'] ?? '') === 'rolling_back') {
-            @ignore_user_abort(true);
             Export::begin_slice($mode === 'background' ? Export::slice_budget(['slice' => (int) ($job['slice'] ?? 0)]) : Export::browser_budget());
             try {
                 $done = self::finish_rollback($id);
@@ -409,13 +414,9 @@ final class Restore_Job {
             return;
         }
 
-        @ignore_user_abort(true);
-        @set_time_limit(0);
-        wp_raise_memory_limit('admin');
-
         // Load every class the rest of this request may need NOW, while the
         // plugin's own files are known-good.
-        foreach ([Log::class, Errors::class, Environment::class, Import::class, Database::class, Archive::class, Index::class, GDrive::class, Export::class] as $class) {
+        foreach ([Log::class, Errors::class, Environment::class, Import::class, Database::class, Archive::class, Zip_Writer::class, Index::class, GDrive::class, Export::class] as $class) {
             class_exists($class);
         }
 
@@ -603,9 +604,9 @@ final class Restore_Job {
             'server'   => isset($_SERVER['SERVER_SOFTWARE']) ? sanitize_text_field(wp_unslash($_SERVER['SERVER_SOFTWARE'])) : '',
         ] + (class_exists(Environment::class) ? Environment::diagnostics() : []));
 
-        // Put the replaced files back before reporting the failure. This is
-        // renames, normally seconds; on a slow host it continues in the
-        // next request (status `rolling_back`).
+        // Put the replaced files back before reporting the failure, from
+        // the rollback archives. On a slow host it continues in the next
+        // request (status `rolling_back`).
         self::update($id, static function (array $j) use ($payload): array {
             $j['status'] = 'rolling_back';
             $j['phase']  = 'rollback';
@@ -641,7 +642,7 @@ final class Restore_Job {
         $temp = $cursor['temp'] ?? '';
         if (is_string($temp) && $temp !== '') {
             sitessaver_cleanup_temp($temp);
-            foreach ([$temp . '.files', $temp . '.new'] as $f) {
+            foreach ([$temp . '.plan', $temp . '.files', $temp . '.new'] as $f) {
                 if (is_file($f)) {
                     unlink($f);
                 }

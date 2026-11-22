@@ -458,15 +458,12 @@ final class Schedule {
             ));
         }
 
-        // Long-running work; the caller is a cron, not a browser.
-        @set_time_limit(0);
-        ignore_user_abort(true);
-
         // Even when several frequencies come due in the same request, produce
         // ONE backup and credit it to all of them. Two identical archives
         // written seconds apart would waste disk and push older restore points
-        // out of the retention window for no benefit.
-        $result = $this->run_scheduled_backup($due[0], $due);
+        // out of the retention window for no benefit. The caller is a cron,
+        // not a browser, so keep going if it hangs up.
+        $result = sitessaver_run_long_job(fn() => $this->run_scheduled_backup($due[0], $due), 900, true);
 
         if ($result === null) {
             self::respond(409, 'sitessaver: another backup is already running');

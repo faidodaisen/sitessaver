@@ -97,9 +97,6 @@ final class Ajax {
     public function handle_export(): void {
         sitessaver_verify_ajax();
 
-        @set_time_limit(0);
-        wp_raise_memory_limit('admin');
-
         // 'local', 'gdrive', 'both' (1.5.x) or '<remote>[+local]' from an addon.
         $destination = sanitize_text_field(wp_unslash($_POST['export_destination'] ?? 'local'));
         if (!Destinations::is_valid($destination)) {
@@ -185,11 +182,8 @@ final class Ajax {
             wp_send_json_success(['message' => 'browser-driven']);
         }
 
-        // The caller already hung up. Keep running anyway, and do not let a
-        // half-written response abort the backup.
-        @ignore_user_abort(true);
-        @set_time_limit(0);
-
+        // The caller already hung up. Export::work() keeps running anyway
+        // and raises the time limit only while it works.
         $result = Export::work($uid);
 
         // The slice is used up: hand over to a fresh request before this one
@@ -211,9 +205,6 @@ final class Ajax {
     public function handle_export_step(): void {
         sitessaver_verify_ajax();
 
-        @set_time_limit(0);
-        wp_raise_memory_limit('admin');
-
         $uid    = sanitize_text_field(wp_unslash($_POST['uid'] ?? ''));
         $status = Export::get_status($uid);
 
@@ -232,15 +223,17 @@ final class Ajax {
         }
 
         Export::claim_for_browser($uid);
-        Export::begin_ticks($uid);
-        Export::begin_slice(Export::browser_budget());
-        try {
-            $result = Export::run_step($uid, $index);
-        } finally {
-            Export::end_slice();
-            Export::end_ticks();
-            Export::unlock();
-        }
+        $result = sitessaver_run_long_job(static function () use ($uid, $index): array {
+            Export::begin_ticks($uid);
+            Export::begin_slice(Export::browser_budget());
+            try {
+                return Export::run_step($uid, $index);
+            } finally {
+                Export::end_slice();
+                Export::end_ticks();
+                Export::unlock();
+            }
+        }, 300);
 
         $after           = Export::get_status($uid);
         $result['state'] = (string) ($after['status'] ?? 'gone');
@@ -525,9 +518,6 @@ final class Ajax {
 
         $length = $end - $start + 1;
 
-        // Allow unlimited execution time for large files.
-        @set_time_limit(0);
-
         // Clear all output buffers to prevent memory bloat.
         while (ob_get_level()) {
             ob_end_clean();
@@ -558,26 +548,30 @@ final class Ajax {
             fseek($handle, $start);
         }
 
-        $chunk_size = 8192; // 8 KB
-        $remaining  = $length;
+        // A large file can take a while; the higher limit lasts only for
+        // the streaming loop.
+        sitessaver_run_long_job(static function () use ($handle, $length): void {
+            $chunk_size = 8192; // 8 KB
+            $remaining  = $length;
 
-        while ($remaining > 0 && !feof($handle)) {
-            if (connection_aborted()) {
-                break;
+            while ($remaining > 0 && !feof($handle)) {
+                if (connection_aborted()) {
+                    break;
+                }
+
+                $read_size = min($chunk_size, $remaining);
+                $buffer    = fread($handle, $read_size);
+
+                if ($buffer === false) {
+                    break;
+                }
+
+                echo $buffer; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Raw bytes of a backup ZIP sent as an application/octet-stream download, not HTML.
+                flush();
+
+                $remaining -= strlen($buffer);
             }
-
-            $read_size = min($chunk_size, $remaining);
-            $buffer    = fread($handle, $read_size);
-
-            if ($buffer === false) {
-                break;
-            }
-
-            echo $buffer; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Raw bytes of a backup ZIP sent as an application/octet-stream download, not HTML.
-            flush();
-
-            $remaining -= strlen($buffer);
-        }
+        }, 3600);
 
         fclose($handle);
         exit;
@@ -727,9 +721,6 @@ final class Ajax {
     public function handle_run_schedule_now(): void {
         sitessaver_verify_ajax();
 
-        @set_time_limit(0);
-        wp_raise_memory_limit('admin');
-
         $settings = get_option('sitessaver_schedule', []);
 
         if (empty($settings['enabled'])) {
@@ -738,7 +729,7 @@ final class Ajax {
             ]);
         }
 
-        $result = Schedule::instance()->run_scheduled_backup();
+        $result = sitessaver_run_long_job(static fn() => Schedule::instance()->run_scheduled_backup(), 900);
 
         if ($result === null) {
             wp_send_json_error([
@@ -994,7 +985,6 @@ final class Ajax {
 
     public function handle_remote_upload(): void {
         sitessaver_verify_ajax();
-        @set_time_limit(0);
 
         $dest   = $this->remote_from_request();
         $job_id = sanitize_text_field(wp_unslash($_POST['job_id'] ?? ''));
@@ -1004,7 +994,7 @@ final class Ajax {
             wp_send_json_error(['message' => __('Backup not found.', 'sitessaver')]);
         }
 
-        $result = $dest->upload($path, $file, $job_id);
+        $result = sitessaver_run_long_job(static fn(): array => $dest->upload($path, $file, $job_id), 900);
         $result['success'] ? wp_send_json_success($result) : wp_send_json_error($result);
     }
 
@@ -1025,14 +1015,13 @@ final class Ajax {
 
     public function handle_remote_download(): void {
         sitessaver_verify_ajax();
-        @set_time_limit(0);
 
         $dest    = $this->remote_from_request();
         $file_id = sanitize_text_field(wp_unslash($_POST['file_id'] ?? ''));
         if ($file_id === '') {
             wp_send_json_error(['message' => __('No file specified.', 'sitessaver')]);
         }
-        $result = $dest->download($file_id);
+        $result = sitessaver_run_long_job(static fn(): array => $dest->download($file_id), 900);
         $result['success'] ? wp_send_json_success($result) : wp_send_json_error($result);
     }
 
@@ -1054,8 +1043,6 @@ final class Ajax {
     public function handle_gdrive_upload(): void {
         sitessaver_verify_ajax();
 
-        @set_time_limit(0);
-
         $job_id = sanitize_text_field(wp_unslash($_POST['job_id'] ?? ''));
         $file   = sanitize_file_name(wp_unslash($_POST['file'] ?? ''));
         $path   = sitessaver_resolve_backup_path($file);
@@ -1064,7 +1051,7 @@ final class Ajax {
             wp_send_json_error(['message' => __('Backup not found.', 'sitessaver')]);
         }
 
-        $result = GDrive::upload($path, $file, $job_id);
+        $result = sitessaver_run_long_job(static fn(): array => GDrive::upload($path, $file, $job_id), 900);
 
         if ($result['success']) {
             wp_send_json_success($result);
@@ -1108,15 +1095,13 @@ final class Ajax {
     public function handle_gdrive_download(): void {
         sitessaver_verify_ajax();
 
-        @set_time_limit(0);
-
         $file_id = sanitize_text_field(wp_unslash($_POST['file_id'] ?? ''));
 
         if (empty($file_id)) {
             wp_send_json_error(['message' => __('No file specified.', 'sitessaver')]);
         }
 
-        $result = GDrive::download($file_id);
+        $result = sitessaver_run_long_job(static fn(): array => GDrive::download($file_id), 900);
 
         if ($result['success']) {
             wp_send_json_success($result);
@@ -1197,13 +1182,13 @@ final class Ajax {
             ));
         }
 
-        $chunk_dir = SITESSAVER_TEMP_DIR . '/chunks/' . $upload_id;
+        $chunk_dir = sitessaver_temp_dir() . '/chunks/' . $upload_id;
         if (!is_dir($chunk_dir)) {
             wp_mkdir_p($chunk_dir);
         }
         // The half-uploaded archive lives here: no folder listing.
-        sitessaver_protect_directory(SITESSAVER_TEMP_DIR);
-        sitessaver_protect_directory(SITESSAVER_TEMP_DIR . '/chunks');
+        sitessaver_protect_directory(sitessaver_temp_dir());
+        sitessaver_protect_directory(sitessaver_temp_dir() . '/chunks');
 
         // One request at a time per upload: a retried chunk can overlap the
         // original if the network hiccupped, and both must not append.
@@ -1273,7 +1258,7 @@ final class Ajax {
                     fclose($h);
                 }
             }
-            $free = @disk_free_space($chunk_dir);
+            $free = function_exists('disk_free_space') ? @disk_free_space($chunk_dir) : false;
             flock($lock, LOCK_UN);
             fclose($lock);
             wp_send_json_error(Errors::report(
@@ -1347,7 +1332,7 @@ final class Ajax {
             wp_send_json_error(Errors::payload('upload_page_outdated', 'Invalid upload ID.'), 400);
         }
 
-        $state = $this->upload_state(SITESSAVER_TEMP_DIR . '/chunks/' . $upload_id);
+        $state = $this->upload_state(sitessaver_temp_dir() . '/chunks/' . $upload_id);
 
         wp_send_json_success([
             'received'       => (int) ($state['received'] ?? 0),
@@ -1442,7 +1427,7 @@ final class Ajax {
             wp_send_json_error(['message' => __('Invalid upload ID.', 'sitessaver')]);
         }
 
-        $chunk_dir = SITESSAVER_TEMP_DIR . '/chunks/' . $upload_id;
+        $chunk_dir = sitessaver_temp_dir() . '/chunks/' . $upload_id;
         $this->remove_chunk_dir($chunk_dir);
 
         wp_send_json_success(['message' => __('Chunks cleaned up.', 'sitessaver')]);
@@ -1462,6 +1447,10 @@ final class Ajax {
      */
     public function handle_restore_start(): void {
         sitessaver_verify_ajax();
+
+        if (!Requirements::can_restore()) {
+            wp_send_json_error(Errors::payload('restore_zip_missing', 'The PHP zip extension is missing on this server.'), 400);
+        }
 
         $file     = sanitize_file_name(wp_unslash($_POST['file'] ?? ''));
         $drive_id = sanitize_text_field(wp_unslash($_POST['gdrive_file_id'] ?? ''));

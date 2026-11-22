@@ -141,7 +141,6 @@ final class Background {
             'step' => $status['step_index'] ?? null,
         ]);
 
-        @ignore_user_abort(true);
         try {
             $result = Export::work($uid);
         } finally {

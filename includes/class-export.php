@@ -232,8 +232,8 @@ final class Export {
     /**
      * Seconds a background worker may work before handing over.
      *
-     * Read AFTER set_time_limit(0): a host that honours it reports 0, one
-     * that does not still shows its real limit. A worker that went silent
+     * Read inside sitessaver_run_long_job(): where the limit could be
+     * raised this counts as no PHP limit, else the host's real limit. A worker that went silent
      * halves the slice for the next one (see the status poll), so the chain
      * settles below whatever the host actually enforces.
      *
@@ -243,7 +243,7 @@ final class Export {
         if (!empty($status['slice'])) {
             return max(5, (int) $status['slice']);
         }
-        $limit  = (int) ini_get('max_execution_time');
+        $limit  = sitessaver_time_limit();
         $budget = $limit > 0 ? (int) floor($limit * 0.6) : 60;
         return (int) apply_filters('sitessaver_export_slice_seconds', max(8, min(120, $budget)));
     }
@@ -253,7 +253,7 @@ final class Export {
      * the usual gateway timeout, so the response always gets back.
      */
     public static function browser_budget(): int {
-        $limit  = (int) ini_get('max_execution_time');
+        $limit  = sitessaver_time_limit();
         $budget = $limit > 0 ? max(8, min(40, (int) floor($limit * 0.6))) : 40;
         return (int) apply_filters('sitessaver_export_browser_slice_seconds', $budget);
     }
@@ -359,10 +359,10 @@ final class Export {
         if (self::$lock_handle !== null) {
             return true;
         }
-        if (!is_dir(SITESSAVER_TEMP_DIR)) {
-            wp_mkdir_p(SITESSAVER_TEMP_DIR);
+        if (!is_dir(sitessaver_temp_dir())) {
+            wp_mkdir_p(sitessaver_temp_dir());
         }
-        $h = @fopen(SITESSAVER_TEMP_DIR . '/' . sanitize_file_name($uid) . '.lock', 'c');
+        $h = @fopen(sitessaver_temp_dir() . '/' . sanitize_file_name($uid) . '.lock', 'c');
         if ($h === false) {
             return true; // cannot lock on this filesystem: behave as before
         }
@@ -530,10 +530,13 @@ final class Export {
      * @return array{success: bool, message?: string}
      */
     public static function work(string $uid): array {
-        @set_time_limit(0);
-        @ignore_user_abort(true);
-        wp_raise_memory_limit('admin');
+        return sitessaver_run_long_job(static fn(): array => self::work_job($uid), 900, true);
+    }
 
+    /**
+     * @return array{success: bool, message?: string}
+     */
+    private static function work_job(string $uid): array {
         $status = self::get_status($uid);
         if (empty($status)) {
             return ['success' => false, 'message' => __('No active export found for this ID.', 'sitessaver')];
@@ -658,7 +661,7 @@ final class Export {
      */
     public static function diagnostics(array $status): array {
         $detail = is_array($status['detail'] ?? null) ? $status['detail'] : [];
-        $free   = @disk_free_space(sitessaver_storage_dir());
+        $free   = function_exists('disk_free_space') ? @disk_free_space(sitessaver_storage_dir()) : false;
 
         return [
             'uid'                => $status['uid'] ?? '',
@@ -689,11 +692,11 @@ final class Export {
     public static function start(array $options = []): array {
         $uid         = 'exp_' . wp_generate_password(20, false, false);
         $backup_name = sitessaver_backup_filename();
-        $temp_dir    = SITESSAVER_TEMP_DIR . '/' . $uid;
+        $temp_dir    = sitessaver_temp_dir() . '/' . $uid;
 
         // Create the isolated temp directory.
         wp_mkdir_p($temp_dir);
-        sitessaver_protect_directory(SITESSAVER_TEMP_DIR);
+        sitessaver_protect_directory(sitessaver_temp_dir());
 
         // Chain tracking is opt-in, and only the scheduler opts in. A manual
         // export from the Export screen therefore behaves EXACTLY as it did
@@ -805,7 +808,7 @@ final class Export {
             return null;
         }
 
-        $limit = (int) ini_get('max_execution_time');
+        $limit = sitessaver_time_limit();
 
         // 0 / -1 means "no PHP limit", but the GATEWAY still has one and it is
         // the one that produces the 504. Assume a conservative budget.
@@ -962,11 +965,12 @@ final class Export {
                         // files land in the backup and a restore overwrites the live
                         // plugin with that older copy. The prefix-aware check in
                         // copy_directory() below covers the same case.
+                        $own = sitessaver_own_plugin_folder();
                         self::list_area(
                             'plugins',
-                            WP_PLUGIN_DIR,
+                            sitessaver_site_areas()['plugins'],
                             $temp_dir,
-                            ['sitessaver', 'sitessaver/*'],
+                            [$own, $own . '/*'],
                             $plan
                         );
                     }
@@ -974,13 +978,14 @@ final class Export {
 
                 case 'themes':
                     if (!empty($options['include_themes'])) {
-                        self::list_area('themes', get_theme_root(), $temp_dir, [], $plan);
+                        self::list_area('themes', sitessaver_site_areas()['themes'], $temp_dir, [], $plan);
                     }
                     break;
 
                 case 'other':
-                    if (is_dir(WPMU_PLUGIN_DIR)) {
-                        self::list_area('mu-plugins', WPMU_PLUGIN_DIR, $temp_dir, [], $plan);
+                    $mu_dir = sitessaver_site_areas()['mu-plugins'];
+                    if (is_dir($mu_dir)) {
+                        self::list_area('mu-plugins', $mu_dir, $temp_dir, [], $plan);
                     }
                     break;
 
@@ -1476,7 +1481,7 @@ final class Export {
         // The index also travels inside the archive, so a backup carried to
         // another server can still serve as a baseline there.
         $json = wp_json_encode($index, JSON_UNESCAPED_SLASHES);
-        if (is_string($json)) {
+        if (is_string($json) && function_exists('gzencode')) {
             $gz = gzencode($json, 6);
             if ($gz !== false) {
                 file_put_contents($temp_dir . '/' . Index::ARCHIVE_ENTRY, $gz);
