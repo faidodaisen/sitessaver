@@ -65,9 +65,12 @@ final class Log {
         if ($found !== null) {
             return self::$file = $found;
         }
+        if (!is_dir($dir)) {
+            wp_mkdir_p($dir);
+        }
         // random_bytes(): available even before pluggable.php is loaded.
         $new = $dir . '/sitessaver-log-' . bin2hex(random_bytes(10)) . '.log';
-        $fh  = @fopen($new, 'xb');
+        $fh  = is_dir($dir) ? @fopen($new, 'xb') : false;
         if ($fh) {
             fclose($fh);
         }
