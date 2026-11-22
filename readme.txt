@@ -4,7 +4,7 @@ Tags: backup, restore, migration, google drive, schedule
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 1.6.2
+Stable tag: 1.6.3
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -107,6 +107,14 @@ The Help page has an optional "Buy Me A Coffee" donation button. Nothing is sent
 
 == Changelog ==
 
+= 1.6.3 =
+* Fixed: the plugin always activates. A server without the PHP zip extension gets a notice, and only restore is switched off.
+* Changed: higher PHP time and memory limits apply only while a backup, upload or restore step runs, and the previous limits are put back afterwards.
+* Changed: a restore writes each file straight from the backup to its place. Files it replaces are kept in a rollback ZIP and put back from it if the restore fails.
+* Changed: after a restore, cache plugins are asked to clear their caches through their own functions. SitesSaver no longer deletes other plugins' cache folders.
+* Changed: the storage folder is set in one place and can be changed with the sitessaver_storage_dir filter.
+* Changed: admin styles only apply inside SitesSaver's own screens.
+
 = 1.6.2 =
 * Changed: plugin, theme and media files now go straight into the backup ZIP. No loose copies are made on disk while a backup runs.
 * Changed: the activity log and restore progress are stored as plain data files with random names instead of PHP files.
@@ -152,6 +160,9 @@ The Help page has an optional "Buy Me A Coffee" donation button. Nothing is sent
 * Warning when the backup folder is reachable from the web.
 
 == Upgrade Notice ==
+
+= 1.6.3 =
+Activates on every server, keeps rollback files inside a ZIP and no longer touches other plugins' folders. Recommended for all users.
 
 = 1.6.2 =
 Backups are written straight into the ZIP and work files are no longer PHP files. Recommended for all users.
