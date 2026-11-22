@@ -1,12 +1,11 @@
 /*!
- * SitesSaver icon subset, derived from RemixIcon 3.5.0 (Apache-2.0).
- * https://github.com/Remix-Design/RemixIcon
+ * Remix Icon 3.5.0, Copyright (c) Remix Design, Apache License 2.0.
+ * https://github.com/Remix-Design/RemixIcon/tree/v3.5.0
+ * Licence text: assets/fonts/remixicon-LICENSE.txt
  *
- * Only the 57 glyphs this plugin uses are declared, and the font is
- * served locally, so the admin UI also works offline and loads nothing
- * from a CDN.
- * Regenerate with tools/build-icons.php after adding a new icon.
+ * The font is a subset with only the 57 icons below, served locally.
  */
+
 @font-face {
     font-family: 'remixicon';
     src: url('../fonts/remixicon.woff2') format('woff2');

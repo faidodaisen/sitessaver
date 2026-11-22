@@ -30,9 +30,8 @@ abstract class Destination {
 
     /**
      * Remix icon class from the bundled subset (assets/css/icons.css).
-     * tools/build-icons.php only bundles classes it finds in this plugin, so
-     * icons for addon destinations are named here to keep them in the font:
-     * ri-cloud-line ri-microsoft-fill ri-dropbox-fill
+     * The subset also keeps ri-cloud-line, ri-microsoft-fill and
+     * ri-dropbox-fill for add-on destinations.
      */
     public function icon(): string {
         return 'ri-cloud-line';
