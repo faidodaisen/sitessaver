@@ -75,6 +75,12 @@ final class Errors {
                 'hint'    => __('Ask your host to enable the PHP zip extension (ZipArchive), then try again. Making and downloading backups still works.', 'sitessaver'),
                 'log'     => false,
             ],
+            'restore_sqlite' => [
+                'title'   => __('Restore is not available on this site', 'sitessaver'),
+                'message' => __('This site stores its database in SQLite (for example WordPress Playground). A restore swaps MySQL tables, which SQLite does not support.', 'sitessaver') . ' ' . $nothing_changed,
+                'hint'    => __('Restore the backup on a site that uses MySQL or MariaDB. Making and downloading backups still works here.', 'sitessaver'),
+                'log'     => false,
+            ],
             'restore_file_missing' => [
                 'title'   => __('We could not find that backup', 'sitessaver'),
                 'message' => __('The backup file is no longer on the server.', 'sitessaver') . ' ' . $nothing_changed,
@@ -104,6 +110,11 @@ final class Errors {
                 'title'   => __('Your server blocked the backup', 'sitessaver'),
                 'message' => __('The server would not let SitesSaver write the backup file. Your site itself is fine. Nothing was changed.', 'sitessaver'),
                 'hint'    => __('This is usually hosting security software or folder permissions. If your cPanel has Imunify360, set Proactive Defense to "Log only" while the backup runs, or ask your host to allow writes to wp-content/sitessaver-backups/. The reference code below shows the exact reason.', 'sitessaver'),
+            ],
+            'restore_db_refused' => [
+                'title'   => __('The backup\'s database file was refused', 'sitessaver'),
+                'message' => __('The database file in this backup contains a statement SitesSaver never runs during a restore, such as a change to tables outside the backup, to database users or to server files. The restore was stopped.', 'sitessaver'),
+                'hint'    => __('Use a backup made by SitesSaver, or remove the statement named under Technical details from database.sql.', 'sitessaver'),
             ],
             'restore_db_privileges' => [
                 'title'   => __('Your database user lacks a permission', 'sitessaver'),
@@ -287,6 +298,12 @@ final class Errors {
         }
         if (str_contains($t, 'zip extension is missing')) {
             return 'restore_zip_missing';
+        }
+        if (str_contains($t, 'uses an sqlite database')) {
+            return 'restore_sqlite';
+        }
+        if (str_contains($t, 'does not run during a restore')) {
+            return 'restore_db_refused';
         }
         if (str_contains($t, 'cannot be restored on its own') || str_contains($t, 'chain are missing')) {
             return 'restore_chain_incomplete';

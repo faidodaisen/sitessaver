@@ -24,9 +24,36 @@ final class Requirements {
         add_action('network_admin_notices', [self::class, 'render_notice']);
     }
 
-    /** Restore reads backup archives, which needs ZipArchive. */
+    /** Restore reads backup archives (ZipArchive) and swaps MySQL tables. */
     public static function can_restore(): bool {
-        return class_exists('ZipArchive');
+        return self::restore_blocker() === '';
+    }
+
+    /** Why restore is off: 'zip', 'sqlite', or '' when it works. */
+    public static function restore_blocker(): string {
+        if (!class_exists('ZipArchive')) {
+            return 'zip';
+        }
+        if (self::is_sqlite()) {
+            return 'sqlite';
+        }
+        return '';
+    }
+
+    /**
+     * The site runs on SQLite (the SQLite Database Integration drop-in, as
+     * in WordPress Playground). A restore renames and swaps MySQL tables,
+     * which SQLite does not support.
+     */
+    public static function is_sqlite(): bool {
+        global $wpdb;
+        if (defined('DB_ENGINE') && strtolower((string) constant('DB_ENGINE')) === 'sqlite') {
+            return true;
+        }
+        if (defined('SQLITE_DB_DROPIN_VERSION')) {
+            return true;
+        }
+        return is_object($wpdb) && is_a($wpdb, 'WP_SQLite_DB');
     }
 
     /**
@@ -36,7 +63,10 @@ final class Requirements {
      */
     public static function missing(): array {
         $missing = [];
-        if (!self::can_restore()) {
+        if (self::is_sqlite()) {
+            $missing['sqlite'] = __('This site stores its database in SQLite, so backups cannot be restored here: a restore swaps MySQL tables. Making, downloading and uploading backups still works.', 'sitessaver');
+        }
+        if (!class_exists('ZipArchive')) {
             $missing['zip'] = __('The PHP zip extension (ZipArchive) is not available on this server, so backups cannot be restored here. Making, downloading and uploading backups still works. Ask your host to enable the PHP zip extension.', 'sitessaver');
         }
         if (!function_exists('gzencode') || !function_exists('deflate_init')) {

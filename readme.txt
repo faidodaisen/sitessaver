@@ -57,6 +57,10 @@ Not today. Everything the plugin does is free and unrestricted. Separate add-on 
 
 In `wp-content/sitessaver-backups/` on your own server, and in your own Google Drive if you connect it. Backups are never sent to the plugin author.
 
+The folder has an `.htaccess` and a `web.config` that block web access on Apache, LiteSpeed and IIS. On Nginx, add this to your server block so backups cannot be downloaded by URL:
+
+`location ^~ /wp-content/sitessaver-backups/ { deny all; }`
+
 = Do I need Google Drive? =
 
 No. Google Drive is optional. Local backups, restores and migration work without it and never contact any outside service.

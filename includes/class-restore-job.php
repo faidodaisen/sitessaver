@@ -473,10 +473,10 @@ final class Restore_Job {
             if ($done) {
                 Database::drop_previous_tables((array) ($cursor['db'] ?? []));
                 self::$slice_clean = true;
+                // The finalize link carries a one-time token. It is built when
+                // the status is read, never stored in the job file.
                 self::complete($id, [
-                    'message'        => __('Site restored successfully. Please log in again.', 'sitessaver'),
-                    'finalize_token' => Import::current_finalize_token(),
-                    'finalize_url'   => Import::build_finalize_redirect_url(),
+                    'message' => __('Site restored successfully. Please log in again.', 'sitessaver'),
                 ]);
                 return;
             }
@@ -743,7 +743,7 @@ final class Restore_Job {
             'seconds_since'   => $now - (int) ($job['updated'] ?? $now),
             'not_started'     => $status === 'queued' && $now - (int) ($job['created'] ?? $now) > self::START_GRACE_SECONDS,
             'drive'           => in_array($status, ['running', 'rolling_back'], true) && ($job['driver'] ?? '') === 'browser',
-            'result'          => $status === 'completed' ? $job['result'] : null,
+            'result'          => $status === 'completed' ? ((array) $job['result'] + ['finalize_url' => Import::build_finalize_redirect_url()]) : null,
             'error'           => $status === 'failed' ? $job['error'] : null,
         ];
     }

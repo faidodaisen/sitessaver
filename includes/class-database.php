@@ -657,6 +657,103 @@ final class Database {
     /** Exception code: the dump cannot be imported into staging tables. */
     public const STAGING_UNSUPPORTED = 7401;
 
+    /** Exception code: the dump has a statement a restore never runs. */
+    public const STATEMENT_REFUSED = 7402;
+
+    /** A table name, backtick-quoted or bare. */
+    private const IDENT = '(?:`((?:[^`]|``)+)`|([A-Za-z0-9_$]+))';
+
+    /**
+     * Check one statement of a backup's database file before it runs.
+     *
+     * Only what a database dump needs is allowed: session SET, LOCK and
+     * UNLOCK TABLES, transactions, and CREATE, DROP, ALTER, INSERT,
+     * REPLACE, UPDATE, DELETE or TRUNCATE on tables that start with
+     * $prefix (the staging prefix, or the site's prefix for a direct
+     * import). Everything else (users, grants, files, other databases,
+     * routines, triggers, events) is refused.
+     *
+     * @return string|null The table the statement creates, or null.
+     * @throws \RuntimeException STATEMENT_REFUSED when the statement is not allowed.
+     */
+    public static function check_statement(string $sql, string $prefix): ?string {
+        $s = trim($sql);
+        // `/*!40101 SET ... */`: check what is inside the version comment.
+        if (preg_match('#^/\*!\d{0,6}\s*(.*?)\s*\*/\s*$#s', $s, $m)) {
+            return $m[1] === '' ? null : self::check_statement($m[1], $prefix);
+        }
+        $id   = self::IDENT;
+        $deny = static function (string $why) use ($s): void {
+            throw new \RuntimeException(
+                sprintf('The backup\'s database file has a statement SitesSaver does not run during a restore (%s): %s', $why, substr((string) preg_replace('/\s+/', ' ', $s), 0, 120)),
+                self::STATEMENT_REFUSED
+            );
+        };
+        $table = static function (array $m) use ($prefix, $deny): string {
+            $name = ($m[1] ?? '') !== '' ? str_replace('``', '`', $m[1]) : (string) ($m[2] ?? '');
+            if ($prefix === '' || !str_starts_with($name, $prefix)) {
+                $deny('table ' . $name . ' is outside the restore');
+            }
+            return $name;
+        };
+
+        if (preg_match('/^SET\s+(.*)$/is', $s, $m)) {
+            if (preg_match('/^(?:GLOBAL|PERSIST|PERSIST_ONLY|PASSWORD|ROLE|DEFAULT\s+ROLE|RESOURCE\s+GROUP)\b|@@(?:GLOBAL|PERSIST)/i', $m[1]) || preg_match('/,\s*(?:GLOBAL|PERSIST)\b/i', $m[1])) {
+                $deny('server setting');
+            }
+            return null;
+        }
+        if (preg_match('/^(?:UNLOCK\s+TABLES|START\s+TRANSACTION|BEGIN|COMMIT|ROLLBACK)\s*$/i', $s)) {
+            return null;
+        }
+        if (preg_match('/^LOCK\s+TABLES?\s+(.+)$/is', $s, $m)) {
+            foreach (explode(',', $m[1]) as $part) {
+                if (!preg_match('/^\s*' . $id . '(?!\s*\.)(?:\s+(?:AS\s+)?\w+)?\s+(?:READ(?:\s+LOCAL)?|(?:LOW_PRIORITY\s+)?WRITE)\s*$/i', $part, $t)) {
+                    $deny('LOCK TABLES');
+                }
+                $table($t);
+            }
+            return null;
+        }
+        if (preg_match('/^DROP\s+(?:TEMPORARY\s+)?TABLES?\s+(?:IF\s+EXISTS\s+)?(.+?)\s*(?:RESTRICT|CASCADE)?\s*$/is', $s, $m)) {
+            foreach (explode(',', $m[1]) as $part) {
+                if (!preg_match('/^\s*' . $id . '\s*$/', $part, $t)) {
+                    $deny('DROP TABLE');
+                }
+                $table($t);
+            }
+            return null;
+        }
+        if (preg_match('/^CREATE\s+(?:TEMPORARY\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?' . $id . '(?!\s*\.)/i', $s, $m)) {
+            return $table($m);
+        }
+        if (preg_match('/^ALTER\s+(?:ONLINE\s+|IGNORE\s+)*TABLE\s+' . $id . '(?!\s*\.)/i', $s, $m)) {
+            if (preg_match('/\bRENAME\b(?!\s+(?:COLUMN|INDEX|KEY)\b)/i', $s)) {
+                $deny('ALTER TABLE RENAME');
+            }
+            $table($m);
+            return null;
+        }
+        if (preg_match('/^(?:INSERT|REPLACE)\s+(?:(?:LOW_PRIORITY|DELAYED|HIGH_PRIORITY|IGNORE)\s+)*(?:INTO\s+)?' . $id . '(?!\s*\.)/i', $s, $m)) {
+            $table($m);
+            return null;
+        }
+        if (preg_match('/^UPDATE\s+(?:(?:LOW_PRIORITY|IGNORE)\s+)*' . $id . '\s+SET\b/i', $s, $m)) {
+            $table($m);
+            return null;
+        }
+        if (preg_match('/^DELETE\s+(?:(?:LOW_PRIORITY|QUICK|IGNORE)\s+)*FROM\s+' . $id . '(?:\s+(?:WHERE|ORDER|LIMIT)\b|\s*$)/i', $s, $m)) {
+            $table($m);
+            return null;
+        }
+        if (preg_match('/^TRUNCATE\s+(?:TABLE\s+)?' . $id . '\s*$/i', $s, $m)) {
+            $table($m);
+            return null;
+        }
+        $deny(strtoupper((string) strtok($s, " \t\r\n(")));
+        return null;
+    }
+
     /** Seconds between persisted import cursors inside a slice. */
     private const IMPORT_COMMIT_INTERVAL = 2.0;
 
@@ -1435,20 +1532,12 @@ final class Database {
             $state['session'] = array_values(array_slice(array_unique($session), -20));
         }
 
-        $staging = !empty($state['stage']);
-        $table   = null;
-        $is_create = false;
-        if (preg_match('/^\s*(DROP\s+TABLE(?:\s+IF\s+EXISTS)?|CREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?|ALTER\s+TABLE|LOCK\s+TABLES|INSERT\s+(?:IGNORE\s+)?INTO|REPLACE\s+INTO)\s+`((?:[^`]|``)+)`/i', $trimmed, $m)) {
-            $table     = str_replace('``', '`', $m[2]);
-            $is_create = stripos($m[1], 'CREATE') === 0;
-        }
+        $staging   = !empty($state['stage']);
+        $table     = self::check_statement($trimmed, $staging ? (string) $state['S'] : ((string) ($state['final'] ?? '') !== '' ? (string) $state['final'] : (string) $wpdb->prefix));
+        $is_create = $table !== null;
 
         if ($staging && $table !== null) {
-            $s_prefix = (string) $state['S'];
-            if (!str_starts_with($table, $s_prefix)) {
-                throw new \RuntimeException(sprintf('Table %s in the backup does not use the backup\'s table prefix.', $table), self::STAGING_UNSUPPORTED);
-            }
-            if ($is_create && strlen($table) > 64) {
+            if (strlen($table) > 64) {
                 throw new \RuntimeException(sprintf('Table name %s is too long to stage.', $table), self::STAGING_UNSUPPORTED);
             }
             if ($is_create) {

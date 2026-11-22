@@ -500,8 +500,7 @@
     var sitessaverFinalizeUrl = '';
 
     function showRestoreCompleteModal(payload) {
-        // Accept either the old string-token form or the new payload object
-        // { finalize_token, finalize_url } for forward/backward compat.
+        // payload: { finalize_url }.
         if (typeof payload === 'object' && payload) {
             if (typeof payload.finalize_url === 'string' && payload.finalize_url) {
                 sitessaverFinalizeUrl = payload.finalize_url;
@@ -1425,7 +1424,7 @@
             $('#sitessaver-pm-subtitle').text('Database and files are being restored. This cannot be interrupted.');
             $('#sitessaver-pm-caution').text('Keep this tab open until the restore finishes. If it does close, the restore carries on on the server.');
             runRestore({ file: filename }, $form, function (res) {
-                showResult($form, res.message || SS.strings.done, false);
+                showResult($form, escapeHtml(res.message || SS.strings.done), false);
             });
         }
 

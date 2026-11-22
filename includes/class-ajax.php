@@ -6,7 +6,6 @@ namespace SitesSaver;
 
 defined('ABSPATH') || exit;
 
-// phpcs:disable WordPress.Security.NonceVerification -- Every admin handler calls sitessaver_verify_ajax() first (check_ajax_referer + capability). The background worker, restore runner and finalize endpoints have no browser session after a database swap and are authorised by single-use server-side tokens compared with hash_equals().
 // phpcs:disable WordPress.WP.AlternativeFunctions -- Streams multi-GB backup archives, SQL dumps and chunked uploads with byte offsets, file locks and atomic renames inside the plugin's own backup folder; WP_Filesystem has no streaming, seek or lock API and may need FTP credentials that a background worker cannot supply.
 
 /**
@@ -95,7 +94,12 @@ final class Ajax {
      * Start the step-based export process.
      */
     public function handle_export(): void {
-        sitessaver_verify_ajax();
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
+        }
+        if (!current_user_can(sitessaver_capability())) {
+            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
+        }
 
         // 'local', 'gdrive', 'both' (1.5.x) or '<remote>[+local]' from an addon.
         $destination = sanitize_text_field(wp_unslash($_POST['export_destination'] ?? 'local'));
@@ -203,7 +207,12 @@ final class Ajax {
      * Run a single step of the export.
      */
     public function handle_export_step(): void {
-        sitessaver_verify_ajax();
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
+        }
+        if (!current_user_can(sitessaver_capability())) {
+            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
+        }
 
         $uid    = sanitize_text_field(wp_unslash($_POST['uid'] ?? ''));
         $status = Export::get_status($uid);
@@ -253,7 +262,12 @@ final class Ajax {
      * starting over.
      */
     public function handle_resume_export(): void {
-        sitessaver_verify_ajax();
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
+        }
+        if (!current_user_can(sitessaver_capability())) {
+            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
+        }
 
         $uid = sanitize_text_field(wp_unslash($_POST['uid'] ?? ''));
         if ($uid === '') {
@@ -275,7 +289,12 @@ final class Ajax {
      * Get the current status of the active export.
      */
     public function handle_get_export_status(): void {
-        sitessaver_verify_ajax();
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
+        }
+        if (!current_user_can(sitessaver_capability())) {
+            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
+        }
 
         $uid    = sanitize_text_field(wp_unslash((string) ($_POST['uid'] ?? get_transient('sitessaver_active_export_id') ?? '')));
         $status = $uid !== '' ? Export::get_status($uid) : [];
@@ -401,7 +420,12 @@ final class Ajax {
      * export on page load and the user chooses "Discard" instead of resuming.
      */
     public function handle_cancel_export(): void {
-        sitessaver_verify_ajax();
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
+        }
+        if (!current_user_can(sitessaver_capability())) {
+            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
+        }
 
         $uid = sanitize_text_field(wp_unslash($_POST['uid'] ?? ''));
         if ($uid === '') {
@@ -443,7 +467,12 @@ final class Ajax {
      * Delete a backup file.
      */
     public function handle_delete(): void {
-        sitessaver_verify_ajax();
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
+        }
+        if (!current_user_can(sitessaver_capability())) {
+            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
+        }
 
         $file = sanitize_file_name(wp_unslash($_POST['file'] ?? ''));
         $path = sitessaver_resolve_backup_path($file);
@@ -475,11 +504,10 @@ final class Ajax {
      * can resume interrupted downloads.
      */
     public function handle_download(): void {
-        if (!sitessaver_current_user_can()) {
+        check_admin_referer('sitessaver_download', 'nonce');
+        if (!current_user_can(sitessaver_capability())) {
             wp_die(esc_html__('Permission denied.', 'sitessaver'));
         }
-
-        check_admin_referer('sitessaver_download', 'nonce');
 
         $file      = sanitize_file_name(wp_unslash($_GET['file'] ?? ''));
         $real_path = sitessaver_resolve_backup_path($file);
@@ -581,13 +609,21 @@ final class Ajax {
      * Add/update label on a backup.
      */
     public function handle_label(): void {
-        sitessaver_verify_ajax();
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
+        }
+        if (!current_user_can(sitessaver_capability())) {
+            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
+        }
 
         $file  = sanitize_file_name(wp_unslash($_POST['file'] ?? ''));
         $label = sanitize_text_field(wp_unslash($_POST['label'] ?? ''));
 
         if (empty($file)) {
             wp_send_json_error(['message' => __('No file specified.', 'sitessaver')]);
+        }
+        if (sitessaver_resolve_backup_path($file) === null) {
+            wp_send_json_error(['message' => __('Backup not found.', 'sitessaver')]);
         }
 
         $labels = get_option('sitessaver_backup_labels', []);
@@ -601,7 +637,12 @@ final class Ajax {
      * Save schedule settings.
      */
     public function handle_save_schedule(): void {
-        sitessaver_verify_ajax();
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
+        }
+        if (!current_user_can(sitessaver_capability())) {
+            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
+        }
 
         // The form posts frequencies[] so several cadences can run together
         // (e.g. Daily for recent restore points plus Monthly as an archive).
@@ -701,7 +742,12 @@ final class Ajax {
      * Issue a fresh external-trigger key, invalidating the old URL.
      */
     public function handle_regenerate_cron_key(): void {
-        sitessaver_verify_ajax();
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
+        }
+        if (!current_user_can(sitessaver_capability())) {
+            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
+        }
 
         Schedule::regenerate_trigger_key();
 
@@ -719,7 +765,12 @@ final class Ajax {
      * is "is this actually configured correctly?".
      */
     public function handle_run_schedule_now(): void {
-        sitessaver_verify_ajax();
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
+        }
+        if (!current_user_can(sitessaver_capability())) {
+            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
+        }
 
         $settings = get_option('sitessaver_schedule', []);
 
@@ -764,7 +815,12 @@ final class Ajax {
      * Save general settings.
      */
     public function handle_save_settings(): void {
-        sitessaver_verify_ajax();
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
+        }
+        if (!current_user_can(sitessaver_capability())) {
+            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
+        }
 
         $settings = get_option('sitessaver_settings', []);
         $settings['gdrive_folder_id'] = sanitize_text_field(wp_unslash($_POST['gdrive_folder_id'] ?? ''));
@@ -778,7 +834,12 @@ final class Ajax {
      * Save who (if anyone) is emailed when a manual backup finishes unwatched.
      */
     public function handle_save_export_notify(): void {
-        sitessaver_verify_ajax();
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
+        }
+        if (!current_user_can(sitessaver_capability())) {
+            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
+        }
 
         $enabled = empty($_POST['notify_enabled']) ? '0' : '1';
         $email   = sanitize_email(wp_unslash($_POST['notify_email'] ?? ''));
@@ -806,7 +867,12 @@ final class Ajax {
      * Save the email branding fields used by notification emails.
      */
     public function handle_save_email_brand(): void {
-        sitessaver_verify_ajax();
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
+        }
+        if (!current_user_can(sitessaver_capability())) {
+            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
+        }
 
         $accent = strtoupper(sanitize_text_field(wp_unslash($_POST['accent'] ?? '')));
         if (!preg_match('/^#(?:[0-9A-F]{3}|[0-9A-F]{6})$/', $accent)) {
@@ -842,7 +908,12 @@ final class Ajax {
      * what lands in the inbox is exactly what a real backup would produce.
      */
     public function handle_send_test_email(): void {
-        sitessaver_verify_ajax();
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
+        }
+        if (!current_user_can(sitessaver_capability())) {
+            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
+        }
 
         $to = sanitize_email(wp_unslash($_POST['email'] ?? ''));
         if ($to === '' || !is_email($to)) {
@@ -944,7 +1015,12 @@ final class Ajax {
      * Disconnect Google Drive.
      */
     public function handle_gdrive_disconnect(): void {
-        sitessaver_verify_ajax();
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
+        }
+        if (!current_user_can(sitessaver_capability())) {
+            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
+        }
 
         GDrive::disconnect();
 
@@ -956,7 +1032,12 @@ final class Ajax {
      * direct link" note on the Backups page.
      */
     public function handle_dismiss_storage_notice(): void {
-        sitessaver_verify_ajax();
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
+        }
+        if (!current_user_can(sitessaver_capability())) {
+            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
+        }
         update_user_meta(get_current_user_id(), 'sitessaver_dismissed_storage_notice', 1);
         wp_send_json_success();
     }
@@ -976,7 +1057,12 @@ final class Ajax {
     }
 
     public function handle_remote_disconnect(): void {
-        sitessaver_verify_ajax();
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
+        }
+        if (!current_user_can(sitessaver_capability())) {
+            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
+        }
         $dest = $this->remote_from_request();
         $dest->disconnect();
         /* translators: %s: provider name */
@@ -984,7 +1070,12 @@ final class Ajax {
     }
 
     public function handle_remote_upload(): void {
-        sitessaver_verify_ajax();
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
+        }
+        if (!current_user_can(sitessaver_capability())) {
+            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
+        }
 
         $dest   = $this->remote_from_request();
         $job_id = sanitize_text_field(wp_unslash($_POST['job_id'] ?? ''));
@@ -999,7 +1090,12 @@ final class Ajax {
     }
 
     public function handle_remote_upload_status(): void {
-        sitessaver_verify_ajax();
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
+        }
+        if (!current_user_can(sitessaver_capability())) {
+            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
+        }
         $dest   = $this->remote_from_request();
         $job_id = sanitize_text_field(wp_unslash($_POST['job_id'] ?? ''));
         if ($job_id === '') {
@@ -1009,12 +1105,22 @@ final class Ajax {
     }
 
     public function handle_remote_list(): void {
-        sitessaver_verify_ajax();
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
+        }
+        if (!current_user_can(sitessaver_capability())) {
+            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
+        }
         wp_send_json_success($this->remote_from_request()->list_files());
     }
 
     public function handle_remote_download(): void {
-        sitessaver_verify_ajax();
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
+        }
+        if (!current_user_can(sitessaver_capability())) {
+            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
+        }
 
         $dest    = $this->remote_from_request();
         $file_id = sanitize_text_field(wp_unslash($_POST['file_id'] ?? ''));
@@ -1026,7 +1132,12 @@ final class Ajax {
     }
 
     public function handle_remote_delete(): void {
-        sitessaver_verify_ajax();
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
+        }
+        if (!current_user_can(sitessaver_capability())) {
+            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
+        }
 
         $dest    = $this->remote_from_request();
         $file_id = sanitize_text_field(wp_unslash($_POST['file_id'] ?? ''));
@@ -1041,7 +1152,12 @@ final class Ajax {
      * Upload backup to Google Drive.
      */
     public function handle_gdrive_upload(): void {
-        sitessaver_verify_ajax();
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
+        }
+        if (!current_user_can(sitessaver_capability())) {
+            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
+        }
 
         $job_id = sanitize_text_field(wp_unslash($_POST['job_id'] ?? ''));
         $file   = sanitize_file_name(wp_unslash($_POST['file'] ?? ''));
@@ -1064,7 +1180,12 @@ final class Ajax {
      * Get Google Drive upload progress status.
      */
     public function handle_get_gdrive_upload_status(): void {
-        sitessaver_verify_ajax();
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
+        }
+        if (!current_user_can(sitessaver_capability())) {
+            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
+        }
 
         $job_id = sanitize_text_field(wp_unslash($_POST['job_id'] ?? ''));
         if (empty($job_id)) {
@@ -1083,7 +1204,12 @@ final class Ajax {
      * List backups on Google Drive.
      */
     public function handle_gdrive_list(): void {
-        sitessaver_verify_ajax();
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
+        }
+        if (!current_user_can(sitessaver_capability())) {
+            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
+        }
 
         $result = GDrive::list_files();
         wp_send_json_success($result);
@@ -1093,7 +1219,12 @@ final class Ajax {
      * Download backup from Google Drive.
      */
     public function handle_gdrive_download(): void {
-        sitessaver_verify_ajax();
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
+        }
+        if (!current_user_can(sitessaver_capability())) {
+            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
+        }
 
         $file_id = sanitize_text_field(wp_unslash($_POST['file_id'] ?? ''));
 
@@ -1114,7 +1245,12 @@ final class Ajax {
      * Delete backup from Google Drive.
      */
     public function handle_gdrive_delete(): void {
-        sitessaver_verify_ajax();
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
+        }
+        if (!current_user_can(sitessaver_capability())) {
+            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
+        }
 
         $file_id = sanitize_text_field(wp_unslash($_POST['file_id'] ?? ''));
 
@@ -1150,7 +1286,12 @@ final class Ajax {
      * instead of appending it twice.
      */
     public function handle_upload_chunk(): void {
-        sitessaver_verify_ajax();
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
+        }
+        if (!current_user_can(sitessaver_capability())) {
+            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
+        }
 
         $upload_id = sanitize_key(wp_unslash($_POST['upload_id'] ?? ''));
         if (empty($upload_id) || !preg_match('/^[a-z0-9]{8,32}$/', $upload_id)) {
@@ -1324,7 +1465,12 @@ final class Ajax {
      * (it landed, only the reply was lost), or pick up the finished file.
      */
     public function handle_upload_status(): void {
-        sitessaver_verify_ajax();
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
+        }
+        if (!current_user_can(sitessaver_capability())) {
+            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
+        }
 
         $upload_id = sanitize_key(wp_unslash($_POST['upload_id'] ?? ''));
         if (empty($upload_id) || !preg_match('/^[a-z0-9]{8,32}$/', $upload_id)) {
@@ -1419,7 +1565,12 @@ final class Ajax {
      * Clean up orphaned chunks for a specific upload ID (called on client-side error).
      */
     public function handle_cleanup_chunks(): void {
-        sitessaver_verify_ajax();
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
+        }
+        if (!current_user_can(sitessaver_capability())) {
+            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
+        }
 
         $upload_id = sanitize_key(wp_unslash($_POST['upload_id'] ?? ''));
         if (empty($upload_id) || !preg_match('/^[a-z0-9]{8,32}$/', $upload_id)) {
@@ -1445,8 +1596,16 @@ final class Ajax {
      * Accepts `file` (a backup in storage) or `gdrive_file_id`.
      */
     public function handle_restore_start(): void {
-        sitessaver_verify_ajax();
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
+        }
+        if (!current_user_can(sitessaver_capability())) {
+            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
+        }
 
+        if (Requirements::restore_blocker() === 'sqlite') {
+            wp_send_json_error(Errors::payload('restore_sqlite', 'This site uses an SQLite database.'), 400);
+        }
         if (!Requirements::can_restore()) {
             wp_send_json_error(Errors::payload('restore_zip_missing', 'The PHP zip extension is missing on this server.'), 400);
         }
@@ -1588,7 +1747,12 @@ final class Ajax {
      * and get a reference code the user can quote.
      */
     public function handle_client_error(): void {
-        sitessaver_verify_ajax();
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
+        }
+        if (!current_user_can(sitessaver_capability())) {
+            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
+        }
 
         $code   = sanitize_key(wp_unslash($_POST['code'] ?? 'generic'));
         $detail = sanitize_textarea_field(wp_unslash($_POST['detail'] ?? ''));
@@ -1611,7 +1775,7 @@ final class Ajax {
      * Download the troubleshooting log as a .txt file.
      */
     public function handle_log_download(): void {
-        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false) || !sitessaver_current_user_can()) {
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false) || !current_user_can(sitessaver_capability())) {
             wp_die(esc_html__('Permission denied.', 'sitessaver'), '', ['response' => 403]);
         }
 
@@ -1623,7 +1787,12 @@ final class Ajax {
     }
 
     public function handle_log_clear(): void {
-        sitessaver_verify_ajax();
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
+        }
+        if (!current_user_can(sitessaver_capability())) {
+            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
+        }
         Log::clear();
         wp_send_json_success(['message' => __('Log cleared.', 'sitessaver')]);
     }

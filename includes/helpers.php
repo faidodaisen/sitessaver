@@ -692,20 +692,4 @@ function sitessaver_resolve_backup_path(string $file): ?string {
     return $real_path;
 }
 
-/**
- * Verify AJAX request (nonce + capability).
- */
-function sitessaver_verify_ajax(): bool {
-    if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
-        wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
-        return false;
-    }
-
-    if (!sitessaver_current_user_can()) {
-        wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
-        return false;
-    }
-
-    return true;
-}
 

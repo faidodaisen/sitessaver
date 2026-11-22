@@ -182,36 +182,86 @@ final class Archive {
      * a request stops mid-entry, the next one re-opens the entry, reads past
      * what is already on disk and continues from $off.
      *
+     * Every finished file is checked against the CRC-32 stored in the
+     * archive; a read error or a mismatch is fatal (the restore rolls back).
+     *
      * @return bool True when written, false when stopped ($off holds the place).
      * @throws \RuntimeException When the entry cannot be read or the target cannot be written.
      */
     public static function extract_entry(\ZipArchive $zip, string $name, int $size, string $target, int &$off, callable $should_stop): bool {
-        $source = $zip->getStream($name);
-        if ($source === false) {
+        $stat = $zip->statName($name);
+        if (!is_array($stat)) {
             throw new \RuntimeException('Failed to extract backup archive: cannot read ' . $name);
         }
-
         if ($size < self::EXTRACT_STREAM_MIN) {
-            $out = @fopen($target, 'wb');
-            if ($out === false) {
-                fclose($source);
-                throw new \RuntimeException(self::write_failure('cannot write', $name));
+            // Read first, then write: a damaged entry must not be mistaken
+            // for a write the server refused (that one only skips the file).
+            $data = $zip->getFromName($name);
+            if (!is_string($data) || strlen($data) !== $size || crc32($data) !== ((int) $stat['crc'] & 0xFFFFFFFF)) {
+                throw new \RuntimeException('Failed to extract backup archive: ' . $name . ' is damaged (CRC mismatch).');
             }
-            $copied = stream_copy_to_stream($source, $out);
-            fclose($source);
-            $closed = fclose($out);
-            if ($copied === false || ($size > 0 && $copied !== $size) || !$closed) {
+            $written = @file_put_contents($target, $data);
+            if ($written !== strlen($data)) {
                 throw new \RuntimeException(self::write_failure('could not write', $name, 'disk full or quota reached?'));
             }
             $off = 0;
             return true;
         }
 
+        $source = $zip->getStream($name);
+        if ($source === false) {
+            throw new \RuntimeException('Failed to extract backup archive: cannot read ' . $name);
+        }
+
         if (self::extract_large($source, $target, $name, $size, $off, $should_stop)) {
+            self::check_crc($target, $name, (int) $stat['crc']);
             $off = 0;
             return true;
         }
         return false;
+    }
+
+    /**
+     * Compare a written file with the CRC-32 the archive stored for it.
+     *
+     * @throws \RuntimeException On a mismatch.
+     */
+    public static function check_crc(string $file, string $entry, int $expected): void {
+        $got = hash_file('crc32b', $file);
+        if ($got === false || (int) hexdec($got) !== ($expected & 0xFFFFFFFF)) {
+            throw new \RuntimeException('Failed to extract backup archive: ' . $entry . ' is damaged (CRC mismatch).');
+        }
+    }
+
+    /**
+     * True when $path can be written without leaving $root: the nearest
+     * existing parent folder resolves inside $root, and $path itself is not
+     * a symbolic link. Compared without case on Windows.
+     */
+    public static function is_inside_root(string $path, string $root): bool {
+        $real_root = realpath($root);
+        if ($real_root === false || is_link($path)) {
+            return false;
+        }
+        $dir = dirname($path);
+        while (!is_dir($dir)) {
+            $up = dirname($dir);
+            if ($up === $dir) {
+                return false;
+            }
+            $dir = $up;
+        }
+        $real = realpath($dir);
+        if ($real === false) {
+            return false;
+        }
+        $a = rtrim(str_replace('\\', '/', $real), '/') . '/';
+        $b = rtrim(str_replace('\\', '/', $real_root), '/') . '/';
+        if (DIRECTORY_SEPARATOR === '\\') {
+            $a = strtolower($a);
+            $b = strtolower($b);
+        }
+        return str_starts_with($a, $b);
     }
 
     /**
@@ -245,7 +295,10 @@ final class Archive {
                 $chunk = '';
                 while (strlen($chunk) < $want) {
                     $part = fread($source, $want - strlen($chunk));
-                    if ($part === false || $part === '') {
+                    if ($part === false) {
+                        throw new \RuntimeException('Failed to extract backup archive: ' . $entry . ' is damaged (read error).');
+                    }
+                    if ($part === '') {
                         break;
                     }
                     $chunk .= $part;

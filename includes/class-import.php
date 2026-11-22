@@ -174,6 +174,9 @@ final class Import {
         };
 
         if (empty($c['stage'])) {
+            if (Requirements::restore_blocker() === 'sqlite') {
+                throw new \RuntimeException('This site uses an SQLite database.');
+            }
             if (!Requirements::can_restore()) {
                 throw new \RuntimeException('The PHP zip extension is missing on this server.');
             }
@@ -504,7 +507,7 @@ final class Import {
      * area, a skipped folder).
      *
      * @param array<string, array{dest: string, skip: list<string>, rewrite: bool}> $dirs
-     * @return array{m: int, size: int, name: string, key: string, rel: string, dest: string, dir: bool, rewrite: bool}|null
+     * @return array{m: int, size: int, name: string, key: string, rel: string, dest: string, root: string, dir: bool, rewrite: bool}|null
      */
     private static function plan_target(string $line, array $dirs): ?array {
         $parts = explode("\t", rtrim($line, "\n"), 3);
@@ -512,14 +515,23 @@ final class Import {
             return null;
         }
         [$m, $size, $name] = $parts;
-        $inner = substr($name, strlen('wp-content/'));
+        // Repeated slashes would shift the folder names below.
+        $inner = (string) preg_replace('#/+#', '/', ltrim(substr($name, strlen('wp-content/')), '/'));
         $area  = (string) strtok($inner, '/');
         if (!isset($dirs[$area])) {
             return null;
         }
         $rel = rtrim(substr($inner, strlen($area) + 1), '/');
-        if ($rel === '' || (!empty($dirs[$area]['skip']) && in_array(strtok($rel, '/'), $dirs[$area]['skip'], true))) {
+        if ($rel === '') {
             return null;
+        }
+        // Skipped folders (the running SitesSaver, host mu-plugins) match
+        // without case: on Windows and macOS SitesSaver/ is sitessaver/.
+        $first = strtolower((string) strtok($rel, '/'));
+        foreach ((array) ($dirs[$area]['skip'] ?? []) as $skip) {
+            if ($first === strtolower((string) $skip)) {
+                return null;
+            }
         }
         return [
             'm'       => (int) $m,
@@ -528,6 +540,7 @@ final class Import {
             'key'     => $area . '/' . $rel,
             'rel'     => $rel,
             'dest'    => $dirs[$area]['dest'] . '/' . $rel,
+            'root'    => $dirs[$area]['dest'],
             'dir'     => str_ends_with($name, '/'),
             'rewrite' => $dirs[$area]['rewrite'],
         ];
@@ -712,6 +725,19 @@ final class Import {
         if ($t === null) {
             return true;
         }
+        // Never write through a symbolic link or junction that leads out
+        // of the folder being restored.
+        if (!is_dir($t['root'])) {
+            wp_mkdir_p($t['root']);
+        }
+        if (!Archive::is_inside_root($t['dest'], $t['root'])) {
+            $c['fl']['failures'] = (int) $c['fl']['failures'] + 1;
+            if (count((array) $c['fl']['failed']) < 10) {
+                $c['fl']['failed'][] = $t['key'];
+            }
+            Log::warning('restore_outside_folder', 'Not restored: the path leads outside the folder being restored (symbolic link).', ['file' => (string) $t['key']]);
+            return true;
+        }
         if ($t['dir']) {
             if (!is_dir($t['dest'])) {
                 wp_mkdir_p($t['dest']);
@@ -731,8 +757,12 @@ final class Import {
         try {
             if ($t['rewrite'] && $pairs !== [] && self::is_rewritable_text_file($t['rel'], $t['size'])) {
                 $data = $zip->getFromName($t['name']);
-                if (!is_string($data)) {
+                $stat = $zip->statName($t['name']);
+                if (!is_string($data) || !is_array($stat)) {
                     throw new \RuntimeException('Failed to extract backup archive: cannot read ' . $t['name']);
+                }
+                if (crc32($data) !== ((int) $stat['crc'] & 0xFFFFFFFF)) {
+                    throw new \RuntimeException('Failed to extract backup archive: ' . $t['name'] . ' is damaged (CRC mismatch).');
                 }
                 if (!self::write_with_url_rewrite($data, $t['dest'], $pairs)) {
                     throw new \RuntimeException('Server refused the restore: could not write ' . $t['name']);
@@ -880,6 +910,10 @@ final class Import {
                         return;
                     }
                     $dest = $dirs[$area]['dest'] . '/' . $rel;
+                    if (is_dir($dirs[$area]['dest']) && !Archive::is_inside_root($dest, $dirs[$area]['dest'])) {
+                        Log::warning('rollback_put_back_failed', 'Not put back: the path leads outside the folder being restored.', ['file' => $name]);
+                        return;
+                    }
                     if (!is_dir(dirname($dest))) {
                         wp_mkdir_p(dirname($dest));
                     }
@@ -1261,7 +1295,7 @@ final class Import {
         // wp_users / auth salts / capabilities come from the BACKUP, but the
         // browser's cookie was issued against the PRE-restore DB. That means
         // the normal nonce + `current_user_can('manage_options')` checks in
-        // sitessaver_verify_ajax() can silently fail on the very next AJAX
+        // the AJAX handlers can silently fail on the very next AJAX
         // call (finalize_restore): the user is effectively a stranger to the
         // new DB. Instead we hand the client a short-lived random token,
         // persist it alongside the pending state, and accept it in place of
