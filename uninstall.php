@@ -4,12 +4,11 @@
  *
  * Removes every sitessaver_* option, transient, and user meta row; unschedules
  * cron; and best-effort revokes the Google Drive refresh token through the
- * proxy. Backup files on disk (wp-content/sitessaver-backups/) are left intact
+ * proxy. Backup files in the storage folder (by default
+ * wp-content/sitessaver-backups/) are left intact
  * on purpose, since users may want to keep their backups. They can delete that
  * folder manually if desired.
  */
-
-declare(strict_types=1);
 
 defined('WP_UNINSTALL_PLUGIN') || exit;
 
@@ -23,7 +22,7 @@ if (!function_exists('get_home_path')) {
 }
 $sitessaver_ht = get_home_path() . '.htaccess';
 if (is_file($sitessaver_ht) && is_writable($sitessaver_ht)
-    && str_contains((string) file_get_contents($sitessaver_ht), '# BEGIN SitesSaver')) {
+    && strpos((string) file_get_contents($sitessaver_ht), '# BEGIN SitesSaver') !== false) {
     require_once ABSPATH . 'wp-admin/includes/misc.php';
     insert_with_markers($sitessaver_ht, 'SitesSaver', []);
 }
@@ -36,7 +35,7 @@ if (is_file($sitessaver_ht) && is_writable($sitessaver_ht)
  * key passed as a cron argument; wp_clear_scheduled_hook() only removes
  * events whose args match, so each one is cleared by name.
  */
-$sitessaver_clean_site = static function (): void {
+$sitessaver_clean_site = static function () {
     global $wpdb;
 
     $token = get_option('sitessaver_gdrive_token');
@@ -91,9 +90,13 @@ delete_metadata('user', 0, 'sitessaver_dismissed_update', '', true);
 //    sitessaver-log-*.log, restore job state restore-*.json, and any
 //    pre-1.6.2 .php versions of either). These are not backups, nothing a
 //    user would want to keep. Multisite subsites keep theirs under site-<id>/.
-$sitessaver_storage = WP_CONTENT_DIR . '/sitessaver-backups';
-$sitessaver_roots   = [$sitessaver_storage];
-foreach ((array) glob($sitessaver_storage . '/site-*', GLOB_ONLYDIR) as $sitessaver_sub_root) {
+//    On PHP older than 8.1 SitesSaver never ran, so there is nothing to remove.
+$sitessaver_roots = array();
+if (version_compare(PHP_VERSION, '8.1', '>=')) {
+    require_once plugin_dir_path(__FILE__) . 'includes/helpers.php';
+    $sitessaver_roots[] = sitessaver_storage_root();
+}
+foreach ($sitessaver_roots ? (array) glob($sitessaver_roots[0] . '/site-*', GLOB_ONLYDIR) : array() as $sitessaver_sub_root) {
     if (is_string($sitessaver_sub_root)) {
         $sitessaver_roots[] = $sitessaver_sub_root;
     }

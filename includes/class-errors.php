@@ -69,6 +69,12 @@ final class Errors {
             ],
 
             // ---- Restore ------------------------------------------------
+            'restore_zip_missing' => [
+                'title'   => __('Restore is not available on this server', 'sitessaver'),
+                'message' => __('Restoring a backup needs the Zip extension, and this server does not have it.', 'sitessaver') . ' ' . $nothing_changed,
+                'hint'    => __('Ask your host to enable the PHP zip extension (ZipArchive), then try again. Making and downloading backups still works.', 'sitessaver'),
+                'log'     => false,
+            ],
             'restore_file_missing' => [
                 'title'   => __('We could not find that backup', 'sitessaver'),
                 'message' => __('The backup file is no longer on the server.', 'sitessaver') . ' ' . $nothing_changed,
@@ -278,6 +284,9 @@ final class Errors {
         }
         if (str_contains($t, 'backup file not found')) {
             return 'restore_file_missing';
+        }
+        if (str_contains($t, 'zip extension is missing')) {
+            return 'restore_zip_missing';
         }
         if (str_contains($t, 'cannot be restored on its own') || str_contains($t, 'chain are missing')) {
             return 'restore_chain_incomplete';

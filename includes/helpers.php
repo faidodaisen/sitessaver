@@ -47,14 +47,121 @@ function sitessaver_backup_filename(string $ext = 'zip'): string {
 }
 
 /**
+ * The one place the storage folder is decided. Every other storage path in
+ * the plugin is built from this.
+ *
+ * Default: wp-content/sitessaver-backups. Not the uploads folder: a full
+ * backup includes uploads, so archives kept there would end up inside newer
+ * backups and be overwritten by a restore, and on multisite every site has
+ * its own uploads folder while backups need one fixed place. Change it with
+ * the sitessaver_storage_dir filter, or define SITESSAVER_STORAGE_DIR in
+ * wp-config.php.
+ */
+function sitessaver_storage_root(): string {
+    $default = defined('SITESSAVER_STORAGE_DIR') ? (string) SITESSAVER_STORAGE_DIR : WP_CONTENT_DIR . '/sitessaver-backups';
+    $dir     = rtrim((string) apply_filters('sitessaver_storage_dir', $default), '/\\');
+    return $dir !== '' ? $dir : rtrim($default, '/\\');
+}
+
+/** Work folder for jobs in progress (upload chunks, restore and export work files). */
+function sitessaver_temp_dir(): string {
+    return sitessaver_storage_root() . '/tmp';
+}
+
+/**
+ * The site folders a backup contains and a restore writes back, by archive
+ * area. Resolved with the WordPress functions and constants made for this,
+ * so a site with moved plugin, theme or upload folders works too.
+ *
+ * @return array<string, string> area => absolute folder
+ */
+function sitessaver_site_areas(): array {
+    return [
+        'uploads'    => (string) wp_upload_dir()['basedir'],
+        'plugins'    => WP_PLUGIN_DIR,
+        'themes'     => (string) get_theme_root(),
+        'mu-plugins' => WPMU_PLUGIN_DIR,
+    ];
+}
+
+/** Folder name of the running SitesSaver inside the plugins folder. */
+function sitessaver_own_plugin_folder(): string {
+    return dirname(plugin_basename(SITESSAVER_FILE));
+}
+
+/**
+ * Run one long plugin job (an export slice, an upload, a restore slice) with
+ * a higher, still finite, time limit and the admin memory limit, then put
+ * the previous limits back. Nothing else in the request is affected, which
+ * matters for WP-Cron: callbacks that run after ours keep the site's own
+ * limits.
+ *
+ * @param callable $job          The work.
+ * @param int      $seconds      Time limit while the job runs.
+ * @param bool     $keep_running Keep going if the client disconnects (loopback workers).
+ * @return mixed What the job returns.
+ */
+function sitessaver_run_long_job(callable $job, int $seconds = 900, bool $keep_running = false) {
+    global $sitessaver_job_limits;
+
+    $can_time  = function_exists('set_time_limit') && function_exists('ini_get');
+    $old_time  = $can_time ? (int) ini_get('max_execution_time') : 0;
+    $old_mem   = function_exists('ini_get') ? (string) ini_get('memory_limit') : '';
+    $old_abort = null;
+    if ($keep_running && function_exists('ignore_user_abort')) {
+        $old_abort = (int) ignore_user_abort(true);
+    }
+
+    // Only ever raise: a site that already allows longer (or no limit, as
+    // in WP-CLI) keeps its own setting.
+    $raised = false;
+    if ($can_time && $old_time > 0 && $old_time < $seconds) {
+        $raised = set_time_limit($seconds); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- Raised only while this job runs, put back below.
+    }
+    wp_raise_memory_limit('admin');
+
+    $outer                 = $sitessaver_job_limits;
+    $sitessaver_job_limits = ['raised' => $raised || $old_time === 0];
+
+    try {
+        return $job();
+    } finally {
+        $sitessaver_job_limits = $outer;
+        if ($raised) {
+            set_time_limit($old_time); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- Puts back the limit from before the job.
+        }
+        if ($old_mem !== '' && function_exists('ini_set') && (string) ini_get('memory_limit') !== $old_mem) {
+            // Lowering can fail when the job used more than the old limit;
+            // then the raised value simply stays for the rest of the request.
+            @ini_set('memory_limit', $old_mem); // phpcs:ignore WordPress.PHP.IniSet.memory_limit_Disallowed, Squiz.PHP.DiscouragedFunctions.Discouraged -- Puts back the value from before the job.
+        }
+        if ($old_abort !== null) {
+            ignore_user_abort((bool) $old_abort);
+        }
+    }
+}
+
+/**
+ * The time limit to plan slices against. Inside sitessaver_run_long_job()
+ * the raised limit counts as no limit, as before; the gateway still cuts
+ * requests, which is what the slice sizes are for.
+ */
+function sitessaver_time_limit(): int {
+    global $sitessaver_job_limits;
+    if (is_array($sitessaver_job_limits) && !empty($sitessaver_job_limits['raised'])) {
+        return 0;
+    }
+    return function_exists('ini_get') ? (int) ini_get('max_execution_time') : 0;
+}
+
+/**
  * Absolute path to the backup storage directory for the CURRENT site.
  *
- * On a single-site install this is identical to SITESSAVER_STORAGE_DIR, so
- * existing installs are byte-for-byte unaffected.
+ * On a single-site install this is the storage root itself.
  *
- * On multisite, SITESSAVER_STORAGE_DIR is one network-wide folder. Globbing
- * it directly would let any subsite admin see, download, and DELETE another
- * subsite's backups. This namespaces storage by blog ID so each site only ever sees
+ * On multisite, the root is one network-wide folder. Globbing it directly
+ * would let any subsite admin see, download, and DELETE another subsite's
+ * backups. This namespaces storage by blog ID so each site only ever sees
  * its own archives. The directory is created (and protected with the same
  * .htaccess/index.php guard the activation hook uses) lazily on first call,
  * since WordPress only runs register_activation_hook() for sites that
@@ -63,10 +170,10 @@ function sitessaver_backup_filename(string $ext = 'zip'): string {
  */
 function sitessaver_storage_dir(): string {
     if (!is_multisite()) {
-        return SITESSAVER_STORAGE_DIR;
+        return sitessaver_storage_root();
     }
 
-    $dir = SITESSAVER_STORAGE_DIR . '/site-' . get_current_blog_id();
+    $dir = sitessaver_storage_root() . '/site-' . get_current_blog_id();
 
     if (!is_dir($dir)) {
         wp_mkdir_p($dir);
@@ -78,11 +185,15 @@ function sitessaver_storage_dir(): string {
 
 /**
  * Write the dual-syntax .htaccess, a web.config (IIS) and the index.php guard into a directory, if not
- * already present. Idempotent. Shared by the activation hook (network-wide
- * SITESSAVER_STORAGE_DIR) and sitessaver_storage_dir() (per-site subfolders
- * on multisite), so the two never drift out of sync.
+ * already present. Idempotent. Shared by the storage root and
+ * sitessaver_storage_dir() (per-site subfolders on multisite), so the two
+ * never drift out of sync. Returns false when the folder is not writable;
+ * callers treat that as "not protected yet", never as a fatal error.
  */
-function sitessaver_protect_directory(string $dir): void {
+function sitessaver_protect_directory(string $dir): bool {
+    if (!is_dir($dir) || !wp_is_writable($dir)) {
+        return false;
+    }
     $htaccess = $dir . '/.htaccess';
     if (!file_exists($htaccess)) {
         file_put_contents(
@@ -117,6 +228,7 @@ function sitessaver_protect_directory(string $dir): void {
     if (!file_exists($index)) {
         file_put_contents($index, '<?php // Silence is golden.');
     }
+    return true;
 }
 
 /**
@@ -288,7 +400,7 @@ function sitessaver_storage_exposure_info(): ?array {
 function sitessaver_storage_probe(): array {
     $info = ['state' => 'unknown', 'server' => '', 'checked' => time()];
 
-    $dir     = SITESSAVER_STORAGE_DIR;
+    $dir     = sitessaver_storage_root();
     $content = wp_normalize_path(WP_CONTENT_DIR);
     if (str_starts_with(wp_normalize_path($dir), $content)) {
         wp_mkdir_p($dir);
@@ -415,10 +527,10 @@ function sitessaver_get_backups(): array {
  * (used for per-import cleanup).
  *
  * @param string|null $scope_dir Absolute path of a single temp subdir to remove.
- *                               Must live under SITESSAVER_TEMP_DIR.
+ *                               Must live under sitessaver_temp_dir().
  */
 function sitessaver_cleanup_temp(?string $scope_dir = null): void {
-    $tmp = SITESSAVER_TEMP_DIR;
+    $tmp = sitessaver_temp_dir();
 
     if (!is_dir($tmp)) {
         return;
@@ -467,7 +579,7 @@ function sitessaver_cleanup_temp(?string $scope_dir = null): void {
 
 /**
  * Remove a specific temp subdirectory if, and only if, it lives under
- * SITESSAVER_TEMP_DIR. Hardens against path traversal.
+ * sitessaver_temp_dir(). Hardens against path traversal.
  */
 function sitessaver_remove_scoped_temp(string $tmp, string $scope_dir): void {
     $real_tmp   = realpath($tmp);
@@ -518,7 +630,7 @@ function sitessaver_rm_recursive(string $path): void {
 
 /**
  * Resolve a user-supplied backup filename to a safe absolute path, or return
- * null if the file is missing or resolves outside SITESSAVER_STORAGE_DIR.
+ * null if the file is missing or resolves outside the storage folder.
  *
  * Hardens against path-traversal / symlink escape for all handlers that
  * operate on existing backup files (delete, download, upload to GDrive).

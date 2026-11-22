@@ -317,7 +317,7 @@ final class Database {
             : 'another site\'s';
 
         throw new \RuntimeException(sprintf(
-            /* Not user-facing __() text. Import::from_backup() catches this
+            /* Not user-facing __() text. The restore job catches this
                and wraps it in a translated, non-technical message. Keeping
                table names here only for debug.log / support diagnosis. */
             'SitesSaver refused to import this backup into site #%d: it contains %s tables (%s). ' .

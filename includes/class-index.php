@@ -183,7 +183,7 @@ final class Index {
     public static function save(string $backup_file, array $index): bool {
         $json = wp_json_encode($index, JSON_UNESCAPED_SLASHES);
 
-        if (!is_string($json)) {
+        if (!is_string($json) || !function_exists('gzencode')) {
             return false;
         }
 
@@ -231,7 +231,7 @@ final class Index {
         // that is not gzip still raises a warning under a custom error
         // handler (`@` suppresses display, not the handler), and a ZIP entry
         // truncated by a failed upload is a realistic input here.
-        if (strlen($gz) < 2 || substr($gz, 0, 2) !== "\x1f\x8b") {
+        if (strlen($gz) < 2 || substr($gz, 0, 2) !== "\x1f\x8b" || !function_exists('gzdecode')) {
             return null;
         }
 

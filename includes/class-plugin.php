@@ -23,6 +23,7 @@ final class Plugin {
         // Admin pages & assets, only needed in admin requests.
         if (is_admin()) {
             Admin::instance()->init();
+            Requirements::init();
         }
 
         // AJAX handlers. admin-ajax.php runs under is_admin() so safe to wire

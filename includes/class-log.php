@@ -46,7 +46,7 @@ final class Log {
     ];
 
     public static function dir(): string {
-        return SITESSAVER_STORAGE_DIR . '/logs';
+        return sitessaver_storage_root() . '/logs';
     }
 
     /**

@@ -78,7 +78,7 @@ final class Environment {
             $found[] = 'imunifyav';
         }
 
-        if (@is_dir('/proc/lve') || @file_exists('/etc/cloudlinux-release') || stripos(php_uname('r'), 'lve') !== false) {
+        if (@is_dir('/proc/lve') || @file_exists('/etc/cloudlinux-release') || (function_exists('php_uname') && stripos((string) php_uname('r'), 'lve') !== false)) {
             $found[] = 'cloudlinux';
         }
         if (@is_dir('/etc/bitninja') || @is_dir('/opt/bitninja')) {
@@ -101,8 +101,8 @@ final class Environment {
      */
     public static function diagnostics(): array {
         $layers = self::security_layers();
-        $dir    = function_exists('sitessaver_storage_dir') ? sitessaver_storage_dir() : (defined('SITESSAVER_STORAGE_DIR') ? SITESSAVER_STORAGE_DIR : WP_CONTENT_DIR);
-        $free   = @disk_free_space($dir);
+        $dir    = function_exists('sitessaver_storage_dir') ? sitessaver_storage_dir() : '';
+        $free   = $dir !== '' && function_exists('disk_free_space') ? @disk_free_space($dir) : false;
         return [
             'security'      => $layers !== [] ? implode(', ', $layers) : 'none detected',
             'disk_free'     => $free !== false ? (function_exists('size_format') ? size_format((int) $free) : (string) $free) : 'unknown',

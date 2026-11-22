@@ -69,7 +69,7 @@ $trigger_url_sh = '"' . addcslashes($trigger_url, '"$`\\') . '"';
 // line into their "command" box produces a doubled schedule that cannot run.
 $wget_command  = sprintf('wget -q -O - %s >/dev/null 2>&1', $trigger_url_sh);
 $curl_command  = sprintf('curl -s %s >/dev/null 2>&1', $trigger_url_sh);
-$wpcli_command = sprintf('cd %s && wp cron event run --due-now >/dev/null 2>&1', escapeshellarg(rtrim(ABSPATH, '/\\')));
+$wpcli_command = sprintf('cd %s && wp cron event run --due-now >/dev/null 2>&1', '"' . addcslashes(rtrim(ABSPATH, '/\\'), '"$`\\') . '"');
 
 // Full crontab lines, for `crontab -e` where the schedule IS part of the line.
 $cron_line  = $cron_expression . ' ' . $wget_command;

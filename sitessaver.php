@@ -3,7 +3,7 @@
  * Plugin Name: SitesSaver
  * Plugin URI:  https://sitessaver.com
  * Description: Full site backup and migration: export, import, schedule, and Google Drive storage. No restrictions.
- * Version:     1.6.2
+ * Version:     1.6.3
  * Author:      Fido Design
  * Author URI:  https://fidodesign.net
  * License:     GPL-2.0-or-later
@@ -12,14 +12,37 @@
  * Requires at least: 6.0
  */
 
-declare(strict_types=1);
-
 defined('ABSPATH') || exit;
+
+// SitesSaver's code needs PHP 8.1. On older PHP nothing else loads and the
+// Plugins screen says why. This file only uses syntax that old PHP can
+// read, so an old server gets a notice instead of an error.
+if (version_compare(PHP_VERSION, '8.1', '<')) {
+    if (!function_exists('sitessaver_old_php_notice')) {
+        function sitessaver_old_php_notice() {
+            if (!current_user_can('activate_plugins')) {
+                return;
+            }
+            $screen = function_exists('get_current_screen') ? get_current_screen() : null;
+            if (!$screen || !in_array($screen->id, array('plugins', 'plugins-network'), true)) {
+                return;
+            }
+            echo '<div class="notice notice-error is-dismissible"><p>' . esc_html(sprintf(
+                /* translators: %s: PHP version of this server. */
+                __('SitesSaver needs PHP 8.1 or newer and is not running. This server has PHP %s. Ask your host to update PHP.', 'sitessaver'),
+                PHP_VERSION
+            )) . '</p></div>';
+        }
+    }
+    add_action('admin_notices', 'sitessaver_old_php_notice');
+    add_action('network_admin_notices', 'sitessaver_old_php_notice');
+    return;
+}
 
 // This copy's version, read BEFORE any constants so the duplicate-copy
 // handler below can name it. Folder name is irrelevant: SitesSaver is
 // identified by its VERSION constant.
-$sitessaver_this_version = '1.6.2';
+$sitessaver_this_version = '1.6.3';
 
 // Duplicate-copy handler. WordPress lets the same plugin live in more than
 // one folder (e.g. `plugins/sitessaver/` and `plugins/sitessaver-copy/`) and
@@ -33,7 +56,7 @@ if (defined('SITESSAVER_VERSION')) {
     $sitessaver_copy = plugin_basename(__FILE__);
 
     // A network-active copy can only be handled from Network Admin.
-    $sitessaver_copy_network = static function () use ($sitessaver_copy): bool {
+    $sitessaver_copy_network = static function () use ($sitessaver_copy) {
         if (!is_multisite()) {
             return false;
         }
@@ -43,7 +66,7 @@ if (defined('SITESSAVER_VERSION')) {
         return is_plugin_active_for_network($sitessaver_copy);
     };
 
-    $sitessaver_copy_notice = static function () use ($sitessaver_copy, $sitessaver_this_version, $sitessaver_copy_network): void {
+    $sitessaver_copy_notice = static function () use ($sitessaver_copy, $sitessaver_this_version, $sitessaver_copy_network) {
         $network = $sitessaver_copy_network();
         if ($network ? (!is_network_admin() || !current_user_can('manage_network_plugins')) : !current_user_can('activate_plugins')) {
             return;
@@ -76,7 +99,7 @@ if (defined('SITESSAVER_VERSION')) {
     add_action('admin_notices', $sitessaver_copy_notice);
     add_action('network_admin_notices', $sitessaver_copy_notice);
 
-    $sitessaver_copy_deactivate = static function () use ($sitessaver_copy, $sitessaver_copy_network): void {
+    $sitessaver_copy_deactivate = static function () use ($sitessaver_copy, $sitessaver_copy_network) {
         $requested = isset($_GET['plugin']) ? sanitize_text_field(wp_unslash($_GET['plugin'])) : '';
         if ($requested !== $sitessaver_copy) {
             return; // Another copy's request; that copy handles it.
@@ -108,17 +131,15 @@ define('SITESSAVER_PATH', plugin_dir_path(__FILE__));
 define('SITESSAVER_URL', plugin_dir_url(__FILE__));
 define('SITESSAVER_SLUG', 'sitessaver');
 
-// Storage paths, inside wp-content so plugin updates don't wipe backups.
-define('SITESSAVER_STORAGE_DIR', WP_CONTENT_DIR . '/sitessaver-backups');
-define('SITESSAVER_TEMP_DIR', SITESSAVER_STORAGE_DIR . '/tmp');
+// Storage paths come from sitessaver_storage_root() in helpers.php.
 
 // Load helpers.
 require_once SITESSAVER_PATH . 'includes/helpers.php';
 
 // Autoloader.
-spl_autoload_register(static function (string $class): void {
+spl_autoload_register(static function ($class) {
     $prefix = 'SitesSaver\\';
-    if (!str_starts_with($class, $prefix)) {
+    if (strpos((string) $class, $prefix) !== 0) {
         return;
     }
 
@@ -130,7 +151,7 @@ spl_autoload_register(static function (string $class): void {
     }
 });
 
-add_action('plugins_loaded', static function (): void {
+add_action('plugins_loaded', static function () {
     SitesSaver\Plugin::instance()->init();
 
     // One-time cleanup: prior versions persisted export state as options.
@@ -169,45 +190,21 @@ add_action('plugins_loaded', static function (): void {
     }
 });
 
-// Activation hook: create storage directories.
-register_activation_hook(__FILE__, static function (): void {
-    // Hard requirements. Abort activation with a readable message if missing.
-    if (version_compare(PHP_VERSION, '8.1', '<')) {
-        deactivate_plugins(plugin_basename(__FILE__));
-        wp_die(
-            esc_html(sprintf(
-                /* translators: %s: current PHP version */
-                __('SitesSaver requires PHP 8.1 or newer. You are running PHP %s.', 'sitessaver'),
-                PHP_VERSION
-            )),
-            esc_html__('Plugin Activation Failed', 'sitessaver'),
-            ['back_link' => true]
-        );
-    }
-
-    if (!class_exists('ZipArchive')) {
-        deactivate_plugins(plugin_basename(__FILE__));
-        wp_die(
-            esc_html__('SitesSaver requires the PHP ZipArchive extension. Ask your host to enable ext-zip and try again.', 'sitessaver'),
-            esc_html__('Plugin Activation Failed', 'sitessaver'),
-            ['back_link' => true]
-        );
-    }
-
-    $dirs = [SITESSAVER_STORAGE_DIR, SITESSAVER_TEMP_DIR];
-
-    foreach ($dirs as $dir) {
+// Activation: create the storage folder and re-arm schedules. Activation
+// never stops and never prints anything. A server without something
+// SitesSaver needs (for example the PHP zip extension) still activates; the
+// features that need it are switched off and the admin is told on the
+// Plugins screen and SitesSaver's own screens (see Requirements). Nothing
+// here contacts another server.
+register_activation_hook(__FILE__, static function () {
+    // A folder that cannot be created now (read-only wp-content) is created
+    // on first use instead, where a failure is reported in the UI.
+    foreach (array(sitessaver_storage_root(), sitessaver_temp_dir()) as $dir) {
         if (!is_dir($dir)) {
             wp_mkdir_p($dir);
         }
+        sitessaver_protect_directory($dir);
     }
-
-    // Protect backup directory from direct access (Apache 2.4 and 2.2 syntax;
-    // Nginx hosts must add a location block manually, see README). Shared
-    // with sitessaver_storage_dir()'s per-site subfolders on multisite so
-    // the guard logic lives in exactly one place.
-    sitessaver_protect_directory(SITESSAVER_STORAGE_DIR);
-    sitessaver_protect_directory(SITESSAVER_TEMP_DIR);
 
     // Re-arm scheduled backups. Deactivation clears the cron events, so a
     // deactivate/reactivate cycle (which is what a plugin update does) would
@@ -215,17 +212,19 @@ register_activation_hook(__FILE__, static function (): void {
     //
     // sync_cron_events() rebuilds one event per selected frequency and clears
     // any stale ones first, so this is safe to run unconditionally.
-    $schedule = get_option('sitessaver_schedule', []);
+    $schedule = get_option('sitessaver_schedule', array());
     if (is_array($schedule) && !empty($schedule['enabled'])) {
         \SitesSaver\Schedule::sync_cron_events(
             \SitesSaver\Schedule::selected_frequencies($schedule),
             true
         );
     }
+
+    \SitesSaver\Requirements::flag_activation();
 });
 
 // Deactivation hook: clear scheduled events.
-register_deactivation_hook(__FILE__, static function (): void {
+register_deactivation_hook(__FILE__, static function () {
     if (class_exists(\SitesSaver\Background::class)) {
         \SitesSaver\Background::disarm_watchdog();
         \SitesSaver\Background::remove_rules();
