@@ -153,41 +153,6 @@ spl_autoload_register(static function ($class) {
 
 add_action('plugins_loaded', static function () {
     SitesSaver\Plugin::instance()->init();
-
-    // One-time cleanup: prior versions persisted export state as options.
-    // Sweep any lingering rows now that state lives in transients.
-    if (get_option('sitessaver_cleaned_export_options') !== '1') {
-        global $wpdb;
-        $wpdb->query(
-            "DELETE FROM {$wpdb->options}
-             WHERE option_name LIKE 'sitessaver\\_export\\_%'
-                OR option_name = 'sitessaver_active_export_id'"
-        );
-        update_option('sitessaver_cleaned_export_options', '1', false);
-    }
-
-    // One-time autoload correction: older versions stored several sizable
-    // or sensitive options with autoload=yes (WP default). Flip them to
-    // 'no' so they don't load on every page.
-    if (get_option('sitessaver_autoload_migrated') !== '1') {
-        global $wpdb;
-        $targets = [
-            'sitessaver_gdrive_token',
-            'sitessaver_schedule_log',
-            'sitessaver_backup_labels',
-            'sitessaver_settings',
-            'sitessaver_schedule',
-        ];
-        foreach ($targets as $name) {
-            $wpdb->update(
-                $wpdb->options,
-                ['autoload' => 'no'],
-                ['option_name' => $name]
-            );
-        }
-        wp_cache_delete('alloptions', 'options');
-        update_option('sitessaver_autoload_migrated', '1', false);
-    }
 });
 
 // Activation: create the storage folder and re-arm schedules. Activation

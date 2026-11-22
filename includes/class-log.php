@@ -11,19 +11,17 @@ defined('ABSPATH') || exit;
 /**
  * The plugin's own troubleshooting log.
  *
- * Why not just error_log(): on shared hosting the PHP error log is usually
+ * Why not the PHP error log: on shared hosting the PHP error log is usually
  * either off, unreadable from wp-admin, or buried under thousands of lines
  * from other plugins. When a backup or restore fails, the person who has to
  * fix it needs one place that says what SitesSaver was doing, when, and why
  * it stopped, readable from the Help screen without server access.
  *
  * Storage: one JSON object per line in a plain .log data file under
- * wp-content/sitessaver-backups/logs/. The folder carries the deny-all
- * .htaccess, a web.config and an empty index.php, and the file name has a
+ * the logs folder of the storage root. The folder carries the deny-all
+ * .htaccess, a web.config and an empty index.html, and the file name has a
  * random part (created once, found again by listing the folder), so the log
  * cannot be fetched by guessing its URL on servers that ignore .htaccess.
- * Before 1.6.2 the log was a .php file with an exit guard; it is moved into
- * the new file the first time the log is used.
  *
  * Each entry gets a short reference code. The same code is shown to the user
  * in the error notice, so "it says SS-4F2A9C" is enough to find the entry.
@@ -32,9 +30,6 @@ final class Log {
 
     /** Rotate at this size; one previous file is kept. */
     private const MAX_BYTES = 524288;
-
-    /** First line of the pre-1.6.2 .php log files. */
-    private const LEGACY_GUARD = "<?php exit; ?>\n";
 
     /** Resolved log file for this request. */
     private static ?string $file = null;
@@ -102,34 +97,6 @@ final class Log {
         return (string) preg_replace('/\.log$/', '.1.log', self::file());
     }
 
-    /**
-     * Move a pre-1.6.2 log (sitessaver-log.php / sitessaver-log.1.php, both
-     * behind an exit guard) into the current .log files, then delete it.
-     */
-    private static function migrate_legacy(): void {
-        $dir = self::dir();
-        foreach (['sitessaver-log.1.php' => self::rotated_file(), 'sitessaver-log.php' => self::file()] as $old => $new) {
-            $legacy = $dir . '/' . $old;
-            if (!is_file($legacy)) {
-                continue;
-            }
-            $raw = (string) @file_get_contents($legacy);
-            if (str_starts_with($raw, self::LEGACY_GUARD)) {
-                $raw = substr($raw, strlen(self::LEGACY_GUARD));
-            }
-            $lines = '';
-            foreach (explode("\n", $raw) as $line) {
-                $line = trim($line);
-                if ($line !== '' && $line[0] === '{') {
-                    $lines .= $line . "\n";
-                }
-            }
-            if ($lines === '' || @file_put_contents($new, $lines, FILE_APPEND | LOCK_EX) !== false) {
-                @unlink($legacy);
-            }
-        }
-    }
-
     public static function error(string $code, string $message, array $context = [], ?string $ref = null): string {
         return self::write('error', $code, $message, $context, $ref);
     }
@@ -167,7 +134,7 @@ final class Log {
             'time'    => time(),
             'level'   => in_array($level, ['error', 'warning', 'info'], true) ? $level : 'info',
             'code'    => self::clean_code($code),
-            'message' => self::truncate($message, 2000),
+            'message' => self::truncate(self::plain($message), 2000),
             'context' => self::redact($context),
             'version' => defined('SITESSAVER_VERSION') ? SITESSAVER_VERSION : '',
         ];
@@ -185,8 +152,6 @@ final class Log {
                 sitessaver_protect_directory($dir);
             }
 
-            self::migrate_legacy();
-
             $file = self::file();
             clearstatcache(true, $file);
             if (is_file($file) && filesize($file) > self::MAX_BYTES) {
@@ -198,11 +163,8 @@ final class Log {
                 @file_put_contents($file, $line . "\n", FILE_APPEND | LOCK_EX);
             }
         } catch (\Throwable $e) {
-            // Fall through to error_log below.
-        }
-
-        if ($entry['level'] === 'error') {
-            error_log(sprintf('[SitesSaver] %s (%s): %s', $entry['code'], $ref, $entry['message']));
+            // Logging must never fail the caller.
+            unset($e);
         }
 
         return $ref;
@@ -215,8 +177,7 @@ final class Log {
      */
     public static function entries(int $limit = 200): array {
         $entries = [];
-        $legacy  = [self::dir() . '/sitessaver-log.1.php', self::dir() . '/sitessaver-log.php'];
-        foreach (array_merge($legacy, [self::rotated_file(), self::file()]) as $file) {
+        foreach ([self::rotated_file(), self::file()] as $file) {
             if (!is_readable($file)) {
                 continue;
             }
@@ -274,8 +235,6 @@ final class Log {
     public static function clear(): void {
         @unlink(self::file());
         @unlink(self::rotated_file());
-        @unlink(self::dir() . '/sitessaver-log.php');
-        @unlink(self::dir() . '/sitessaver-log.1.php');
     }
 
     /**
@@ -306,6 +265,11 @@ final class Log {
             }
         }
         return $out;
+    }
+
+    /** Messages can carry driver HTML (the SQLite driver's errors); keep plain text. */
+    private static function plain(string $s): string {
+        return trim((string) preg_replace('/\s+/', ' ', wp_strip_all_tags($s)));
     }
 
     private static function truncate(string $s, int $max): string {

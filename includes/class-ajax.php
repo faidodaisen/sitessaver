@@ -1263,7 +1263,7 @@ final class Ajax {
             fclose($lock);
             wp_send_json_error(Errors::report(
                 ($free !== false && $free < $size * 4) ? 'upload_disk_full' : 'upload_failed',
-                sprintf('Appending chunk %d failed: wrote %s of %d bytes.', $chunk_index, var_export($copied, true), $size),
+                sprintf('Appending chunk %d failed: wrote %s of %d bytes.', $chunk_index, $copied === false ? 'false' : (string) (int) $copied, $size),
                 ['upload_id' => $upload_id, 'free_bytes' => $free === false ? 'unknown' : (int) $free]
             ));
         }
@@ -1276,7 +1276,6 @@ final class Ajax {
             'updated'  => time(),
         ];
         $this->save_upload_state($chunk_dir, $state);
-        @touch($chunk_dir); // keeps the 6h stale-chunk sweep away from a slow upload
 
         if ($chunk_index < $total_chunks - 1) {
             flock($lock, LOCK_UN);

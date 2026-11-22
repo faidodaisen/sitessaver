@@ -84,12 +84,11 @@ if (is_multisite()) {
 
 // 3. User meta the plugin wrote (all users).
 delete_metadata('user', 0, 'sitessaver_dismissed_storage_notice', '', true);
-delete_metadata('user', 0, 'sitessaver_dismissed_update', '', true);
 
-// 4. Remove the plugin's own bookkeeping (troubleshooting log files
-//    sitessaver-log-*.log, restore job state restore-*.json, and any
-//    pre-1.6.2 .php versions of either). These are not backups, nothing a
-//    user would want to keep. Multisite subsites keep theirs under site-<id>/.
+// 4. Remove the plugin's own bookkeeping: troubleshooting log files, restore
+//    job state and work files of unfinished jobs. These are not backups,
+//    nothing a user would want to keep. Multisite subsites keep theirs under
+//    site-<id>/.
 //    On PHP older than 8.1 SitesSaver never ran, so there is nothing to remove.
 $sitessaver_roots = array();
 if (version_compare(PHP_VERSION, '8.1', '>=')) {
@@ -112,5 +111,8 @@ foreach ($sitessaver_roots as $sitessaver_root) {
             }
             @rmdir($sitessaver_dir);
         }
+    }
+    if (is_dir($sitessaver_root . '/tmp')) {
+        sitessaver_rm_recursive($sitessaver_root . '/tmp');
     }
 }

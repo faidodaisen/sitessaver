@@ -69,6 +69,29 @@ function sitessaver_temp_dir(): string {
 }
 
 /**
+ * The storage folder as shown to the admin: relative to the WordPress root
+ * when it is inside it, otherwise the full path.
+ */
+function sitessaver_storage_display_path(): string {
+    $dir  = wp_normalize_path(sitessaver_storage_root());
+    $root = trailingslashit(wp_normalize_path(ABSPATH));
+    return (str_starts_with($dir . '/', $root) ? substr($dir, strlen($root)) : $dir) . '/';
+}
+
+/**
+ * URL path of the storage folder (for a web server deny rule), or null when
+ * the folder is not inside wp-content and so has no URL.
+ */
+function sitessaver_storage_url_path(): ?string {
+    $dir     = wp_normalize_path(sitessaver_storage_root());
+    $content = untrailingslashit(wp_normalize_path(WP_CONTENT_DIR));
+    if (!str_starts_with($dir . '/', $content . '/')) {
+        return null;
+    }
+    return '/' . trim(wp_make_link_relative(content_url(substr($dir, strlen($content)))), '/') . '/';
+}
+
+/**
  * The site folders a backup contains and a restore writes back, by archive
  * area. Resolved with the WordPress functions and constants made for this,
  * so a site with moved plugin, theme or upload folders works too.
@@ -163,7 +186,7 @@ function sitessaver_time_limit(): int {
  * would let any subsite admin see, download, and DELETE another subsite's
  * backups. This namespaces storage by blog ID so each site only ever sees
  * its own archives. The directory is created (and protected with the same
- * .htaccess/index.php guard the activation hook uses) lazily on first call,
+ * .htaccess/index.html guard the activation hook uses) lazily on first call,
  * since WordPress only runs register_activation_hook() for sites that
  * existed at activation time. A subsite created afterwards would otherwise
  * never get a protected folder.
@@ -184,7 +207,7 @@ function sitessaver_storage_dir(): string {
 }
 
 /**
- * Write the dual-syntax .htaccess, a web.config (IIS) and the index.php guard into a directory, if not
+ * Write the dual-syntax .htaccess, a web.config (IIS) and an empty index.html into a directory, if not
  * already present. Idempotent. Shared by the storage root and
  * sitessaver_storage_dir() (per-site subfolders on multisite), so the two
  * never drift out of sync. Returns false when the folder is not writable;
@@ -224,9 +247,10 @@ function sitessaver_protect_directory(string $dir): bool {
         );
     }
 
-    $index = $dir . '/index.php';
+    // Empty index.html: no folder listing where .htaccess is ignored.
+    $index = $dir . '/index.html';
     if (!file_exists($index)) {
-        file_put_contents($index, '<?php // Silence is golden.');
+        file_put_contents($index, '');
     }
     return true;
 }
@@ -406,7 +430,7 @@ function sitessaver_storage_probe(): array {
         wp_mkdir_p($dir);
         sitessaver_protect_directory($dir);
 
-        $name  = 'ss-probe-' . wp_generate_password(16, false) . '.txt';
+        $name  = 'sitessaver-probe-' . wp_generate_password(16, false) . '.txt';
         $token = wp_generate_password(24, false);
         if (@file_put_contents($dir . '/' . $name, $token) !== false) {
             $url = content_url(substr(wp_normalize_path($dir), strlen($content))) . '/' . $name;
@@ -553,7 +577,11 @@ function sitessaver_cleanup_temp(?string $scope_dir = null): void {
         $dirs = glob($chunks_dir . '/*', GLOB_ONLYDIR);
         if ($dirs) {
             foreach ($dirs as $dir) {
-                if (filemtime($dir) < $cutoff) {
+                // state.json is rewritten after every chunk, so a slow
+                // upload that is still going is never swept.
+                $state = $dir . '/state.json';
+                $seen  = max((int) @filemtime($dir), is_file($state) ? (int) @filemtime($state) : 0);
+                if ($seen < $cutoff) {
                     sitessaver_rm_recursive($dir);
                 }
             }
@@ -566,7 +594,7 @@ function sitessaver_cleanup_temp(?string $scope_dir = null): void {
     if ($top) {
         foreach ($top as $entry) {
             $name = basename($entry);
-            if ($name === 'chunks' || $name === 'index.php' || $name === '.htaccess' || $name === 'web.config') {
+            if (in_array($name, ['chunks', 'index.html', 'index.php', '.htaccess', 'web.config'], true)) {
                 continue;
             }
             if (filemtime($entry) >= $cutoff) {
@@ -637,7 +665,7 @@ function sitessaver_rm_recursive(string $path): void {
  */
 function sitessaver_resolve_backup_path(string $file): ?string {
     $file = sanitize_file_name($file);
-    // Only backups. Without this the folder's own index.php guard (or any
+    // Only backups. Without this the folder's own guard files (or any
     // other non-backup file in it) could be downloaded, deleted or sent to
     // Google Drive through these handlers.
     if ($file === '' || strtolower((string) pathinfo($file, PATHINFO_EXTENSION)) !== 'zip') {

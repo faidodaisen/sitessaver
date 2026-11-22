@@ -60,12 +60,6 @@ final class Restore_Job {
 
     private static int $last_cursor_save = 0;
 
-    /**
-     * Prefix of the job files written before 1.6.2 (`restore-<id>.php`).
-     * Only read, to finish a restore that was running across the update.
-     */
-    private const LEGACY_GUARD = "<?php exit; ?>\n";
-
     /** Job id running in THIS process, if any. */
     private static ?string $current = null;
 
@@ -84,17 +78,12 @@ final class Restore_Job {
     /**
      * Job state is plain JSON data, never a .php file. The name carries the
      * job id, 16 random characters, so it cannot be guessed; the folder
-     * also has the deny-all .htaccess, web.config and an empty index.php.
+     * also has the deny-all .htaccess, web.config and an empty index.html.
      * Deliberately NOT derived from an option or salt: the restore replaces
      * the database halfway through, and the file must still be found after.
      */
     private static function path(string $id): string {
         return self::dir() . '/restore-' . $id . '.json';
-    }
-
-    /** Pre-1.6.2 location of a job's state. */
-    private static function legacy_path(string $id): string {
-        return self::dir() . '/restore-' . $id . '.php';
     }
 
     private static function lock_path(string $id): string {
@@ -115,38 +104,10 @@ final class Restore_Job {
         $path = self::path($id);
         clearstatcache(true, $path);
         if (!is_readable($path)) {
-            return self::migrate_legacy($id);
+            return null;
         }
         $job = json_decode((string) file_get_contents($path), true);
         return is_array($job) ? $job : null;
-    }
-
-    /**
-     * A job started by a version before 1.6.2 kept its state in a .php file
-     * behind an exit guard. Read it once, store it as JSON and delete the
-     * old file, so a restore running across the update carries on.
-     *
-     * @return array<string, mixed>|null
-     */
-    private static function migrate_legacy(string $id): ?array {
-        $legacy = self::legacy_path($id);
-        clearstatcache(true, $legacy);
-        if (!is_readable($legacy)) {
-            return null;
-        }
-        $raw = (string) file_get_contents($legacy);
-        if (str_starts_with($raw, self::LEGACY_GUARD)) {
-            $raw = substr($raw, strlen(self::LEGACY_GUARD));
-        }
-        $job = json_decode($raw, true);
-        if (!is_array($job) || ($job['id'] ?? '') !== $id) {
-            return null;
-        }
-        self::save($job);
-        if (is_readable(self::path($id))) {
-            @unlink($legacy);
-        }
-        return $job;
     }
 
     /**
@@ -796,8 +757,7 @@ final class Restore_Job {
             return;
         }
         $cutoff = time() - DAY_IN_SECONDS;
-        // *.php: job files written before 1.6.2.
-        $files = array_merge((array) glob($dir . '/restore-*.json'), (array) glob($dir . '/restore-*.php'));
+        $files = (array) glob($dir . '/restore-*.json');
         foreach ($files as $f) {
             if (!is_string($f) || @filemtime($f) >= $cutoff) {
                 continue;
@@ -805,7 +765,7 @@ final class Restore_Job {
             // An abandoned job may have left staged tables (never switched
             // in) or the previous tables (switched in, never finished).
             // A day later the switched-in state is the site; keep it.
-            $id  = (string) preg_replace('/^restore-(.*)\.(?:json|php)$/', '$1', basename($f));
+            $id  = (string) preg_replace('/^restore-(.*)\.json$/', '$1', basename($f));
             $job = self::valid_id($id) ? self::get($id) : null;
             $db  = is_array($job['cursor']['db'] ?? null) ? $job['cursor']['db'] : [];
             if (!empty($db['stage'])) {
@@ -814,9 +774,6 @@ final class Restore_Job {
             }
             @unlink($f);
             if (self::valid_id($id)) {
-                // get() may have just moved a legacy file to JSON.
-                @unlink(self::path($id));
-                @unlink(self::legacy_path($id));
                 @unlink(self::lock_path($id));
             }
         }
