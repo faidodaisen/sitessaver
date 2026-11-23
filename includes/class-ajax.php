@@ -36,6 +36,8 @@ final class Ajax {
             'sitessaver_save_settings'  => 'handle_save_settings',
             'sitessaver_save_email_brand' => 'handle_save_email_brand',
             'sitessaver_send_test_email'  => 'handle_send_test_email',
+            'sitessaver_check_update'     => 'handle_check_update',
+            'sitessaver_dismiss_update_notice' => 'handle_dismiss_update_notice',
             'sitessaver_dismiss_storage_notice' => 'handle_dismiss_storage_notice',
             'sitessaver_save_export_notify'  => 'handle_save_export_notify',
             'sitessaver_gdrive_disconnect' => 'handle_gdrive_disconnect',
@@ -1039,6 +1041,79 @@ final class Ajax {
             wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
         }
         update_user_meta(get_current_user_id(), 'sitessaver_dismissed_storage_notice', 1);
+        wp_send_json_success();
+    }
+
+    /**
+     * Look up the newest GitHub release now and report the outcome.
+     */
+    public function handle_check_update(): void {
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
+        }
+        if (!current_user_can(sitessaver_capability()) || !current_user_can('update_plugins')) {
+            wp_send_json_error(['message' => __('You do not have permission to check for updates.', 'sitessaver')], 403);
+        }
+
+        Updater::instance()->clear_cache();
+        $release = Updater::latest_release(true);
+
+        if ($release === null) {
+            $error = Updater::last_error();
+            wp_send_json_error([
+                'message' => $error !== ''
+                    ? $error
+                    : __('No releases found in that repository.', 'sitessaver'),
+            ]);
+        }
+
+        if (!Updater::is_newer($release['version'])) {
+            wp_send_json_success([
+                'update'  => false,
+                'version' => $release['version'],
+                'message' => sprintf(
+                    /* translators: %s: version number */
+                    __('You are running the latest version (%s).', 'sitessaver'),
+                    SITESSAVER_VERSION
+                ),
+            ]);
+        }
+
+        // Let WordPress look again, so the Plugins screen row appears without
+        // waiting for its twice-daily check.
+        delete_site_transient('update_plugins');
+
+        wp_send_json_success([
+            'update'  => true,
+            'version' => $release['version'],
+            'url'     => $release['url'],
+            'message' => sprintf(
+                /* translators: 1: new version, 2: installed version */
+                __('Version %1$s is available. You are running %2$s.', 'sitessaver'),
+                $release['version'],
+                SITESSAVER_VERSION
+            ),
+        ]);
+    }
+
+    /**
+     * Remember that this user dismissed the update banner for this version.
+     */
+    public function handle_dismiss_update_notice(): void {
+        if (!check_ajax_referer('sitessaver_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => __('Security check failed.', 'sitessaver')], 403);
+        }
+        if (!current_user_can(sitessaver_capability())) {
+            wp_send_json_error(['message' => __('Permission denied.', 'sitessaver')], 403);
+        }
+
+        $version = isset($_POST['version']) ? sanitize_text_field(wp_unslash($_POST['version'])) : '';
+        if (!preg_match('/^[0-9][0-9A-Za-z.\-]{0,30}$/', $version)) {
+            wp_send_json_error(['message' => __('Invalid version.', 'sitessaver')], 400);
+        }
+
+        update_user_meta(get_current_user_id(), Updater::DISMISS_META, $version);
+
         wp_send_json_success();
     }
 

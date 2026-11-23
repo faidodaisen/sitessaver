@@ -84,6 +84,7 @@ if (is_multisite()) {
 
 // 3. User meta the plugin wrote (all users).
 delete_metadata('user', 0, 'sitessaver_dismissed_storage_notice', '', true);
+delete_metadata('user', 0, 'sitessaver_dismissed_update', '', true);
 
 // 4. Remove the plugin's own bookkeeping: troubleshooting log files, restore
 //    job state and work files of unfinished jobs. These are not backups,

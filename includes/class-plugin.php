@@ -38,6 +38,13 @@ final class Plugin {
         // rule, email). Outside is_admin(): WP-Cron fires on the front end.
         Background::init();
 
+        // Updates from GitHub releases (this build is installed from GitHub).
+        // Outside is_admin(): WP-Cron runs the update check on the front end.
+        Updater::instance()->init();
+
+        // Remove files an older version left in the storage folder, once.
+        Upgrade::maybe_run();
+
         // Hook point for add-ons (e.g. the multisite add-on). Fires once,
         // synchronously, right here at the end of
         // Plugin::init(), which is itself hooked on 'plugins_loaded' at the

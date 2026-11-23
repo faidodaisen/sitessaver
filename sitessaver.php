@@ -10,6 +10,7 @@
  * Text Domain: sitessaver
  * Requires PHP: 8.1
  * Requires at least: 6.0
+ * Update URI:  https://github.com/faidodaisen/sitessaver
  */
 
 defined('ABSPATH') || exit;

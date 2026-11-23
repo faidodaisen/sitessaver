@@ -1,0 +1,704 @@
+<?php
+
+declare(strict_types=1);
+
+namespace SitesSaver;
+
+defined('ABSPATH') || exit;
+
+/**
+ * Updates from GitHub releases, for the build that is installed from GitHub.
+ *
+ * The plugin header declares `Update URI: https://github.com/faidodaisen/sitessaver`,
+ * so WordPress never looks for this plugin on wordpress.org. The hooks below
+ * supply the update instead:
+ *
+ *   1. `update_plugins_github.com`: WordPress 5.8+ asks a plugin with an
+ *      Update URI to resolve its own updates. It is scoped to that host, so
+ *      it never answers for another plugin.
+ *   2. `site_transient_update_plugins`: the 5.8 hook alone does not fill the
+ *      Plugins screen row on every code path (for example when the transient
+ *      is served from cache), so the entry is also added when it is read.
+ *   3. `plugins_api`: the "View details" window.
+ *
+ * Release selection: the newest release that is not a draft and whose tag
+ * reads as a version. Pre-releases are skipped unless the site opts in. A
+ * release is only offered when it is newer than the installed version.
+ *
+ * Package selection: the release asset named SitesSaver-x.y.z.zip (the built
+ * plugin, top folder sitessaver/), else the first .zip asset, else GitHub's
+ * generated zipball (its top folder is renamed back in fix_source_dir()).
+ * GitHub publishes a sha256 digest for every uploaded asset; the download is
+ * checked against it before WordPress unpacks anything.
+ */
+final class Updater {
+
+    /** Where releases are published. Fixed per build, see config(). */
+    public const REPO = 'faidodaisen/sitessaver';
+
+    /** Optional override for a fork or a private mirror (code or WP-CLI only). */
+    public const OPTION = 'sitessaver_update_source';
+
+    /** Cached API answer. Same name since 1.2, so upgraded sites keep it. */
+    private const CACHE_KEY = 'sitessaver_update_check';
+
+    /** How long a successful lookup is reused. */
+    private const CACHE_TTL = 6 * HOUR_IN_SECONDS;
+
+    /** Shorter lifetime for a failed lookup, so an outage is not cached all day. */
+    private const ERROR_TTL = 30 * MINUTE_IN_SECONDS;
+
+    /** User meta: the release version whose banner this user dismissed. */
+    public const DISMISS_META = 'sitessaver_dismissed_update';
+
+    private static ?self $instance = null;
+
+    public static function instance(): self {
+        return self::$instance ??= new self();
+    }
+
+    public function init(): void {
+        add_filter('update_plugins_github.com', [$this, 'check_for_update'], 10, 3);
+
+        add_filter('site_transient_update_plugins', [$this, 'inject_update']);
+        add_filter('plugins_api', [$this, 'plugin_info'], 20, 3);
+        add_filter('upgrader_source_selection', [$this, 'fix_source_dir'], 10, 4);
+        add_filter('upgrader_pre_download', [$this, 'verify_download'], 10, 4);
+
+        // A private repository needs the token on the download request too.
+        add_filter('http_request_args', [$this, 'authorize_download'], 10, 2);
+
+        // After an update the cached "new version" answer is stale.
+        add_action('upgrader_process_complete', [$this, 'clear_cache'], 10, 0);
+
+        add_action('admin_notices', [$this, 'render_notice']);
+    }
+
+    // ------------------------------------------------------------------
+    // Configuration
+    // ------------------------------------------------------------------
+
+    /**
+     * Where to look for releases.
+     *
+     * Not a setting on purpose: the repository a site updates from belongs
+     * to the build. A fork or mirror can use the `sitessaver_update_source`
+     * option (set in code or WP-CLI) or the `sitessaver_update_config` filter.
+     *
+     * @return array{repo: string, token: string, prereleases: bool, enabled: bool}
+     */
+    public static function config(): array {
+        $saved = get_option(self::OPTION, []);
+        $saved = is_array($saved) ? $saved : [];
+
+        $config = [
+            'repo'        => (string) ($saved['repo'] ?? self::REPO),
+            'token'       => (string) ($saved['token'] ?? ''),
+            'prereleases' => !empty($saved['prereleases']),
+            'enabled'     => !isset($saved['enabled']) || !empty($saved['enabled']),
+        ];
+
+        /**
+         * Filter the update source.
+         *
+         * @param array{repo: string, token: string, prereleases: bool, enabled: bool} $config
+         */
+        $filtered = apply_filters('sitessaver_update_config', $config);
+
+        // A filter that returns something malformed must not stop update
+        // checks, so fall back to the unfiltered values key by key.
+        if (!is_array($filtered)) {
+            return $config;
+        }
+
+        return [
+            'repo'        => (string) ($filtered['repo'] ?? $config['repo']),
+            'token'       => (string) ($filtered['token'] ?? $config['token']),
+            'prereleases' => !empty($filtered['prereleases']),
+            'enabled'     => !isset($filtered['enabled']) || !empty($filtered['enabled']),
+        ];
+    }
+
+    public static function plugin_basename(): string {
+        return plugin_basename(SITESSAVER_FILE);
+    }
+
+    public static function plugin_slug(): string {
+        return dirname(self::plugin_basename());
+    }
+
+    // ------------------------------------------------------------------
+    // Remote lookup
+    // ------------------------------------------------------------------
+
+    /**
+     * Newest eligible release, or null.
+     *
+     * @param bool $force Skip the cache (the "Check for updates" button).
+     * @return array{version: string, package: string, url: string, notes: string, published: string, asset: bool, sha256: string}|null
+     */
+    public static function latest_release(bool $force = false): ?array {
+        $config = self::config();
+
+        if (!$config['enabled'] || $config['repo'] === '') {
+            return null;
+        }
+
+        if (!$force) {
+            $cached = get_transient(self::CACHE_KEY);
+            if (is_array($cached)) {
+                // A failure is cached as an explicit marker, so it is not
+                // mistaken for "never checked".
+                return empty($cached['release']) ? null : $cached['release'];
+            }
+        }
+
+        // /releases/latest hides pre-releases and returns 404 when the only
+        // releases are drafts, so ask for the list instead.
+        $url = sprintf(
+            'https://api.github.com/repos/%s/releases?per_page=10',
+            $config['repo']
+        );
+
+        $response = wp_remote_get($url, [
+            'timeout' => 15,
+            'headers' => self::api_headers($config['token']),
+        ]);
+
+        if (is_wp_error($response)) {
+            self::cache_failure($response->get_error_message());
+            return null;
+        }
+
+        $code = (int) wp_remote_retrieve_response_code($response);
+        if ($code !== 200) {
+            self::cache_failure(self::http_error_message($code, $config['token'] !== ''));
+            return null;
+        }
+
+        $releases = json_decode((string) wp_remote_retrieve_body($response), true);
+        if (!is_array($releases)) {
+            self::cache_failure(__('GitHub returned an unreadable response.', 'sitessaver'));
+            return null;
+        }
+
+        $best = null;
+
+        foreach ($releases as $release) {
+            if (!is_array($release) || !empty($release['draft'])) {
+                continue;
+            }
+            if (!empty($release['prerelease']) && !$config['prereleases']) {
+                continue;
+            }
+
+            $version = self::normalize_version((string) ($release['tag_name'] ?? ''));
+            if ($version === '') {
+                continue;
+            }
+
+            if ($best !== null && version_compare($version, $best['version'], '<=')) {
+                continue;
+            }
+
+            $asset   = self::pick_asset(is_array($release['assets'] ?? null) ? $release['assets'] : []);
+            $package = '';
+            $sha256  = '';
+            if ($asset !== null) {
+                // A private repository's browser URL cannot be fetched with a
+                // token; the API asset URL can, with the right Accept header.
+                $package = $config['token'] !== ''
+                    ? (string) ($asset['url'] ?? '')
+                    : (string) ($asset['browser_download_url'] ?? '');
+                $digest = strtolower((string) ($asset['digest'] ?? ''));
+                if (preg_match('/^sha256:([0-9a-f]{64})$/', $digest, $dm)) {
+                    $sha256 = $dm[1];
+                }
+            }
+            $has_asset = $package !== '';
+
+            if ($package === '') {
+                $package = (string) ($release['zipball_url'] ?? '');
+            }
+            if ($package === '') {
+                continue;
+            }
+
+            $best = [
+                'version'   => $version,
+                'package'   => $package,
+                'url'       => (string) ($release['html_url'] ?? ''),
+                'notes'     => (string) ($release['body'] ?? ''),
+                'published' => (string) ($release['published_at'] ?? ''),
+                'asset'     => $has_asset,
+                'sha256'    => $sha256,
+            ];
+        }
+
+        set_transient(self::CACHE_KEY, ['release' => $best, 'error' => ''], self::CACHE_TTL);
+
+        return $best;
+    }
+
+    /**
+     * The built plugin ZIP among a release's assets: SitesSaver-x.y.z.zip
+     * first, else the first .zip.
+     *
+     * @param array<int, mixed> $assets
+     * @return array<string, mixed>|null
+     */
+    private static function pick_asset(array $assets): ?array {
+        $first = null;
+        foreach ($assets as $asset) {
+            if (!is_array($asset)) {
+                continue;
+            }
+            $name = strtolower((string) ($asset['name'] ?? ''));
+            if (!str_ends_with($name, '.zip')) {
+                continue;
+            }
+            if (preg_match('/^sitessaver-\d+(?:\.\d+)*(?:-[0-9a-z.]+)?\.zip$/', $name)) {
+                return $asset;
+            }
+            $first ??= $asset;
+        }
+
+        return $first;
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private static function api_headers(string $token, bool $download = false): array {
+        $headers = [
+            // GitHub refuses API requests without a User-Agent.
+            'User-Agent' => 'SitesSaver/' . SITESSAVER_VERSION . '; ' . home_url(),
+            'Accept'     => $download ? 'application/octet-stream' : 'application/vnd.github+json',
+        ];
+
+        if ($token !== '') {
+            $headers['Authorization'] = 'Bearer ' . $token;
+        }
+
+        return $headers;
+    }
+
+    private static function http_error_message(int $code, bool $has_token): string {
+        if ($code === 404) {
+            return $has_token
+                ? __('Repository not found, or the token cannot see it. Check the repository name and that the token has "Contents: read" access.', 'sitessaver')
+                : __('Repository not found. A private repository needs a token in the sitessaver_update_config filter.', 'sitessaver');
+        }
+        if ($code === 401 || $code === 403) {
+            return __('GitHub refused the request. The token may be invalid or expired, or the hourly rate limit was reached.', 'sitessaver');
+        }
+
+        /* translators: %d: HTTP status code */
+        return sprintf(__('GitHub returned HTTP %d.', 'sitessaver'), $code);
+    }
+
+    private static function cache_failure(string $message): void {
+        set_transient(self::CACHE_KEY, ['release' => null, 'error' => $message], self::ERROR_TTL);
+    }
+
+    /**
+     * Reason the last lookup failed, or '' when it worked.
+     */
+    public static function last_error(): string {
+        $cached = get_transient(self::CACHE_KEY);
+
+        return is_array($cached) ? (string) ($cached['error'] ?? '') : '';
+    }
+
+    public function clear_cache(): void {
+        delete_transient(self::CACHE_KEY);
+    }
+
+    /**
+     * Version part of a tag: `v1.2.3` and `release-1.2.3` both give `1.2.3`.
+     */
+    private static function normalize_version(string $tag): string {
+        if (!preg_match('/(\d+(?:\.\d+)*(?:-[0-9A-Za-z.]+)?)/', $tag, $m)) {
+            return '';
+        }
+
+        return $m[1];
+    }
+
+    /**
+     * Is a remote version newer than the installed one?
+     */
+    public static function is_newer(string $remote): bool {
+        return version_compare($remote, SITESSAVER_VERSION, '>');
+    }
+
+    // ------------------------------------------------------------------
+    // WordPress update plumbing
+    // ------------------------------------------------------------------
+
+    /**
+     * The entry WordPress expects for one plugin.
+     *
+     * @param array<string, mixed> $release
+     * @return array<string, mixed>
+     */
+    private function update_payload(array $release): array {
+        return [
+            'id'            => 'github.com/' . self::config()['repo'],
+            'slug'          => self::plugin_slug(),
+            'plugin'        => self::plugin_basename(),
+            'new_version'   => $release['version'],
+            'url'           => $release['url'],
+            'package'       => $release['package'],
+            'icons'         => [],
+            'banners'       => [],
+            'banners_rtl'   => [],
+            'tested'        => get_bloginfo('version'),
+            'requires_php'  => '8.1',
+            'compatibility' => new \stdClass(),
+        ];
+    }
+
+    /**
+     * WordPress 5.8+ `update_plugins_{$hostname}` handler.
+     *
+     * @param array|false $update
+     * @param array<string, string> $plugin_data
+     * @param string $plugin_file
+     * @return array|false
+     */
+    public function check_for_update($update, $plugin_data, $plugin_file) {
+        if ($plugin_file !== self::plugin_basename()) {
+            return $update;
+        }
+
+        $release = self::latest_release();
+        if ($release === null || !self::is_newer($release['version'])) {
+            return $update;
+        }
+
+        return $this->update_payload($release);
+    }
+
+    /**
+     * Add our entry when the update transient is read.
+     *
+     * @param mixed $transient
+     * @return mixed
+     */
+    public function inject_update($transient) {
+        if (!is_object($transient)) {
+            return $transient;
+        }
+
+        $basename = self::plugin_basename();
+        $release  = self::latest_release();
+
+        if ($release === null || !self::is_newer($release['version'])) {
+            // Drop a stale entry from before the site was updated.
+            if (isset($transient->response) && is_array($transient->response)) {
+                unset($transient->response[$basename]);
+            }
+            return $transient;
+        }
+
+        $payload = (object) $this->update_payload($release);
+
+        if (!isset($transient->response) || !is_array($transient->response)) {
+            $transient->response = [];
+        }
+        $transient->response[$basename] = $payload;
+        if (isset($transient->no_update) && is_array($transient->no_update)) {
+            unset($transient->no_update[$basename]);
+        }
+
+        return $transient;
+    }
+
+    /**
+     * Content of the "View details" window.
+     *
+     * @param mixed $result
+     * @param string $action
+     * @param object $args
+     * @return mixed
+     */
+    public function plugin_info($result, $action, $args) {
+        if ($action !== 'plugin_information') {
+            return $result;
+        }
+        if (!is_object($args) || !isset($args->slug) || $args->slug !== self::plugin_slug()) {
+            return $result;
+        }
+
+        $release = self::latest_release();
+        if ($release === null) {
+            return $result;
+        }
+
+        $config = self::config();
+
+        return (object) [
+            'name'          => 'SitesSaver',
+            'slug'          => self::plugin_slug(),
+            'version'       => $release['version'],
+            'author'        => '<a href="' . esc_url('https://github.com/' . $config['repo']) . '">SitesSaver</a>',
+            'homepage'      => 'https://github.com/' . $config['repo'],
+            'requires'      => '6.0',
+            'requires_php'  => '8.1',
+            'tested'        => get_bloginfo('version'),
+            'last_updated'  => $release['published'],
+            'download_link' => $release['package'],
+            'trunk'         => $release['package'],
+            'sections'      => [
+                'description' => wpautop(esc_html__('Full site backup and migration: export, import, schedule, and Google Drive storage.', 'sitessaver')),
+                'changelog'   => self::render_notes($release['notes'], $release['url']),
+            ],
+        ];
+    }
+
+    /**
+     * Release notes are Markdown. Only the few constructs a release body
+     * uses are converted; everything else is escaped, so a note can never
+     * add markup to wp-admin.
+     */
+    private static function render_notes(string $body, string $url): string {
+        $body = trim($body);
+
+        if ($body === '') {
+            return '<p>' . sprintf(
+                /* translators: %s: link to the release page */
+                esc_html__('No release notes provided. See %s.', 'sitessaver'),
+                '<a href="' . esc_url($url) . '" target="_blank" rel="noopener">GitHub</a>'
+            ) . '</p>';
+        }
+
+        $out  = '';
+        $list = false;
+
+        foreach (preg_split('/\R/', $body) ?: [] as $line) {
+            $trimmed = trim($line);
+
+            if (preg_match('/^[-*]\s+(.*)$/', $trimmed, $m)) {
+                if (!$list) {
+                    $out  .= '<ul>';
+                    $list  = true;
+                }
+                $out .= '<li>' . self::inline_markdown($m[1]) . '</li>';
+                continue;
+            }
+
+            if ($list) {
+                $out  .= '</ul>';
+                $list  = false;
+            }
+
+            if ($trimmed === '') {
+                continue;
+            }
+
+            if (preg_match('/^(#{1,6})\s+(.*)$/', $trimmed, $m)) {
+                $level = min(6, max(3, strlen($m[1]) + 2)); // Never h1 or h2 inside the window.
+                $out  .= "<h{$level}>" . self::inline_markdown($m[2]) . "</h{$level}>";
+                continue;
+            }
+
+            $out .= '<p>' . self::inline_markdown($trimmed) . '</p>';
+        }
+
+        if ($list) {
+            $out .= '</ul>';
+        }
+
+        $out .= '<p><a href="' . esc_url($url) . '" target="_blank" rel="noopener">'
+            . esc_html__('View this release on GitHub', 'sitessaver')
+            . '</a></p>';
+
+        return $out;
+    }
+
+    /**
+     * Escape first, then bring back only `code` and `strong`, so raw HTML in
+     * a release note is shown as text.
+     */
+    private static function inline_markdown(string $text): string {
+        $text = esc_html($text);
+        $text = preg_replace('/`([^`]+)`/', '<code>$1</code>', $text) ?? $text;
+        $text = preg_replace('/\*\*([^*]+)\*\*/', '<strong>$1</strong>', $text) ?? $text;
+
+        return $text;
+    }
+
+    // ------------------------------------------------------------------
+    // Install-time handling
+    // ------------------------------------------------------------------
+
+    /**
+     * Add the token (and the octet-stream Accept header) to the package
+     * download of a private repository.
+     *
+     * @param array<string, mixed> $args
+     * @return array<string, mixed>
+     */
+    public function authorize_download($args, $url) {
+        $config = self::config();
+
+        if (!is_array($args) || $config['token'] === '' || !is_string($url) || !str_contains($url, 'api.github.com')) {
+            return $args;
+        }
+
+        // Only requests for OUR repository: the token must never reach
+        // another plugin's GitHub traffic.
+        if (!str_contains($url, '/repos/' . $config['repo'] . '/')) {
+            return $args;
+        }
+
+        $args['headers'] = array_merge(
+            is_array($args['headers'] ?? null) ? $args['headers'] : [],
+            self::api_headers($config['token'], str_contains($url, '/assets/'))
+        );
+
+        return $args;
+    }
+
+    /**
+     * Download OUR update package and check it against the sha256 digest
+     * GitHub published for the asset. On a mismatch the update stops before
+     * anything is unpacked and the installed plugin stays as it is.
+     *
+     * @param bool|string|\WP_Error $reply
+     * @param string                $package
+     * @param mixed                 $upgrader
+     * @param array<string, mixed>  $hook_extra
+     * @return bool|string|\WP_Error
+     */
+    public function verify_download($reply, $package, $upgrader = null, $hook_extra = []) {
+        if ($reply !== false || !is_string($package) || $package === '') {
+            return $reply;
+        }
+
+        $release = self::latest_release();
+        if ($release === null || ($release['package'] ?? '') !== $package || empty($release['sha256'])) {
+            return $reply;
+        }
+
+        if (!function_exists('download_url')) {
+            require_once ABSPATH . 'wp-admin/includes/file.php';
+        }
+
+        $file = download_url($package, 300);
+        if (is_wp_error($file)) {
+            return $file;
+        }
+
+        $actual = (string) hash_file('sha256', $file);
+        if (!hash_equals((string) $release['sha256'], $actual)) {
+            wp_delete_file($file);
+            Log::error('update_checksum_mismatch', 'The downloaded update does not match the checksum GitHub published; the update was stopped.', [
+                'version'  => $release['version'] ?? '',
+                'expected' => $release['sha256'],
+                'actual'   => $actual,
+            ]);
+            return new \WP_Error(
+                'sitessaver_checksum_mismatch',
+                __('The SitesSaver update download is damaged or was changed on the way (checksum mismatch). Nothing was changed; please try the update again.', 'sitessaver')
+            );
+        }
+
+        return $file;
+    }
+
+    /**
+     * GitHub's generated zipball unpacks to `owner-repo-<sha>/`. Installed
+     * as is, the plugin would land in a new folder and the current one would
+     * be deactivated, so the folder is renamed to the plugin's own slug.
+     *
+     * @param string|\WP_Error $source
+     * @param string $remote_source
+     * @param mixed $upgrader
+     * @param array<string, mixed> $args
+     * @return string|\WP_Error
+     */
+    public function fix_source_dir($source, $remote_source, $upgrader = null, $args = []) {
+        if (is_wp_error($source) || !is_string($source)) {
+            return $source;
+        }
+
+        // Only OUR update. `$args['plugin']` is set for plugin upgrades.
+        if (!is_array($args) || ($args['plugin'] ?? '') !== self::plugin_basename()) {
+            return $source;
+        }
+
+        $slug    = self::plugin_slug();
+        $current = basename(untrailingslashit($source));
+
+        if ($current === $slug) {
+            return $source;
+        }
+
+        $target = trailingslashit(dirname(untrailingslashit($source))) . $slug;
+
+        global $wp_filesystem;
+        if (!$wp_filesystem) {
+            return $source;
+        }
+
+        // A folder left by a failed run would make move() fail.
+        if ($wp_filesystem->exists($target)) {
+            $wp_filesystem->delete($target, true);
+        }
+
+        if (!$wp_filesystem->move(untrailingslashit($source), $target)) {
+            return new \WP_Error(
+                'sitessaver_rename_failed',
+                __('Could not rename the downloaded package folder. The update was not installed.', 'sitessaver')
+            );
+        }
+
+        return trailingslashit($target);
+    }
+
+    // ------------------------------------------------------------------
+    // Admin notice
+    // ------------------------------------------------------------------
+
+    /**
+     * Banner on SitesSaver's own screens when a newer release exists. The
+     * Plugins and Updates screens already show the update, and the X is
+     * handled by admin.js, which only loads on SitesSaver screens.
+     */
+    public function render_notice(): void {
+        if (!current_user_can('update_plugins')) {
+            return;
+        }
+
+        $screen = function_exists('get_current_screen') ? get_current_screen() : null;
+        if (!$screen || !str_contains((string) $screen->id, 'sitessaver')) {
+            return;
+        }
+
+        $release = self::latest_release();
+        if ($release === null || !self::is_newer($release['version'])) {
+            return;
+        }
+
+        if (get_user_meta(get_current_user_id(), self::DISMISS_META, true) === $release['version']) {
+            return;
+        }
+
+        printf(
+            '<div class="notice notice-info is-dismissible sitessaver-update-notice" data-version="%1$s"><p><strong>SitesSaver %2$s</strong> %3$s <a href="%4$s">%5$s</a> <a href="%6$s" target="_blank" rel="noopener">%7$s</a></p></div>',
+            esc_attr($release['version']),
+            esc_html($release['version']),
+            esc_html(sprintf(
+                /* translators: %s: installed version number */
+                __('is available. You are running %s.', 'sitessaver'),
+                SITESSAVER_VERSION
+            )),
+            esc_url(admin_url('plugins.php?s=sitessaver&plugin_status=all')),
+            esc_html__('Update now', 'sitessaver'),
+            esc_url($release['url']),
+            esc_html__('View release notes', 'sitessaver')
+        );
+    }
+}

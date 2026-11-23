@@ -4,6 +4,60 @@ All notable changes to **SitesSaver** will be documented in this file. The forma
 
 ---
 
+## [1.6.4] - 2026-11-23
+
+### Changed: a restore only does what a SitesSaver backup needs
+
+- A restore only runs the database statements a SitesSaver backup contains, and only on the tables being restored.
+- Every file is checked against the checksum stored in the backup before it is written, and every file is written only inside the folder it belongs to.
+- Restore is switched off on sites that run on SQLite. SitesSaver says why instead of starting a restore that cannot finish. Backups still work there.
+
+### Changed: cleaner storage folder
+
+- Restore progress and the troubleshooting log are plain JSON and .log files, and every storage folder gets an empty index.html guard. SitesSaver no longer writes any PHP file into the storage folder.
+- After updating from 1.6.1 or older, the old PHP files SitesSaver left in the storage folder (index.php guards, the old log and old restore progress files) are removed once. Your backups are not touched. The old troubleshooting log is not carried over.
+- Every option, hook, function and admin style now uses the full sitessaver prefix. Settings and schedules carry over.
+- Only the icons SitesSaver uses are shipped, so the plugin is smaller.
+- Let a running restore finish before you update from 1.6.1. A restore that is still running when the plugin is updated is not resumed.
+
+## [1.6.3] - 2026-11-22
+
+### Fixed: the plugin always activates
+
+- A server without the PHP zip extension can now activate SitesSaver. Backups still work, only restore is switched off, and a notice on SitesSaver's screens says what is missing.
+
+### Changed: restores write each file once
+
+- A restore writes each file straight from the backup to its place. Files it replaces are kept in a rollback ZIP and put back from it if the restore fails.
+- After a restore, cache plugins are asked to clear their caches through their own functions. SitesSaver no longer deletes other plugins' cache folders.
+- Higher PHP time and memory limits apply only while a backup, upload or restore step runs, and the previous limits are put back afterwards.
+- The storage folder is set in one place and can be changed with the `sitessaver_storage_dir` filter.
+- Admin styles only apply inside SitesSaver's own screens.
+
+## [1.6.2] - 2026-11-21
+
+### Changed: backups go straight into the ZIP
+
+- Plugin, theme and media files now go straight into the backup ZIP. No loose copies are made on disk while a backup runs.
+- Listing a large media library is split across requests on hosts with short time limits.
+- A large file that changes while a backup runs is skipped and logged instead of stopping the backup.
+
+### Changed: safer handling of files and input
+
+- Every backup you upload or download from Google Drive is stored under a name with a random part. Incremental chains still restore, also when the same backup was brought in more than once.
+- Input from the browser and the server is sanitized everywhere.
+- SitesSaver no longer changes which image types WordPress accepts for upload.
+
+### Changed: fewer surprises in wp-admin
+
+- If SitesSaver is installed twice, the extra copy is no longer deactivated for you. A notice lets you deactivate it with one click.
+- SitesSaver notices only show on SitesSaver screens and, where needed, the Plugins and Permalinks screens.
+- On LiteSpeed, the .htaccess rule for background backups is no longer added automatically. Add or remove it from Help > Background backups on LiteSpeed.
+
+### Fixed: uninstall on multisite
+
+- Uninstall also removes SitesSaver's data from every site of a network.
+
 ## [1.6.1] - 2026-11-05
 
 ### Fixed: restores on hosts with security software were reported as a "damaged backup"
@@ -68,13 +122,13 @@ On cPanel hosts running Imunify360, the server can refuse to let PHP write the d
 
 ### Choose who gets the "backup is ready" email, or turn it off
 
-- New **Settings → Backup Notifications** section. Untick the checkbox to stop the email that is sent when a backup you started finishes while the Export page is closed, or enter a different address. Left empty, it uses the site admin email (as before) and follows it if that changes.
+- New **Settings > Backup Notifications** section. Untick the checkbox to stop the email that is sent when a backup you started finishes while the Export page is closed, or enter a different address. Left empty, it uses the site admin email (as before) and follows it if that changes.
 - The note under "Start Export Process" and the progress window now show the address in use, or say that email notifications are off, with a **Change** link to the setting.
 - Scheduled backups keep their own email setting on the Schedule page.
 
 ### Also fixed
 
-- Help → User Manual: paragraphs now use the full width of the panel instead of stopping at about 800 px. The same width cap was removed from the Troubleshooting Log intro and error messages.
+- Help > User Manual: paragraphs now use the full width of the panel instead of stopping at about 800 px. The same width cap was removed from the Troubleshooting Log intro and error messages.
 - Help: the retention text now says that retention only deletes backups the schedule made (changed in 1.5.0).
 - Seven icons that did not show (Email Branding header, "Send test email", Help folder status and others) are now included in the plugin's icon set.
 
@@ -90,7 +144,7 @@ On cPanel hosts running Imunify360, the server can refuse to let PHP write the d
 
 ### Calmer backup-folder check
 
-- The large warning about the backup folder has been removed from the Backups page. The folder's status now appears in Help → "Where are my backups stored?". The instructions for closing the folder match the server (RunCloud, Nginx, or other).
+- The large warning about the backup folder has been removed from the Backups page. The folder's status now appears in Help > "Where are my backups stored?". The instructions for closing the folder match the server (RunCloud, Nginx, or other).
 - The Backups page shows a small, dismissible note only when the folder is reachable **and** there are older backups with short file names (made before 1.5.1).
 - The check runs in the background (WP-Cron), so it no longer slows down opening the Backups page.
 
@@ -176,7 +230,7 @@ A backup started from the Export screen no longer needs the tab to stay open. Wh
 
 - **Fix for LiteSpeed hosts.** LiteSpeed stops a PHP request as soon as its client disconnects, and a background worker's client disconnects straight away. On LiteSpeed, SitesSaver now adds LiteSpeed's `noabort` rule to `.htaccess`, inside its own `# BEGIN/END SitesSaver` markers. The rule applies only to SitesSaver's worker requests (`?sitessaver_bg=1`) and to `wp-cron.php`. It is never added on other servers, never creates an `.htaccess` that does not already exist, and is removed when the plugin is deactivated or uninstalled.
 - **WP-Cron watchdog.** While a manual backup is open, a check runs every minute. If the backup has gone quiet for 45 seconds, the check runs its next time slice itself. WP-Cron runs when someone visits the site.
-- **Server cron keeps backups moving.** The existing server-cron trigger URL (Schedule → Server Cron) now does the same on every call, so it no longer depends on site visits. Running it every minute is recommended.
+- **Server cron keeps backups moving.** The existing server-cron trigger URL (Schedule > Server Cron) now does the same on every call, so it no longer depends on site visits. Running it every minute is recommended.
 - **Email when it ends.** If no Export tab was watching, the site admin gets an email when the backup is ready (file and size) or when it stops (reference code and what to do next). The recipient can be changed with the `sitessaver_export_notify_email` filter. Scheduled backups keep their own notification settings.
 - **Clearer Export screen.**
   - The progress window says the page can be closed, instead of "do not close this tab".
@@ -188,7 +242,7 @@ A backup started from the Export screen no longer needs the tab to stay open. Wh
 
 ### Fixed: backups on hosts that stop every PHP request after ~30 seconds
 
-On some shared hosts (LiteSpeed with `max_execution_time = 30` that the plugin is not allowed to lift) the export worker was stopped after 30 seconds. Every restart began the database step again from the first table, so the backup died at the same place each time ("No progress … during Exporting database", `db:wp_posts`, `done: 250`). The final ZIP step had the same problem: `ZipArchive::close()` does all of its work in one call that cannot be split.
+On some shared hosts (LiteSpeed with `max_execution_time = 30` that the plugin is not allowed to lift) the export worker was stopped after 30 seconds. Every restart began the database step again from the first table, so the backup died at the same place each time ("No progress ... during Exporting database", `db:wp_posts`, `done: 250`). The final ZIP step had the same problem: `ZipArchive::close()` does all of its work in one call that cannot be split.
 
 The export now runs as a chain of short requests. Each one works for a limited time slice, saves its place, and hands over to the next:
 
@@ -213,7 +267,7 @@ The media step copied each file with a single `copy()` call and only reported th
 - A stalled export is restarted automatically up to 3 times. The new worker continues from the step it was on and skips files already copied, and the old worker stops if it was only slow.
 - A server that kills the export outright (time or memory limit) is now reported with its real reason.
 - Stall and failure log entries record the file being copied, its size, how long the export ran, and the host's limits (`max_execution_time`, memory, free disk, server software), so a problem can be diagnosed from the downloaded log alone.
-- New plain-language messages: "The backup got stuck on one large file" (names the file) and "Your server stopped the backup". The hints point to Help → Troubleshooting Log.
+- New plain-language messages: "The backup got stuck on one large file" (names the file) and "Your server stopped the backup". The hints point to Help > Troubleshooting Log.
 - A file that cannot be read or written is still left out as before, but now listed in the log; running out of disk space stops the backup with a clear reason instead of producing an incomplete archive.
 
 ## [1.4.8] - 2026-10-05
@@ -228,7 +282,7 @@ Each uploaded chunk was saved as its own file, and the request carrying the LAST
 
 ### Fixed: a large restore could be cut off by the web server's request time limit
 
-The restore ran inside the single request the browser made, so it hit the same 60–120 second web server limit as the upload. It now runs as a background job, like exports have since 1.4.1.
+The restore ran inside the single request the browser made, so it hit the same 60-120 second web server limit as the upload. It now runs as a background job, like exports have since 1.4.1.
 
 - `sitessaver_restore_start` returns at once; the work runs in a detached loopback request. The browser only polls `sitessaver_restore_status`, so no request it makes lasts long.
 - Hosts that block loopback requests fall back to running the restore from the browser, still followed through the status poll.
@@ -241,7 +295,7 @@ The restore ran inside the single request the browser made, so it hit the same 6
 - Every failure is written to the plugin's own log (`wp-content/sitessaver-backups/logs/`, web access denied, no tokens or passwords recorded) with a short reference code.
 - Error notices now say what happened, whether anything on the site changed, and what to do next, in non-technical words, with the reference code and a collapsed "Technical details" line.
 - Failures only the browser can see (dropped connection, gateway timeout page) are reported to the log too.
-- **Help → Troubleshooting Log** lists recent entries and offers Download / Clear.
+- **Help > Troubleshooting Log** lists recent entries and offers Download / Clear.
 
 ### Fixed: restore errors were invisible on the Backups page
 
@@ -270,8 +324,8 @@ The Backups page's result container was empty, so a failed restore started from 
 
 Both modals previously showed one label and a bar; there was no way to see which phase a backup or restore was actually in.
 
-- Export: a checklist of all 9 pipeline steps (init → manifest → database → uploads → plugins → themes → other files → ZIP → finalize) now sits above the bar, each row showing pending / active / done state with an icon, driven by the real `step_index` the server reports, in both the normal and background-worker code paths, and on resume.
-- Import/restore: the restore still runs inside one blocking request (it cannot be safely backgrounded: it holds the admin session that authorized it), but it now ticks a phase transient at each real boundary (extract → validate manifest → restore database → restore files → finalize) that a concurrent status poll reads while the restore request is still in flight. Wired into all three restore entry points: upload-then-restore, restore-an-existing-backup, and restore-from-Google-Drive.
+- Export: a checklist of all 9 pipeline steps (init > manifest > database > uploads > plugins > themes > other files > ZIP > finalize) now sits above the bar, each row showing pending / active / done state with an icon, driven by the real `step_index` the server reports, in both the normal and background-worker code paths, and on resume.
+- Import/restore: the restore still runs inside one blocking request (it cannot be safely backgrounded: it holds the admin session that authorized it), but it now ticks a phase transient at each real boundary (extract > validate manifest > restore database > restore files > finalize) that a concurrent status poll reads while the restore request is still in flight. Wired into all three restore entry points: upload-then-restore, restore-an-existing-backup, and restore-from-Google-Drive.
 
 ## [1.4.5] - 2026-09-29
 
@@ -280,7 +334,7 @@ Both modals previously showed one label and a bar; there was no way to see which
 A backup does not carry `wp-config.php`, so the destination keeps its own `$table_prefix`. A dump from a `bzm_` site imported into a `wp_` site created a parallel `bzm_*` table set that WordPress never reads: files and the active theme switched over, while content, users and options stayed the old site's. Seen on a live migration.
 
 - Table names in `DROP` / `CREATE` / `INSERT` statements (and foreign-key `REFERENCES` inside a `CREATE`) are rewritten to the destination prefix as the dump is replayed.
-- Afterwards the keys WordPress core derives from the prefix are renamed (`{prefix}user_roles`, `{prefix}capabilities`, `{prefix}user_level`, `{prefix}user-settings`, …), so every user keeps their role.
+- Afterwards the keys WordPress core derives from the prefix are renamed (`{prefix}user_roles`, `{prefix}capabilities`, `{prefix}user_level`, `{prefix}user-settings`, ...), so every user keeps their role.
 - Row data is never touched, and plugin/theme options that merely start with the same letters (e.g. `bzm_gsheets_auth`) are left alone: only a fixed list of core keys is renamed.
 - Older backups whose manifest has no `db_prefix` are handled too: the source prefix is read from the dump's `<prefix>options` table.
 - A prefix containing anything other than letters, digits or `_` is refused, so a tampered manifest cannot inject SQL.
@@ -291,7 +345,7 @@ Verified end-to-end: a real `bzm_` backup (16 posts of a custom type, 8 pages, a
 
 ### Fixed: restore did not log out / skip to Permalinks when login URL is hidden
 
-- After a restore, "Finish & log out" now goes through a SitesSaver `admin-post.php` action that destroys the session server-side, then sends the user to the login screen with Settings → Permalinks as the destination. Previously it relied on `wp-login.php?reauth=1`, which login-hiding plugins (WPS Hide Login, Admin Speedboost, etc.) bounce to wp-admin before WordPress can clear the cookie, so the user stayed logged in and never reached the Permalinks step.
+- After a restore, "Finish & log out" now goes through a SitesSaver `admin-post.php` action that destroys the session server-side, then sends the user to the login screen with Settings > Permalinks as the destination. Previously it relied on `wp-login.php?reauth=1`, which login-hiding plugins (WPS Hide Login, Admin Speedboost, etc.) bounce to wp-admin before WordPress can clear the cookie, so the user stayed logged in and never reached the Permalinks step.
 - The action requires the one-time finalize token, so it cannot be used as a drive-by logout link.
 
 ## [1.4.3] - 2026-09-29
@@ -318,7 +372,7 @@ The database step sent no heartbeat until it finished, so after 5 minutes the ex
 
 ## [1.4.1] - 2026-09-21
 
-Large backups to Google Drive could fail with nothing but *"An error occurred"*. The cause was that every export step ran inside a single HTTP request, so on hosts that kill requests after 60–90 seconds the ZIP or the Drive upload was cut off mid-flight. The gateway answered with an HTML error page, the browser could not parse it as a reply, and the export screen reported a generic failure, while PHP usually kept running and left a finished multi-gigabyte ZIP on disk that was never uploaded.
+Large backups to Google Drive could fail with nothing but *"An error occurred"*. The cause was that every export step ran inside a single HTTP request, so on hosts that kill requests after 60-90 seconds the ZIP or the Drive upload was cut off mid-flight. The gateway answered with an HTML error page, the browser could not parse it as a reply, and the export screen reported a generic failure, while PHP usually kept running and left a finished multi-gigabyte ZIP on disk that was never uploaded.
 
 ### Changed: exports run in a background worker
 
@@ -433,7 +487,7 @@ SitesSaver is installed manually, not from wordpress.org, so WordPress had no up
 
 The plugin now declares an `Update URI` and answers for itself. It polls its GitHub releases (cached six hours) and, when a newer tag exists, the update appears on the Plugins screen like any other plugin, with a working "View details" modal built from the release notes. A dismissible dashboard banner covers the case where the owner rarely opens that screen; dismissal is recorded per version, so the next release surfaces again rather than being silenced forever by one click.
 
-Settings → Plugin Updates exposes the repository, a stable/pre-release channel toggle, an optional token for a private repo, and a "Check for updates now" button that bypasses the cache.
+Settings > Plugin Updates exposes the repository, a stable/pre-release channel toggle, an optional token for a private repo, and a "Check for updates now" button that bypasses the cache.
 
 Implementation notes that matter:
 
@@ -447,7 +501,7 @@ Implementation notes that matter:
 
 Backup reports were four lines of plain text. They are now a table-based HTML email (the only thing Outlook's Word renderer and Gmail's style-stripping both tolerate) carrying a logo, accent colour, status badge, per-destination storage cards, and action buttons.
 
-Settings → Email Branding controls logo, colour, sender name and address, support link, and footer note, with a "Send test email" button that saves first and then delivers a real sample through the same renderer a live report uses.
+Settings > Email Branding controls logo, colour, sender name and address, support link, and footer note, with a "Send test email" button that saves first and then delivers a real sample through the same renderer a live report uses.
 
 A plain-text alternative is always generated from the same data structure, so the two formats cannot drift, and HTML can be switched off entirely.
 
@@ -545,7 +599,7 @@ The old code cleared WordPress's auth cookies from JavaScript, assuming the pre-
 
 The logout is now forced server-side via `reauth=1`, which makes `wp-login.php` call `wp_clear_auth_cookie()` and show the prompt regardless of session state.
 
-### Fixed: the flow landed on the Dashboard instead of Settings → Permalinks
+### Fixed: the flow landed on the Dashboard instead of Settings > Permalinks
 
 `wp-login.php` passes `redirect_to` through `wp_validate_redirect()`, which discards any URL whose host is not in `allowed_redirect_hosts` and falls back to `admin_url()`. The finalize URL was absolute, built from the restored `siteurl`, so any host difference (`127.0.0.1` vs `localhost`, `www` vs apex, a staging alias, or a genuine migration to a new domain) got it rejected, and the rewrite-rules flush the modal asked for never happened.
 
@@ -639,7 +693,7 @@ Export-state transients were dumped into every archive and restored onto the tar
 
 Two standalone suites (no WordPress, no database) covering every defect above:
 
-- `tests/test-sql-tokenizer.php`: 35 cases: tokenizer constructs, chunk-boundary splits, and full export → rewrite → `unserialize()` fidelity for escape-hazard payloads.
+- `tests/test-sql-tokenizer.php`: 35 cases: tokenizer constructs, chunk-boundary splits, and full export > rewrite > `unserialize()` fidelity for escape-hazard payloads.
 - `tests/test-export-pagination.php`: 4 cases: proves paged export emits every row exactly once when the underlying row order shifts mid-dump.
 - `tests/test-core-standalone.php`: 13 cases: import, archive create/extract, zip-slip rejection, and replacement-map edges.
 
@@ -693,7 +747,7 @@ Guardrails to prevent corrupting third-party code:
 
 After the feldatravel-specific cross-scheme fix, the replacer was reviewed for other real-world migration patterns that would silently break the same way:
 
-- **www ↔ non-www handling.** When migrating between `https://www.example.com` and `https://example.com`, the replacer now builds BOTH the configured pair AND the opposite-www variant. Content that legitimately contained both forms pre-migration (common after previous moves) gets unified to the destination's canonical host.
+- **www <-> non-www handling.** When migrating between `https://www.example.com` and `https://example.com`, the replacer now builds BOTH the configured pair AND the opposite-www variant. Content that legitimately contained both forms pre-migration (common after previous moves) gets unified to the destination's canonical host.
 - **`localhost` / short-host safety guard.** `build_replacement_pairs()` now refuses to emit a bare-host pattern when either URL's host contains no dot (e.g. `http://localhost:8080`). Without this, substring-matching `localhost` would mangle unrelated prose and script variable names. Scheme-explicit variants are still emitted, so local dev migrations still work.
 - **Idempotency short-circuit.** `build_replacement_pairs()` returns an empty map when `$old_url === $new_url`, skipping the entire byte-walker pass. Running the import twice on an already-migrated dump is now a guaranteed no-op.
 - **Builder CSS cache flush on restore.** `Import::flush_builder_caches()` runs at the tail of `restore_content()` and wipes compiled CSS from Breakdance, Elementor, Oxygen, Bricks, plus full-page caches under `wp-content/cache/` and `wp-content/litespeed/`. Builders embed absolute URLs in their compiled stylesheets, without flushing, a cross-domain restore leaves the old domain's URLs in generated CSS even when the DB is correct. Each builder regenerates on first front-end page view.
@@ -702,9 +756,9 @@ Verified against an 11-scenario test harness (16 assertions, all green) covering
 
 ### Fixed (cross-scheme migration: root cause of "WebP broken after restore")
 
-- **URL replacement now handles `https://` ↔ `http://` scheme changes correctly.** Previously the replacer built only two patterns, `https://old.com` and `old.com` (bare host), and kept the destination URL's scheme only for the full-URL form. When migrating a site from `https://source.com` to `http://dest.com` (common when moving production → local dev like Laragon which doesn't serve HTTPS by default), any occurrence of `http://source.com` in the backup stayed as-is, and any scheme-mismatched occurrence was left unreplaced. Breakdance stores its entire tree as JSON-in-postmeta with URLs like `https:\/\/source.com\/wp-content\/uploads\/hero.webp`, these rewrote only the domain and kept the `https:` prefix, so the destination Apache (serving HTTP only) 404'd every image. The pattern was invisible because JPG images on the page happened to use different URL sources and rendered fine, making it look WebP-specific. It wasn't; it was every image referenced via the `https://` form on an HTTP-only destination.
-- **New `Database::build_replacement_pairs()`** constructs the full cross-product: `https://old → new`, `http://old → new`, JSON-escaped `\/` variants of both, protocol-relative `//old → //new`, and bare-host fallback. All mapped to the destination's canonical URL. Replacement runs via `strtr(array_combine(...))`, same one-shot technique All-in-One WP Migration uses.
-- **`rewrite_serialized_preserving()` now takes the pair map as its sole replacement input.** Serialized-string byte-length prefixes are recomputed correctly whether the replacement shortens or lengthens the content (https→http is a 1-byte delta × N occurrences).
+- **URL replacement now handles `https://` <-> `http://` scheme changes correctly.** Previously the replacer built only two patterns, `https://old.com` and `old.com` (bare host), and kept the destination URL's scheme only for the full-URL form. When migrating a site from `https://source.com` to `http://dest.com` (common when moving production > local dev like Laragon which doesn't serve HTTPS by default), any occurrence of `http://source.com` in the backup stayed as-is, and any scheme-mismatched occurrence was left unreplaced. Breakdance stores its entire tree as JSON-in-postmeta with URLs like `https:\/\/source.com\/wp-content\/uploads\/hero.webp`, these rewrote only the domain and kept the `https:` prefix, so the destination Apache (serving HTTP only) 404'd every image. The pattern was invisible because JPG images on the page happened to use different URL sources and rendered fine, making it look WebP-specific. It wasn't; it was every image referenced via the `https://` form on an HTTP-only destination.
+- **New `Database::build_replacement_pairs()`** constructs the full cross-product: `https://old > new`, `http://old > new`, JSON-escaped `\/` variants of both, protocol-relative `//old > //new`, and bare-host fallback. All mapped to the destination's canonical URL. Replacement runs via `strtr(array_combine(...))`, same one-shot technique All-in-One WP Migration uses.
+- **`rewrite_serialized_preserving()` now takes the pair map as its sole replacement input.** Serialized-string byte-length prefixes are recomputed correctly whether the replacement shortens or lengthens the content (https>http is a 1-byte delta × N occurrences).
 
 ### Fixed (WebP images broken after restore)
 
@@ -732,7 +786,7 @@ If 1.1.7 misbehaves in production, downgrade by reinstalling 1.1.6. Backups crea
 ## [1.1.6] - 2026-04-19
 
 ### Changed (ARCHITECTURAL)
-- **Restore finalisation is now driven entirely by a client-side redirect to `wp-login.php`, not by an AJAX call.** The previous flow (AJAX → run deferred work → `wp_logout()` → return redirect JSON) was fragile in at least three independent ways, all of which produced the same user-visible "An error occurred" popup with no diagnostic: (a) the browser's auth cookie was signed by the PRE-restore DB, so `check_ajax_referer()` and `current_user_can()` silently failed; (b) `wp_logout()` fires the `wp_logout` action hook and third-party plugins (security, membership, SSO) often `wp_redirect() + exit` inside it, killing the request before the JSON body flushed; (c) middleware like Cloudflare sometimes wrapped slow AJAX responses in HTML interstitials that broke the client-side JSON parse. The architecture now sidesteps all three: `post_import()` mints a one-time token and `Import::build_finalize_redirect_url()` returns `wp-login.php?redirect_to=<permalinks?sitessaver_finalize=TOKEN>`. The JS clears WP cookies client-side and navigates straight there. The user re-auths with the restored credentials and lands on Permalinks where `admin_init` validates the token (`hash_equals`) and runs the deferred activation/theme-switch under a clean, freshly-authenticated session.
+- **Restore finalisation is now driven entirely by a client-side redirect to `wp-login.php`, not by an AJAX call.** The previous flow (AJAX > run deferred work > `wp_logout()` > return redirect JSON) was fragile in at least three independent ways, all of which produced the same user-visible "An error occurred" popup with no diagnostic: (a) the browser's auth cookie was signed by the PRE-restore DB, so `check_ajax_referer()` and `current_user_can()` silently failed; (b) `wp_logout()` fires the `wp_logout` action hook and third-party plugins (security, membership, SSO) often `wp_redirect() + exit` inside it, killing the request before the JSON body flushed; (c) middleware like Cloudflare sometimes wrapped slow AJAX responses in HTML interstitials that broke the client-side JSON parse. The architecture now sidesteps all three: `post_import()` mints a one-time token and `Import::build_finalize_redirect_url()` returns `wp-login.php?redirect_to=<permalinks?sitessaver_finalize=TOKEN>`. The JS clears WP cookies client-side and navigates straight there. The user re-auths with the restored credentials and lands on Permalinks where `admin_init` validates the token (`hash_equals`) and runs the deferred activation/theme-switch under a clean, freshly-authenticated session.
 - `handle_finalize_restore` AJAX endpoint remains registered as a backward-compat stub, any browser tab still running cached 1.1.5 JS gets the new redirect URL in the response and navigates through the same flow.
 - `run_deferred_finalisation()` now wraps `switch_theme()` in `try/catch`. A restored theme with a fatal in `after_switch_theme`/`setup_theme` no longer 500's the permalinks page; the error is logged and finalisation continues so the user sees the banner and can proceed.
 - **Output buffer added to `handle_finalize_restore`.** Parity with the 1.1.4 fix applied to `handle_import`. Stray PHP notices emitted by `switch_theme()` or plugin boot during `run_deferred_finalisation()` can no longer corrupt the JSON response.
@@ -809,7 +863,7 @@ Major security + reliability release. Upgrade recommended for all installations.
 - **Streaming SQL import**: `Database::import()` is now a streaming tokenizer (`fread` 64 KB chunks) with constant memory per statement. Multi-GB database dumps no longer OOM the process.
 - **ZIP64 support**: removed the 2 GB file-size skip in archive creation; individual files larger than 2 GB are now backed up correctly on PHP 8.1+.
 - **Resumable Google Drive upload**: transient server errors (408/429/5xx) trigger up to 3 retries with exponential backoff (1 s / 2 s / 4 s). On network drops, the upload session is probed via `Content-Range: bytes */total` and resumes from the last confirmed byte, a 10 GB upload that fails at chunk 47/50 no longer restarts from zero.
-- **Export state → transients**: export progress is stored with a 1-hour TTL instead of persistent `wp_options` rows, eliminating orphan option-table bloat from abandoned exports.
+- **Export state > transients**: export progress is stored with a 1-hour TTL instead of persistent `wp_options` rows, eliminating orphan option-table bloat from abandoned exports.
 - **Autoload audit**: `sitessaver_gdrive_token`, `_schedule_log`, `_backup_labels`, `_settings`, `_schedule` now all stored with `autoload = no`; a one-time migration flips existing rows. The Google Drive refresh token no longer rides in `alloptions` on every request.
 - **N+1 fixes**: `sitessaver_get_backups()` and retention cleanup now read the labels option once, not per entry. `filesize()` / `filemtime()` cached per row.
 - **Translations wired**: `load_plugin_textdomain()` is now called on `init`; all existing `__()` strings become translatable (add a `/languages/` directory with `.mo` files to translate).

@@ -80,7 +80,7 @@ Include the reference code from the error message and the log from Help > Troubl
 
 == External services ==
 
-SitesSaver works without contacting any outside service. Local backups, restores and migration stay on your server. The plugin only connects to outside services when you choose to connect Google Drive. The services involved are listed below.
+SitesSaver works without contacting any outside service. Local backups, restores and migration stay on your server. The plugin connects to outside services when you choose to connect Google Drive and, in the copy installed from GitHub, to look for updates. The services involved are listed below.
 
 **Google Drive API (Google LLC)**
 
@@ -101,6 +101,16 @@ Google requires a registered app with a client secret for Drive access. A secret
 * When you click Disconnect, or delete the plugin while Drive is connected: your server sends your refresh token to the relay so the access can be revoked at Google.
 * SitesSaver Terms of Use: https://sitessaver.com/terms.html
 * SitesSaver Privacy Policy: https://sitessaver.com/privacy.html
+
+**GitHub (GitHub, Inc.), copy installed from GitHub only**
+
+The copy of SitesSaver downloaded from GitHub releases declares an Update URI and looks for its own updates there. The copy from the WordPress plugin directory does not contain this code.
+
+* What is sent: a request for the list of SitesSaver releases, with a User-Agent that names the SitesSaver version and your site address. When you update, the release ZIP is downloaded from GitHub.
+* When: when WordPress checks for plugin updates (about twice a day, the answer is kept for 6 hours) and when you click Check for updates in SitesSaver > Settings.
+* Endpoints: `https://api.github.com/repos/faidodaisen/sitessaver/releases` and the release download on `https://github.com`.
+* GitHub Terms of Service: https://docs.github.com/site-policy/github-terms/github-terms-of-service
+* GitHub Privacy Statement: https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement
 
 **Requests to your own site**
 
